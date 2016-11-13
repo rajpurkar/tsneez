@@ -1,8 +1,8 @@
 {
-  "name": "online-tsne-js",
+  "name": "streaming-tsne-js",
   "version": "0.0.1",
-  "description": "online tsne implementation",
-  "main": "online-tsne.js",
+  "description": "streaming t-sne implementation",
+  "main": "streaming-tsne.js",
   "dependencies": {
     "mathjs": "^3.7.0"
   },
