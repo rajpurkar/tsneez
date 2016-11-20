@@ -55,27 +55,50 @@ const data = require('./wordvecs50dtop1000.json')
   }
 
   const gradKL = function (p, q, y) {
-    let gradTot = math.zeros([y.length])
+    let gradTot = math.zeros([y.length, 2])
     for (let i = 0; i < y.length; i++) {
-      let sum = 0
+      let gradI = math.zeros([y.length, 2])
       for (let j = 0; j < y.length; j++) {
         const norm = math.norm(math.subtract(y[i], y[j]))
-        sum += math.multiply((p[i][j] - q[i][j]) / (1 + norm * norm), math.subtract(y[i], y[j]))[0]
+        gradI[j] = math.multiply((p[i][j] - q[i][j]) / (1 + norm * norm), math.subtract(y[i], y[j]))
       }
-      gradTot[i] = 4.0 * sum
+      for (let column = 0; column < math.size(gradI)[1]; column++) {
+        let gradIcol = math.subset(gradI, math.index(math.range(0, math.size(gradI)[0]), column))
+        gradTot[i][column] = 4 * math.sum(gradIcol)
+      }
     }
     return gradTot
   }
 
-  const x = data.vecs.splice(0, 20)
+  const updateY = function (grad, y) {
+    const learningRate = 0.01
+    const newY = math.add(y, math.multiply(learningRate, grad))
+    return newY
+  }
+
+  const computeCost = function (p, q) {
+    var cost = 0
+    for (var i = 0; i < math.size(p)[0]; i++) {
+      for (var j = 0; j < math.size(p)[0]; j++) {
+        if (i === j) continue
+        cost += p[i][j] * Math.log(p[i][j] / q[i][j])
+      }
+    }
+    return cost
+  }
+
+  const numIterations = 20
+  const x = data.vecs.splice(0, 400)
   const numSamples = x.length
   const sigma = math.multiply(math.ones([numSamples]), 1)
   const p = jointProbabilityMatrix(x, sigma)
-  // console.log(p)
-  const y = sampleYs(numSamples)
-  const q = lowDimAffinities(y)
-  // console.log(q)
-  let grad = gradKL(p, q, y)
-  console.log(grad)
-  // console.log(conditionalProbability(0, 1, [[1], [1], [1], [1]], [1, 1, 1, 1]))
+  let y = sampleYs(numSamples)
+  for (let iteration = 0; iteration < numIterations; iteration++) {
+    const q = lowDimAffinities(y)
+    const cost = computeCost(p, q)
+    console.log(cost)
+    let grad = gradKL(p, q, y)
+    y = updateY(grad, y)
+  }
+  console.log(y)
 })()
