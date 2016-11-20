@@ -18,9 +18,9 @@ const data = require('./wordvecs50dtop1000.json')
     let q = math.zeros([y.length, y.length])
     for (let i = 0; i < y.length; i++) {
       for (let j = i + 1; j < y.length; j++) {
-        const norm = math.norm(math.subtract(y[i], y[j]))
-        const affinity = 1 / (1 + norm * norm)
-        q[i][j] = q[j][i] = Math.max(affinity, 1e-12)
+        const diff = math.subtract(y[i], y[j])
+        const affinity = 1.0 / (1 + math.dot(diff, diff))
+        q[i][j] = q[j][i] = math.max(affinity, 1e-12)
       }
     }
     q = math.divide(q, math.sum(q))
@@ -32,13 +32,10 @@ const data = require('./wordvecs50dtop1000.json')
     for (let i = 0; i < y.length; i++) {
       let gradI = math.zeros([y.length, 2])
       for (let j = 0; j < y.length; j++) {
-        const norm = math.norm(math.subtract(y[i], y[j]))
-        gradI[j] = math.multiply((p[i][j] - q[i][j]) / (1 + norm * norm), math.subtract(y[i], y[j]))
+        const diff = math.subtract(y[i], y[j])
+        gradI[j] = math.multiply((p[i][j] - q[i][j]) / (1 + math.multiply(diff, diff)), diff)
       }
-      for (let column = 0; column < math.size(gradI)[1]; column++) {
-        let gradIcol = math.subset(gradI, math.index(math.range(0, math.size(gradI)[0]), column))
-        gradTot[i][column] = 4 * math.sum(gradIcol)
-      }
+      gradTot[i] = math.multiply(4, math.flatten(math.multiply(math.transpose(gradI), math.ones([y.length, 1]))))
     }
     return gradTot
   }
