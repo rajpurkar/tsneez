@@ -1,4 +1,6 @@
 const math = require('mathjs')
+const gaussian = require('gaussian')
+const data = require('./wordvecs50dtop1000.json')
 
 ;(function () {
   'use strict'
@@ -15,7 +17,7 @@ const math = require('mathjs')
         if (i === j) continue
         p[i][j] = affinity(x[i], x[j], sigma[i])
       }
-      // p[i] = math.divide(p[i], math.sum(p[i]))
+      p[i] = math.divide(p[i], math.sum(p[i]))
     }
     return p
   }
@@ -32,7 +34,12 @@ const math = require('mathjs')
   }
 
   const sampleYs = function (numSamples) {
-    return math.random([numSamples, 2], -0.0001, 0.0001)
+    const distribution = gaussian(0, 0.0001)
+    const ys = math.zeros([numSamples, 2])
+    for (let i = 0; i < numSamples; i++) {
+      ys[i] = [distribution.ppf(Math.random()), distribution.ppf(Math.random())]
+    }
+    return ys
   }
 
   const lowDimAffinities = function (y) {
@@ -48,26 +55,27 @@ const math = require('mathjs')
   }
 
   const gradKL = function (p, q, y) {
-    let gradTot = math.zeros(y.length)
+    let gradTot = math.zeros([y.length])
     for (let i = 0; i < y.length; i++) {
-      let gradI = math.zeros(y.length)
+      let sum = 0
       for (let j = 0; j < y.length; j++) {
         const norm = math.norm(math.subtract(y[i], y[j]))
-        gradI[j] = math.multiply((p[i][j] - q[i][j]) / (1 + norm * norm), math.subtract(y[i], y[j]))
+        sum += math.multiply((p[i][j] - q[i][j]) / (1 + norm * norm), math.subtract(y[i], y[j]))[0]
       }
-      gradTot[i] = 4 * math.sum(gradI)
+      gradTot[i] = 4.0 * sum
     }
     return gradTot
   }
 
-  const numSamples = 10
-  const dimension = 10
-  const x = math.random([numSamples, dimension], -100, 100)
-  const sigma = math.multiply(math.ones([numSamples]), 100)
+  const x = data.vecs.splice(0, 20)
+  const numSamples = x.length
+  const sigma = math.multiply(math.ones([numSamples]), 1)
   const p = jointProbabilityMatrix(x, sigma)
+  // console.log(p)
   const y = sampleYs(numSamples)
   const q = lowDimAffinities(y)
+  // console.log(q)
   let grad = gradKL(p, q, y)
   console.log(grad)
-// console.log(conditionalProbability(0, 1, [[1], [1], [1], [1]], [1, 1, 1, 1]))
+  // console.log(conditionalProbability(0, 1, [[1], [1], [1], [1]], [1, 1, 1, 1]))
 })()

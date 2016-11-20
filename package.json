@@ -4,6 +4,7 @@
   "description": "streaming t-sne implementation",
   "main": "streaming-tsne.js",
   "dependencies": {
+    "gaussian": "^1.1.0",
     "mathjs": "^3.7.0"
   },
   "devDependencies": {},
