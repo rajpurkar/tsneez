@@ -48,7 +48,8 @@ const data = require('./wordvecs50dtop1000.json')
     for (let i = 0; i < y.length; i++) {
       for (let j = i + 1; j < y.length; j++) {
         const norm = math.norm(math.subtract(y[i], y[j]))
-        q[i][j] = q[j][i] = 1 / (1 + norm * norm)
+        const affinity = 1 / (1 + norm * norm)
+        q[i][j] = q[j][i] = Math.max(affinity, 1e-12)
       }
     }
     q = math.divide(q, math.sum(q))
