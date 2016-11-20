@@ -5,7 +5,7 @@ const data = require('./wordvecs50dtop1000.json')
 ;(function () {
   'use strict'
 
-  const affinity = function (xI, xJ, sigmaI) {
+  const computeAffinity = function (xI, xJ, sigmaI) {
     const norm = math.norm(math.subtract(xI, xJ))
     return Math.exp(-(norm * norm) / (2 * Math.pow(sigmaI, 2)))
   }
@@ -15,7 +15,8 @@ const data = require('./wordvecs50dtop1000.json')
     for (let i = 0; i < x.length; i++) {
       for (let j = 0; j < x.length; j++) {
         if (i === j) continue
-        p[i][j] = affinity(x[i], x[j], sigma[i])
+        const affinity = computeAffinity(x[i], x[j], sigma[i])
+        p[i][j] = Math.max(affinity, 1e-12)
       }
       p[i] = math.divide(p[i], math.sum(p[i]))
     }
@@ -70,10 +71,11 @@ const data = require('./wordvecs50dtop1000.json')
     return gradTot
   }
 
-  const updateY = function (grad, y) {
-    const learningRate = 0.01
-    const newY = math.add(y, math.multiply(learningRate, grad))
-    return newY
+  const updateY = function (grad, ytMinus1, ytMinus2) {
+    const learningRate = 100
+    const alpha = 0.5
+    const yT = math.add(math.add(ytMinus1, math.multiply(learningRate, grad)), math.multiply(alpha, math.subtract(ytMinus1, yTMinus2)))
+    return yT
   }
 
   const computeCost = function (p, q) {
@@ -87,18 +89,22 @@ const data = require('./wordvecs50dtop1000.json')
     return cost
   }
 
-  const numIterations = 20
-  const x = data.vecs.splice(0, 400)
+  const numIterations = 10
+  const x = data.vecs.splice(0, 100)
   const numSamples = x.length
-  const sigma = math.multiply(math.ones([numSamples]), 1)
+  const sigma = math.multiply(math.ones([numSamples]), 0.2)
   const p = jointProbabilityMatrix(x, sigma)
   let y = sampleYs(numSamples)
+  var ytMinus1, yTMinus2
+  ytMinus1 = yTMinus2 = y
   for (let iteration = 0; iteration < numIterations; iteration++) {
     const q = lowDimAffinities(y)
     const cost = computeCost(p, q)
-    console.log(cost)
     let grad = gradKL(p, q, y)
-    y = updateY(grad, y)
+    yTMinus2 = ytMinus1
+    ytMinus1 = y
+    y = updateY(grad, ytMinus1, yTMinus2)
+    console.log(cost)
   }
   console.log(y)
 })()
