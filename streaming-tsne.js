@@ -5,11 +5,17 @@ const data = require('./wordvecs50dtop1000.json')
 ;(function () {
   'use strict'
 
+  var seed = 1
+  const tmpRandom = function () {
+    const x = Math.sin(seed++) * 10000
+    return x - Math.floor(x)
+  }
+
   const sampleYs = function (numSamples) {
-    const distribution = gaussian(0, 0.0001)
+    const distribution = gaussian(0, 1e-4)
     const ys = math.zeros([numSamples, 2])
     for (let i = 0; i < numSamples; i++) {
-      ys[i] = [distribution.ppf(Math.random()), distribution.ppf(Math.random())]
+      ys[i] = [distribution.ppf(tmpRandom()), distribution.ppf(tmpRandom())]
     }
     return ys
   }
@@ -28,14 +34,18 @@ const data = require('./wordvecs50dtop1000.json')
   }
 
   const gradKL = function (p, q, y) {
-    let gradTot = math.zeros([y.length, 2])
+    let gradTot = math.zeros([y.length, y[0].length])
     for (let i = 0; i < y.length; i++) {
-      let gradI = math.zeros([y.length, 2])
-      for (let j = 0; j < y.length; j++) {
-        const diff = math.subtract(y[i], y[j])
-        gradI[j] = math.multiply((p[i][j] - q[i][j]) / (1 + math.multiply(diff, diff)), diff)
+      for (let d = 0; d < y[0].length; d++) {
+        let acc = 0
+        for (let j = 0; j < y.length; j++) {
+          if (i === j) continue
+          let diff = y[i][d] - y[j][d]
+          let component = diff * (p[i][j] - q[i][j]) / (1 + (diff * diff))
+          acc += component
+        }
+        gradTot[i][d] = 4 * acc
       }
-      gradTot[i] = math.multiply(4, math.flatten(math.multiply(math.transpose(gradI), math.ones([y.length, 1]))))
     }
     return gradTot
   }
@@ -52,7 +62,7 @@ const data = require('./wordvecs50dtop1000.json')
     for (var i = 0; i < math.size(p)[0]; i++) {
       for (var j = 0; j < math.size(p)[0]; j++) {
         if (i === j) continue
-        cost += p[i][j] * math.log(p[i][j] / q[i][j])
+        cost += p[i][j] * Math.log(p[i][j] / q[i][j])
       }
     }
     return cost
@@ -74,58 +84,95 @@ const data = require('./wordvecs50dtop1000.json')
     const beta = math.ones([n])
     const logU = math.log(perplexity)
 
-    var getpIAndH = function (dI, betaI) {
+    var getpIAndH = function (dI, betaI, i) {
       let pI = math.exp(math.multiply(-betaI, dI))
+      pI[i] = 0
       const sumP = math.sum(pI)
-      const H = math.log(sumP) + betaI * math.multiply(dI, pI) / sumP
-      pI = math.divide(pI, sumP)
+      let H = 0.0
+      for (var j = 0; j < math.size(dI)[0]; j++) {
+        if (sumP === 0) {
+          pI[j] = 0
+        } else {
+          pI[j] = pI[j] / sumP
+        }
+        if (pI[j] > 1e-7) H -= pI[j] * Math.log(pI[j])
+      }
+      // const H = math.log(sumP) + betaI * math.multiply(dI, pI) / sumP
+      // pI = math.divide(pI, sumP)
       return [pI, H]
     }
 
     for (let i = 0; i < n; i++) {
-      let betamin = -math.Infinity
-      let betamax = math.Infinity
+      let betamin = -Infinity
+      let betamax = Infinity
       const dI = D[i]
       let Hdiff, pI
+      let numTries = 0
       do {
-        const pIAndH = getpIAndH(dI, beta[i])
+        numTries++
+        const pIAndH = getpIAndH(dI, beta[i], i)
         pI = pIAndH[0]
         let H = pIAndH[1]
         Hdiff = H - logU
 
         if (Hdiff > 0) {
           betamin = beta[i]
-          if (betamax === math.Infinity) {
+          if (betamax === Infinity) {
             beta[i] = beta[i] * 2
           } else {
             beta[i] = (beta[i] + betamax) / 2
           }
         } else {
           betamax = beta[i]
-          if (betamin === -math.Infinity) {
+          if (betamin === -Infinity) {
             beta[i] = beta[i] / 2
           } else {
             beta[i] = (beta[i] + betamin) / 2
           }
         }
-      } while (math.abs(Hdiff) > 1e-05)
+      } while (math.abs(Hdiff) > 1e-05 && numTries < 50)
       P[i] = pI
     }
     console.log('Sigma mean: ' + math.mean(math.sqrt(math.dotDivide(1, beta))))
     return P
   }
 
+  const debugGrad = function (grad, cost, y, p) {
+    var epsilon = 1e-5
+    for (var i = 0; i < math.size(grad)[0]; i++) {
+      for (var d = 0; d < math.size(grad)[1]; d++) {
+        var yold = y[i][d]
+
+        y[i][d] = yold + epsilon
+        const q0 = lowDimAffinities(y)
+        const cg0 = computeCost(p, q0)
+
+        y[i][d] = yold - epsilon
+        const q1 = lowDimAffinities(y)
+        const cg1 = computeCost(p, q1)
+
+        var analytic = grad[i][d]
+        var numerical = (cg0 - cg1) / (2 * epsilon)
+        if (analytic - numerical > 1e-5) {
+          console.log(i + ',' + d + ': gradcheck analytic: ' + analytic + ' vs. numerical: ' + numerical)
+        }
+        y[i][d] = yold
+      }
+    }
+  }
+
   const symmetrizeP = function (P) {
     P = math.add(P, math.transpose(P))
-    P = math.multiply(math.divide(P, math.sum(P)), 4)
+    P = math.divide(P, math.sum(P))
     return P
   }
 
   const numIterations = 10
+  //const x = [[1.0, 0.1, 0.2], [0.1, 1.0, 0.3], [0.2, 0.1, 1.0]]
   const x = data.vecs.splice(0, 100)
   const numSamples = x.length
   const D = xToD(x)
-  const pUnsymmetrized = DToP(D, 40)
+  const pUnsymmetrized = DToP(D, 30)
   const p = symmetrizeP(pUnsymmetrized)
   let y = sampleYs(numSamples)
   var ytMinus1, yTMinus2
@@ -133,11 +180,11 @@ const data = require('./wordvecs50dtop1000.json')
   for (let iteration = 0; iteration < numIterations; iteration++) {
     const q = lowDimAffinities(y)
     const cost = computeCost(p, q)
+    console.log('Cost: ' + cost)
     let grad = gradKL(p, q, y)
+    debugGrad(grad, cost, y, p)
     yTMinus2 = ytMinus1
     ytMinus1 = y
     y = updateY(grad, ytMinus1, yTMinus2)
-    console.log(cost)
   }
-  console.log(y)
 })()
