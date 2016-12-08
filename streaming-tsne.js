@@ -2,7 +2,9 @@ const math = require('mathjs')
 const gaussian = require('gaussian')
 const data = require('./wordvecs50dtop1000.json')
 
-;(function () {
+var tsne = tsne || {}
+
+;(function (global) {
   'use strict'
 
   var seed = 1
@@ -53,7 +55,7 @@ const data = require('./wordvecs50dtop1000.json')
   const updateY = function (grad, ytMinus1, ytMinus2) {
     const learningRate = 100
     const alpha = 0.5
-    const yT = math.add(math.add(ytMinus1, math.multiply(learningRate, grad)), math.multiply(alpha, math.subtract(ytMinus1, yTMinus2)))
+    const yT = math.add(math.add(ytMinus1, math.multiply(learningRate, grad)), math.multiply(alpha, math.subtract(ytMinus1, ytMinus2)))
     return yT
   }
 
@@ -167,24 +169,46 @@ const data = require('./wordvecs50dtop1000.json')
     return P
   }
 
-  const numIterations = 10
-  //const x = [[1.0, 0.1, 0.2], [0.1, 1.0, 0.3], [0.2, 0.1, 1.0]]
-  const x = data.vecs.splice(0, 100)
-  const numSamples = x.length
-  const D = xToD(x)
-  const pUnsymmetrized = DToP(D, 30)
-  const p = symmetrizeP(pUnsymmetrized)
-  let y = sampleYs(numSamples)
-  var ytMinus1, yTMinus2
-  ytMinus1 = yTMinus2 = y
-  for (let iteration = 0; iteration < numIterations; iteration++) {
-    const q = lowDimAffinities(y)
-    const cost = computeCost(p, q)
-    console.log('Cost: ' + cost)
-    let grad = gradKL(p, q, y)
-    debugGrad(grad, cost, y, p)
-    yTMinus2 = ytMinus1
-    ytMinus1 = y
-    y = updateY(grad, ytMinus1, yTMinus2)
+  let tsne = function (opt) {}
+
+  tsne.prototype = {
+    initData: function (data) {
+      const numSamples = data.length
+      const D = xToD(data)
+      const pUnsymmetrized = DToP(D, 30)
+      this.p = symmetrizeP(pUnsymmetrized)
+      this.y = sampleYs(numSamples)
+      this.ytMinus1 = this.y
+      this.ytMinus2 = this.y
+    },
+    step: function () {
+      const q = lowDimAffinities(this.y)
+      const cost = computeCost(this.p, q)
+      console.log('Cost: ' + cost)
+      let grad = gradKL(this.p, q, this.y)
+      debugGrad(grad, cost, this.y, this.p)
+      this.yTMinus2 = this.ytMinus1
+      this.ytMinus1 = this.y
+      this.y = updateY(grad, this.ytMinus1, this.yTMinus2)
+    }
   }
-})()
+
+  global.tsne = tsne
+})(tsne)
+
+// export the library to window, or to module in nodejs
+;(function (lib) {
+  'use strict'
+  if (typeof module === 'undefined' || typeof module.exports === 'undefined') {
+    window.tsne = lib // in ordinary browser attach library to window
+  } else {
+    module.exports = lib // in nodejs
+  }
+})(tsne)
+
+var T = new tsne.tsne()
+T.initData(data.vecs.splice(0, 100))
+for (let i = 0; i < 10; i++) {
+  T.step()
+}
+console.log(T.y)
