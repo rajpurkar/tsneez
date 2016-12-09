@@ -19,22 +19,6 @@ var tsne = tsne || {}
     return x - Math.floor(x)
   }
 
-  const profileTime = {}
-  const profileCount = {}
-  const profile = function (name, fn) {
-    const tic = performance.now()
-    const result = fn()
-    const toc = performance.now()
-    const elapsed = Math.round(toc - tic)
-    if (!profileCount.hasOwnProperty(name)) {
-      profileCount[name] = 0
-      profileTime[name] = 0
-    }
-    profileCount[name]++
-    profileTime[name] += (elapsed - profileTime[name]) / profileCount[name]
-    console.log(name + ': ' + elapsed + 'ms' + ', avg ' + Math.round(profileTime[name]) + 'ms')
-    return result
-  }
 
   const initialY = function (numSamples) {
     // FIXME: allow arbitrary dimensions??
@@ -50,7 +34,7 @@ var tsne = tsne || {}
   const computeKL = function (P, Q) {
     // Compute KL divergence, minus the constant term of sum(p_ij * log(p_ij))
     const n = P.shape[0]
-    let cost = 0
+    var cost = 0
     for (let i = 0; i < n; i++) {
       for (let j = 0; j < n; j++) {
         cost -= P.get(i, j) * Math.log(Q.get(i, j))
@@ -62,10 +46,10 @@ var tsne = tsne || {}
   const euclideanDistance = function (x, y) {
     // Compute Euclidean distance between two vectors as Arrays
     const m = x.length
-    let d = 0
+    var d = 0
     for (let k = 0; k < m; k++) {
-      let xk = x[k]
-      let yk = y[k]
+      const xk = x[k]
+      const yk = y[k]
       d += (xk - yk) * (xk - yk)
     }
     return d
@@ -111,8 +95,8 @@ var tsne = tsne || {}
     }
 
     // Compute entropy H
-    let H = 0
-    for (var j = 0; j < n; j++) {
+    var H = 0
+    for (let j = 0; j < n; j++) {
       const Pji = Pi.get(j)
       // Skip small values to avoid NaNs or exploding values
       if (Pji > 1e-7) {
@@ -195,6 +179,24 @@ var tsne = tsne || {}
   let TSNE = function (opt) {}
 
   TSNE.prototype = {
+    profileRecord: {},
+    profileStart: function (name) {
+      if (!this.profileRecord.hasOwnProperty(name)) {
+        this.profileRecord[name] = {
+          count: 0,
+          time: 0,
+        }
+      }
+      this.profileRecord[name].tic = performance.now()
+    },
+    profileEnd: function(name) {
+      const toc = performance.now()
+      const record = this.profileRecord[name]
+      const elapsed = Math.round(toc - record.tic)
+      record.count++
+      record.time += (elapsed - record.time) / record.count
+      console.log(name + ': ' + elapsed + 'ms' + ', avg ' + Math.round(record.time) + 'ms')
+    },
     updateY: function () {
       // Perform gradient update in place
       const alpha = this.iter < 250 ? 0.5 : 0.8
@@ -267,9 +269,9 @@ var tsne = tsne || {}
       const n = this.Y.shape[0]
       const dims = this.Y.shape[1]
       const epsilon = 1e-5
-      for (var i = 0; i < n; i++) {
-        for (var d = 0; d < dims; d++) {
-          var yold = this.Y.get(i, d)
+      for (let i = 0; i < n; i++) {
+        for (let d = 0; d < dims; d++) {
+          const yold = this.Y.get(i, d)
 
           this.Y.set(i, d, yold + epsilon)
           this.updateQ()
@@ -292,43 +294,48 @@ var tsne = tsne || {}
     },
 
     updateGrad: function () {
-      profile('updateQ', () => {
-        this.updateQ()
-      })
+      this.profileStart('updateQ')
+      this.updateQ()
+      this.profileEnd('updateQ')
 
       // Early exaggeration
       const exag = this.iter < 100 ? 4 : 1
 
-      let KL = 0
-      profile('computeGrad', () => {
-        // Compute gradient of the KL divergence
-        const n = this.Y.shape[0]
-        const dims = this.Y.shape[1]
-        let gradi = [0, 0]  // FIXME: 2D only
-        for (let i = 0; i < n; i++) {
-          // Reset
-          gradi[0] = gradi[1] = 0  // FIXME: 2D only
+      this.profileStart('computeGrad')
 
-          // Accumulate gradient over j
-          for (let j = 0; j < n; j++) {
-            const Pij = this.P.get(i, j)
-            const Qij = this.Q.get(i, j)
+      var KL = 0
+      // Compute gradient of the KL divergence
+      const n = this.Y.shape[0]
+      const dims = this.Y.shape[1]
+      var gradi = [0, 0]  // FIXME: 2D only
+      for (let i = 0; i < n; i++) {
+        // Reset
+        // FIXME: 2D only
+        gradi[0] = 0
+        gradi[1] = 0
 
-            // Accumulate KL divergence
-            KL -= Pij * Math.log(Qij)
+        // Accumulate gradient over j
+        for (let j = 0; j < n; j++) {
+          const Pij = this.P.get(i, j)
+          const Qij = this.Q.get(i, j)
 
-            const mulFactor = 4 * (exag * Pij - Qij) * this.Qu.get(i, j)
-            // Unfurled loop, but 2D only
-            gradi[0] += mulFactor * (this.Y.get(i, 0) - this.Y.get(j, 0))
-            gradi[1] += mulFactor * (this.Y.get(i, 1) - this.Y.get(j, 1))
-          }
+          // Accumulate KL divergence
+          KL -= Pij * Math.log(Qij)
 
-          // Set gradient
-          for (let d = 0; d < dims; d++) {
-            this.grad.set(i, d, gradi[d])
-          }
+          const mulFactor = 4 * (exag * Pij - Qij) * this.Qu.get(i, j)
+          // Unfurled loop, but 2D only
+          gradi[0] += mulFactor * (this.Y.get(i, 0) - this.Y.get(j, 0))
+          gradi[1] += mulFactor * (this.Y.get(i, 1) - this.Y.get(j, 1))
         }
-      })
+
+        // Set gradient
+        for (let d = 0; d < dims; d++) {
+          this.grad.set(i, d, gradi[d])
+        }
+      }
+
+      this.profileEnd('computeGrad')
+
       return KL
     },
 
@@ -362,9 +369,9 @@ var tsne = tsne || {}
       this.Y = temp
 
       // Perform update
-      profile('updateY', () => {
-        this.updateY()
-      })
+      this.profileStart('updateY')
+      this.updateY()
+      this.profileEnd('updateY')
 
       this.iter++
       return cost
