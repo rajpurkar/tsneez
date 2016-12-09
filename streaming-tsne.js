@@ -108,7 +108,6 @@ var tsne = tsne || {}
 
   const getpIAndH = function (Pi, Di, beta, i) {
     // Compute a single row Pi of the kernel and the Shannon entropy H
-    // FIXME: can reuse this array for subsequent calls
     const m = Di.shape[0]
     ops.muls(Pi, Di, -beta)  // scalar multiply by -beta, store in Pi
     ops.expeq(Pi)             // exponentiate Pi in place

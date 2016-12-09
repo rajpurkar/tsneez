@@ -73,21 +73,32 @@ function step() {
 
 $(window).load(function() {
   $.getJSON( "wordvecs50dtop1000.json", function( j ) {
+    let tic, toc
     data = j;
     data.words = data.words.splice(0, 100);
     data.vecs = data.vecs.splice(0, 100);
+
+    tic = performance.now()
     T.initData(data.vecs); // init embedding  WITH SUBSET
+    toc = performance.now()
+    console.log('streaming:', toc - tic)
 
     // compare with karpathy's tSNE
-    Tkarpathy = tsnejs.tSNE();
+    let Tkarpathy = new tsnejs.tSNE();
+    console.log(Tkarpathy);
+    tic = performance.now()
     Tkarpathy.initDataRaw(data.vecs);
+    toc = performance.now()
+    console.log('karpathy:', toc - tic)
 
-    const n = Tkarpathy.P.length;
-    // for (let i = 0; i < n; i++)
-    // Tkarpathy.P
-
-
-    console.log(T.p)
+    const n = Math.sqrt(Tkarpathy.P.length);
+    for (let i = 0; i < n; i++) {
+      for (let j = i + 1; j < n; j++) {
+        if (Math.abs(Tkarpathy.P[i*n+j] - T.p.get(i, j)) > 1e-5) {
+          console.log('bad', Tkarpathy.P[i*n+j], T.p.get(i, j))
+        }
+      }
+    }
     //drawEmbedding(); // draw initial embedding
     //setInterval(step, 0);
     //step();
