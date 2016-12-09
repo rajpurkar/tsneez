@@ -64,32 +64,43 @@ var tsne = tsne || {}
     return [Q, Qu]
   }
 
-  const gradKL = function (P, Y, iter) {
-    // Compute gradient.
-    // FIXME: Currently up to the client to free the grad buffer.
+  const gradKL = function (grad, P, Y, iter) {
     const [Q, Qu] = lowDimAffinities(Y)
-    const cost = computeCost(P, Q)
-    console.log('Cost: ' + cost)
 
     // Early exaggeration
     const exag = iter < 100 ? 4 : 1;
+
+    // Compute gradient of the KL divergence
     const n = Y.shape[0]
     const dims = Y.shape[1]
-    const grad = pool.zeros(Y.shape)
+    let KL = 0
+    let gradi = [0, 0]  // FIXME: 2D only
     for (let i = 0; i < n; i++) {
+      // Reset
+      gradi[0] = gradi[1] = 0  // FIXME: 2D only
+
+      // Accumulate gradient over j
       for (let j = 0; j < n; j++) {
+
+        // Accumulate KL divergence
+        KL -= P.get(i, j) * Math.log(Q.get(i, j))
+
         const mulFactor = 4 * (exag * P.get(i, j) - Q.get(i, j)) * Qu.get(i, j)
         for (let d = 0; d < dims; d++) {
-          grad.set(i, d, grad.get(i, d) + mulFactor * (Y.get(i, d) - Y.get(j, d)))
+          gradi[d] += mulFactor * (Y.get(i, d) - Y.get(j, d))
         }
+      }
+      // Set gradient
+      for (let d = 0; d < dims; d++) {
+        grad.set(i, d, gradi[d])
       }
     }
     pool.free(Q)
     pool.free(Qu)
-    return grad
+    return KL
   }
 
-  const computeCost = function (P, Q) {
+  const computeKL = function (P, Q) {
     // Compute KL divergence, minus the constant term of sum(p_ij * log(p_ij))
     const n = P.shape[0]
     let cost = 0
@@ -245,13 +256,13 @@ var tsne = tsne || {}
 
         Y.set(i, d, yold + epsilon)
         const [q0, qu0] = lowDimAffinities(Y)
-        const cg0 = computeCost(p, q0)
+        const cg0 = computeKL(p, q0)
         pool.free(q0)
         pool.free(qu0)
 
         Y.set(i, d, yold - epsilon)
         const [q1, qu1] = lowDimAffinities(Y)
-        const cg1 = computeCost(p, q1)
+        const cg1 = computeKL(p, q1)
         pool.free(q1)
         pool.free(qu1)
 
@@ -272,7 +283,7 @@ var tsne = tsne || {}
   let TSNE = function (opt) {}
 
   TSNE.prototype = {
-    updateY: function (grad) {
+    updateY: function () {
       // Perform gradient update in place
       const alpha = this.iter < 250 ? 0.5 : 0.8
       const n = this.Y.shape[0]
@@ -280,7 +291,7 @@ var tsne = tsne || {}
       let Ymean = [0, 0]  // FIXME: only two dimensional
       for (let i = 0; i < n; i++) {
         for (let d = 0; d < dims; d++) {
-          const gradid = grad.get(i, d)
+          const gradid = this.grad.get(i, d)
           const stepid = this.ytMinus1.get(i, d) - this.ytMinus2.get(i, d)
           const gainid = this.Ygains.get(i, d)
 
@@ -319,20 +330,21 @@ var tsne = tsne || {}
       this.Ygains = pool.ones(this.Y.shape)
       this.iter = 0
       this.learningRate = 10
+      this.grad = pool.zeros(this.Y.shape)
     },
 
     step: function () {
-      let grad = gradKL(this.p, this.Y, this.iter)
-      if (this.iter == 10) {
-        checkGrad(grad, cost, this.Y, this.p)
-      }
+      const cost = gradKL(this.grad, this.p, this.Y, this.iter)
+      // if (this.iter == 10) {
+      //   checkGrad(grad, cost, this.Y, this.p)
+      // }
       const temp = this.ytMinus2
       this.ytMinus2 = this.ytMinus1
       this.ytMinus1 = this.Y
       this.Y = temp  // recycle buffer
-      this.updateY(grad)
-      pool.free(grad)
+      this.updateY()
       this.iter++
+      return cost
     },
   }
 

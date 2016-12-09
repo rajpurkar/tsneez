@@ -1,7 +1,8 @@
 # TODO
 
- - Debug tSNE (definitely doesn't look right)
  - Implement (some version of) A-tSNE
  - Refactor interface to allow streaming input
  - Experiment with float sizes
- - Combine loops instead of using ndarray-ops (or use cwise?)
+ - Try combining loops instead of using ndarray-ops
+ - Try different gradient descent methods
+ - Reuse arrays liberally
