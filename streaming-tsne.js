@@ -1,6 +1,6 @@
 const math = require('mathjs')
 const gaussian = require('gaussian')
-const data = require('./wordvecs50dtop1000.json')
+const data = require('json-loader!./wordvecs50dtop1000.json')
 
 var tsne = tsne || {}
 
@@ -169,9 +169,9 @@ var tsne = tsne || {}
     return P
   }
 
-  let tsne = function (opt) {}
+  let TSNE = function (opt) {}
 
-  tsne.prototype = {
+  TSNE.prototype = {
     initData: function (data) {
       const numSamples = data.length
       const D = xToD(data)
@@ -186,29 +186,26 @@ var tsne = tsne || {}
       const cost = computeCost(this.p, q)
       console.log('Cost: ' + cost)
       let grad = gradKL(this.p, q, this.y)
-      debugGrad(grad, cost, this.y, this.p)
+      //debugGrad(grad, cost, this.y, this.p)
       this.yTMinus2 = this.ytMinus1
       this.ytMinus1 = this.y
       this.y = updateY(grad, this.ytMinus1, this.yTMinus2)
     }
   }
 
-  global.tsne = tsne
+  global.TSNE = TSNE
 })(tsne)
 
 // export the library to window, or to module in nodejs
+// Webpack supports both.
 ;(function (lib) {
   'use strict'
-  if (typeof module === 'undefined' || typeof module.exports === 'undefined') {
-    window.tsne = lib // in ordinary browser attach library to window
-  } else {
+  if (typeof module !== 'undefined' && typeof module.exports === 'undefined') {
     module.exports = lib // in nodejs
+  }
+  if (typeof window !== 'undefined') {
+    window.tsne = lib // in ordinary browser attach library to window
   }
 })(tsne)
 
-var T = new tsne.tsne()
-T.initData(data.vecs.splice(0, 100))
-for (let i = 0; i < 10; i++) {
-  T.step()
-}
-console.log(T.y)
+

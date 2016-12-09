@@ -1,0 +1,87 @@
+<html>
+    <body>
+
+      <div id="embed"></div>
+      <div id="cost" style="text-align:left; font-family: Impact;"></div>
+
+      <script src="https://code.jquery.com/jquery-1.12.4.min.js"
+              integrity="sha256-ZosEbRLbNQzLpnKIkEdrPv7lOy9C27hHQ+Xp8a4MxAQ="
+              crossorigin="anonymous"></script>
+      <script src="https://cdnjs.cloudflare.com/ajax/libs/d3/3.5.17/d3.min.js" integrity="sha256-dsOXGNHAo/syFnazt+KTBsCQeRmlcW1XKL0bCK4Baec=" crossorigin="anonymous"></script>
+      <!--<script type="text/javascript" src="dist/streaming-tsne.js"></script>-->
+      <script type="text/javascript" src="streaming-tsne.js"></script>
+      <script type="text/javascript">
+
+var T = new tsne.TSNE(); // create a tSNE instance
+
+var data;
+
+function updateEmbedding() {
+  var Y = T.y;
+  svg.selectAll('.u')
+    .data(data.words)
+    .attr("transform", function(d, i) { return "translate(" +
+                                          ((Y[i][0]*20*ss + tx) + 400) + "," +
+                                          ((Y[i][1]*20*ss + ty) + 400) + ")"; });
+}
+
+var svg;
+function drawEmbedding() {
+    $("#embed").empty();
+    var div = d3.select("#embed");
+
+    // get min and max in each column of Y
+    var Y = T.y;
+
+    svg = div.append("svg") // svg is global
+    .attr("width", 800)
+    .attr("height", 800);
+
+    var g = svg.selectAll(".b")
+      .data(data.words)
+      .enter().append("g")
+      .attr("class", "u");
+
+    g.append("text")
+      .attr("text-anchor", "top")
+      .attr("font-size", 12)
+      .attr("fill", "#333")
+      .text(function(d) { return d; });
+
+    var zoomListener = d3.behavior.zoom()
+      .scaleExtent([0.1, 10])
+      .center([0,0])
+      .on("zoom", zoomHandler);
+    zoomListener(svg);
+}
+
+var tx=0, ty=0;
+var ss=1;
+function zoomHandler() {
+  tx = d3.event.translate[0];
+  ty = d3.event.translate[1];
+  ss = d3.event.scale;
+}
+
+var stepnum = 0;
+function step() {
+  var cost = T.step();
+  $("#cost").html("iteration " + T.iter + ", cost: " + cost);
+  updateEmbedding();
+}
+
+$(window).load(function() {
+  $.getJSON( "wordvecs50dtop1000.json", function( j ) {
+    data = j;
+    data.words = data.words.splice(0, 100);
+    T.initData(data.vecs.splice(0, 100)); // init embedding  WITH SUBSET
+    drawEmbedding(); // draw initial embedding
+    setInterval(step, 0);
+    step();
+
+  });
+});
+
+        </script>
+    </body>
+</html>

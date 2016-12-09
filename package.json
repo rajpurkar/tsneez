@@ -4,12 +4,19 @@
   "description": "streaming t-sne implementation",
   "main": "streaming-tsne.js",
   "dependencies": {
+    "d3": "^4.4.0",
     "gaussian": "^1.1.0",
-    "mathjs": "^3.7.0"
+    "json-loader": "^0.5.4",
+    "mathjs": "^3.7.0",
+    "webpack-dev-server": "^1.16.2"
   },
-  "devDependencies": {},
+  "devDependencies": {
+    "webpack": "^1.14.0"
+  },
   "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1"
+    "test": "echo \"Error: no test specified\" && exit 1",
+    "make": "webpack --config webpack.config.js",
+    "dev": "webpack-dev-server --progress --colors"
   },
   "repository": {
     "type": "git",
