@@ -66,7 +66,7 @@ var tsne = tsne || {}
 
   const gradKL = function (P, Y, iter) {
     // Compute gradient.
-    // FIXME: Up to the client to free the grad buffer.
+    // FIXME: Currently up to the client to free the grad buffer.
     const [Q, Qu] = lowDimAffinities(Y)
     const cost = computeCost(P, Q)
     console.log('Cost: ' + cost)
@@ -75,45 +75,18 @@ var tsne = tsne || {}
     const exag = iter < 100 ? 4 : 1;
     const n = Y.shape[0]
     const dims = Y.shape[1]
-    let grad = pool.zeros(Y.shape)
+    const grad = pool.zeros(Y.shape)
     for (let i = 0; i < n; i++) {
       for (let j = 0; j < n; j++) {
         const mulFactor = 4 * (exag * P.get(i, j) - Q.get(i, j)) * Qu.get(i, j)
         for (let d = 0; d < dims; d++) {
-          grad.set(i, d, grad.get(i, d) + mulFactor * (Y.get(i, d), Y.get(j, d)))
+          grad.set(i, d, grad.get(i, d) + mulFactor * (Y.get(i, d) - Y.get(j, d)))
         }
       }
     }
     pool.free(Q)
     pool.free(Qu)
     return grad
-  }
-
-  let learningRate = 10
-
-  const updateY = function (Y, ytMinus1, ytMinus2, grad, iter) {
-    // Perform gradient update in place
-    const alpha = iter < 250 ? 0.5 : 0.8
-    const n = Y.shape[0]
-    const dims = Y.shape[1]
-    let Ymean = [0, 0]  // FIXME: only two dimensional
-    for (let i = 0; i < n; i++) {
-      for (let d = 0; d < dims; d++) {
-        const Yid = (ytMinus1.get(i, d) +
-               learningRate * grad.get(i, d) +
-               alpha * (ytMinus1.get(i, d) - ytMinus2.get(i, d)))
-        Y.set(i, d, Yid)
-        Ymean[d] += Yid
-      }
-    }
-
-    // Recenter
-    for (let i = 0; i < n; i++) {
-      for (let d = 0; d < dims; d++) {
-        Y.set(i, d, Y.get(i, d) - Ymean[d] / n)
-      }
-    }
-    learningRate *= 0.99
   }
 
   const computeCost = function (P, Q) {
@@ -294,26 +267,70 @@ var tsne = tsne || {}
     }
   }
 
+  function sign(x) { return x > 0 ? 1 : x < 0 ? -1 : 0; }
+
   let TSNE = function (opt) {}
 
   TSNE.prototype = {
+    updateY: function (grad) {
+      // Perform gradient update in place
+      const alpha = this.iter < 250 ? 0.5 : 0.8
+      const n = this.Y.shape[0]
+      const dims = this.Y.shape[1]
+      let Ymean = [0, 0]  // FIXME: only two dimensional
+      for (let i = 0; i < n; i++) {
+        for (let d = 0; d < dims; d++) {
+          const gradid = grad.get(i, d)
+          const stepid = this.ytMinus1.get(i, d) - this.ytMinus2.get(i, d)
+          const gainid = this.Ygains.get(i, d)
+
+          // Update gain
+          const newgain = Math.max(
+              sign(gradid) === sign(stepid) ? gainid * 0.8 : gainid + 0.2, 0.01)
+          this.Ygains.set(i, d, newgain)
+
+          // Update Y
+          const Yid = (this.ytMinus1.get(i, d)
+                       - this.learningRate * newgain * gradid
+                       + alpha * stepid)
+          this.Y.set(i, d, Yid)
+
+          // Accumulate mean for centering
+          Ymean[d] += Yid
+        }
+      }
+
+      // Recenter
+      for (let i = 0; i < n; i++) {
+        for (let d = 0; d < dims; d++) {
+          this.Y.set(i, d, this.Y.get(i, d) - Ymean[d] / n)
+        }
+      }
+      this.learningRate *= 0.99
+    },
+
     initData: function (data) {
       const numSamples = data.length
       const D = XToD(data)
       this.p = DToP(D, 30)
-      this.y = initialY(numSamples)
-      this.ytMinus1 = pool.clone(this.y)
-      this.ytMinus2 = pool.clone(this.y)
+      this.Y = initialY(numSamples)
+      this.ytMinus1 = pool.clone(this.Y)
+      this.ytMinus2 = pool.clone(this.Y)
+      this.Ygains = pool.ones(this.Y.shape)
       this.iter = 0
+      this.learningRate = 10
     },
+
     step: function () {
-      let grad = gradKL(this.p, this.y, this.iter)
-      //checkGrad(grad, cost, this.y, this.p)
+      let grad = gradKL(this.p, this.Y, this.iter)
+      if (this.iter == 10) {
+        checkGrad(grad, cost, this.Y, this.p)
+      }
       const temp = this.ytMinus2
       this.ytMinus2 = this.ytMinus1
-      this.ytMinus1 = this.y
-      this.y = temp  // recycle buffer
-      updateY(this.y, this.ytMinus1, this.ytMinus2, grad, this.iter)
+      this.ytMinus1 = this.Y
+      this.Y = temp  // recycle buffer
+      this.updateY(grad)
       pool.free(grad)
       this.iter++
     },

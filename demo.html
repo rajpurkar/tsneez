@@ -18,7 +18,7 @@ var T = new tsne.TSNE(); // create a tSNE instance
 var data;
 
 function updateEmbedding() {
-  var Y = T.y;
+  var Y = T.Y;
   svg.selectAll('.u')
     .data(data.words)
     .attr("transform", function(d, i) { return "translate(" +
@@ -32,7 +32,7 @@ function drawEmbedding() {
     var div = d3.select("#embed");
 
     // get min and max in each column of Y
-    var Y = T.y;
+    var Y = T.Y;
 
     svg = div.append("svg") // svg is global
     .attr("width", 800)
