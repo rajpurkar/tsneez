@@ -10,6 +10,10 @@ var tsne = tsne || {}
 ;(function (global) {
   'use strict'
 
+  const hasNaN = function (M) {
+    return !ndtest.equal(M, M)
+  }
+
   var seed = 1
   const tmpRandom = function () {
     const x = Math.sin(seed++) * 10000
@@ -17,65 +21,115 @@ var tsne = tsne || {}
   }
 
   const initialY = function (numSamples) {
+    // FIXME: allow arbitrary dimensions??
     const distribution = gaussian(0, 1e-4)
     const ys = pool.zeros([numSamples, 2])
     for (let i = 0; i < numSamples; i++) {
-      ys.set(i, 0, distribution.ppf(tmpRandom()))
-      ys.set(distribution.ppf(tmpRandom()))
+      ys.set(i, 0, distribution.ppf(Math.random()))
+      ys.set(i, 1, distribution.ppf(Math.random()))
     }
     return ys
   }
 
-  const lowDimAffinities = function (y) {
-    let q = math.zeros([y.length, y.length])
-    for (let i = 0; i < y.length; i++) {
-      for (let j = i + 1; j < y.length; j++) {
-        const diff = math.subtract(y[i], y[j])
-        const affinity = 1.0 / (1 + math.dot(diff, diff))
-        q[i][j] = q[j][i] = math.max(affinity, 1e-12)
-      }
-    }
-    q = math.divide(q, math.sum(q))
-    return q
-  }
-
-  const gradKL = function (p, q, y) {
-    let gradTot = math.zeros([y.length, y[0].length])
-    for (let i = 0; i < y.length; i++) {
-      for (let d = 0; d < y[0].length; d++) {
-        let acc = 0
-        for (let j = 0; j < y.length; j++) {
-          if (i === j) continue
-          let diff = y[i][d] - y[j][d]
-          let component = diff * (p[i][j] - q[i][j]) / (1 + (diff * diff))
-          acc += component
+  const lowDimAffinities = function (Y) {
+    // FIXME: Q and Qu need to be freed
+    const n = Y.shape[0]
+    const dims = Y.shape[1]
+    const Qu = pool.zeros([n, n])
+    let qtotal = 0
+    for (let i = 0; i < n; i++) {
+      for (let j = i + 1; j < n; j++) {
+        let dist = 0
+        for (let d = 0; d < dims; d++) {
+          const diff = Y.get(i, d) - Y.get(j, d)
+          dist += diff * diff
         }
-        gradTot[i][d] = 4 * acc
+        const affinity = 1. / (1. + dist)
+        Qu.set(i, j, affinity)
+        Qu.set(j, i, affinity)
+        qtotal += 2 * affinity
       }
     }
-    return gradTot
+    const Q = pool.zeros([n, n])
+    for (let i = 0; i < n; i++) {
+      for (let j = i + 1; j < n; j++) {
+        const Qij = Math.max(Qu.get(i, j) / qtotal, 1e-100)
+        Q.set(i, j, Qij)
+        Q.set(j, i, Qij)
+      }
+    }
+    for (let i = 0; i < n; i++) {
+      Q.set(i, i, 1e-100)
+    }
+    return [Q, Qu]
   }
 
-  const updateY = function (grad, ytMinus1, ytMinus2) {
-    const learningRate = 100
-    const alpha = 0.5
-    const yT = math.add(math.add(ytMinus1, math.multiply(learningRate, grad)), math.multiply(alpha, math.subtract(ytMinus1, ytMinus2)))
-    return yT
+  const gradKL = function (P, Y, iter) {
+    // Compute gradient.
+    // FIXME: Up to the client to free the grad buffer.
+    const [Q, Qu] = lowDimAffinities(Y)
+    const cost = computeCost(P, Q)
+    console.log('Cost: ' + cost)
+
+    // Early exaggeration
+    const exag = iter < 100 ? 4 : 1;
+    const n = Y.shape[0]
+    const dims = Y.shape[1]
+    let grad = pool.zeros(Y.shape)
+    for (let i = 0; i < n; i++) {
+      for (let j = 0; j < n; j++) {
+        const mulFactor = 4 * (exag * P.get(i, j) - Q.get(i, j)) * Qu.get(i, j)
+        for (let d = 0; d < dims; d++) {
+          grad.set(i, d, grad.get(i, d) + mulFactor * (Y.get(i, d), Y.get(j, d)))
+        }
+      }
+    }
+    pool.free(Q)
+    pool.free(Qu)
+    return grad
   }
 
-  const computeCost = function (p, q) {
-    var cost = 0
-    for (var i = 0; i < math.size(p)[0]; i++) {
-      for (var j = 0; j < math.size(p)[0]; j++) {
-        if (i === j) continue
-        cost += p[i][j] * Math.log(p[i][j] / q[i][j])
+  let learningRate = 10
+
+  const updateY = function (Y, ytMinus1, ytMinus2, grad, iter) {
+    // Perform gradient update in place
+    const alpha = iter < 250 ? 0.5 : 0.8
+    const n = Y.shape[0]
+    const dims = Y.shape[1]
+    let Ymean = [0, 0]  // FIXME: only two dimensional
+    for (let i = 0; i < n; i++) {
+      for (let d = 0; d < dims; d++) {
+        const Yid = (ytMinus1.get(i, d) +
+               learningRate * grad.get(i, d) +
+               alpha * (ytMinus1.get(i, d) - ytMinus2.get(i, d)))
+        Y.set(i, d, Yid)
+        Ymean[d] += Yid
+      }
+    }
+
+    // Recenter
+    for (let i = 0; i < n; i++) {
+      for (let d = 0; d < dims; d++) {
+        Y.set(i, d, Y.get(i, d) - Ymean[d] / n)
+      }
+    }
+    learningRate *= 0.99
+  }
+
+  const computeCost = function (P, Q) {
+    // Compute KL divergence, minus the constant term of sum(p_ij * log(p_ij))
+    const n = P.shape[0]
+    let cost = 0
+    for (let i = 0; i < n; i++) {
+      for (let j = 0; j < n; j++) {
+        cost -= P.get(i, j) * Math.log(Q.get(i, j))
       }
     }
     return cost
   }
 
   const euclideanDistance = function (x, y) {
-    // Compute Euclidean distance
+    // Compute Euclidean distance between two vectors as Arrays
     const m = x.length
     let d = 0
     for (let k = 0; k < m; k++) {
@@ -108,8 +162,12 @@ var tsne = tsne || {}
 
   const getpIAndH = function (Pi, Di, beta, i) {
     // Compute a single row Pi of the kernel and the Shannon entropy H
-    const m = Di.shape[0]
-    ops.muls(Pi, Di, -beta)  // scalar multiply by -beta, store in Pi
+    const n = Di.shape[0]
+    //for (let j = 0; j < n; j++) {
+    //  Pi.set(j, Math.exp(- beta * Di))
+    //}
+
+    ops.muls(Pi, Di, -beta)   // scalar multiply by -beta, store in Pi
     ops.expeq(Pi)             // exponentiate Pi in place
     Pi.set(i, 0)              // affinity is zero between the same point
 
@@ -122,9 +180,8 @@ var tsne = tsne || {}
     }
 
     // Compute entropy H
-    // FIXME: this can be vectorized too, but maybe slower
     let H = 0
-    for (var j = 0; j < m; j++) {
+    for (var j = 0; j < n; j++) {
       const Pji = Pi.get(j)
       // Skip small values to avoid NaNs or exploding values
       if (Pji > 1e-7) {
@@ -141,8 +198,13 @@ var tsne = tsne || {}
     // p_ij = ---------------
     //              2n
     const n = P.shape[0]
-    ops.addeq(P, P.transpose(1, 0))
-    ops.divseq(P, 2 * n)
+    for (let i = 0; i < n; i++) {
+      for (let j = i + 1; j < n; j++) {
+        const Pij = (P.get(i, j) + P.get(j, i)) / (2 * n)
+        P.set(i, j, Pij)
+        P.set(j, i, Pij)
+      }
+    }
   }
 
   const DToP = function (D, perplexity) {
@@ -200,26 +262,34 @@ var tsne = tsne || {}
     return P
   }
 
-  const debugGrad = function (grad, cost, y, p) {
-    var epsilon = 1e-5
-    for (var i = 0; i < math.size(grad)[0]; i++) {
-      for (var d = 0; d < math.size(grad)[1]; d++) {
-        var yold = y[i][d]
+  const checkGrad = function (grad, cost, Y, p) {
+    const n = Y.shape[0]
+    const dims = Y.shape[1]
+    const epsilon = 1e-5
+    for (var i = 0; i < n; i++) {
+      for (var d = 0; d < dims; d++) {
+        var yold = Y.get(i, d)
 
-        y[i][d] = yold + epsilon
-        const q0 = lowDimAffinities(y)
+        Y.set(i, d, yold + epsilon)
+        const [q0, qu0] = lowDimAffinities(Y)
         const cg0 = computeCost(p, q0)
+        pool.free(q0)
+        pool.free(qu0)
 
-        y[i][d] = yold - epsilon
-        const q1 = lowDimAffinities(y)
+        Y.set(i, d, yold - epsilon)
+        const [q1, qu1] = lowDimAffinities(Y)
         const cg1 = computeCost(p, q1)
+        pool.free(q1)
+        pool.free(qu1)
 
-        var analytic = grad[i][d]
+        var analytic = grad.get(i, d)
         var numerical = (cg0 - cg1) / (2 * epsilon)
         if (analytic - numerical > 1e-5) {
-          console.log(i + ',' + d + ': gradcheck analytic: ' + analytic + ' vs. numerical: ' + numerical)
+          console.error(i + ',' + d + ': analytic: ' + analytic + ' vs. numerical: ' + numerical)
+        } else {
+          console.log(i + ',' + d + ': analytic: ' + analytic + ' vs. numerical: ' + numerical)
         }
-        y[i][d] = yold
+        Y.set(i, d, yold)
       }
     }
   }
@@ -232,19 +302,21 @@ var tsne = tsne || {}
       const D = XToD(data)
       this.p = DToP(D, 30)
       this.y = initialY(numSamples)
-      this.ytMinus1 = this.y
-      this.ytMinus2 = this.y
+      this.ytMinus1 = pool.clone(this.y)
+      this.ytMinus2 = pool.clone(this.y)
+      this.iter = 0
     },
     step: function () {
-      const q = lowDimAffinities(this.y)
-      const cost = computeCost(this.p, q)
-      console.log('Cost: ' + cost)
-      let grad = gradKL(this.p, q, this.y)
-      // debugGrad(grad, cost, this.y, this.p)
-      this.yTMinus2 = this.ytMinus1
+      let grad = gradKL(this.p, this.y, this.iter)
+      //checkGrad(grad, cost, this.y, this.p)
+      const temp = this.ytMinus2
+      this.ytMinus2 = this.ytMinus1
       this.ytMinus1 = this.y
-      this.y = updateY(grad, this.ytMinus1, this.yTMinus2)
-    }
+      this.y = temp  // recycle buffer
+      updateY(this.y, this.ytMinus1, this.ytMinus2, grad, this.iter)
+      pool.free(grad)
+      this.iter++
+    },
   }
 
   global.TSNE = TSNE

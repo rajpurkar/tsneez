@@ -4,6 +4,7 @@
   "description": "streaming t-sne implementation",
   "main": "streaming-tsne.js",
   "dependencies": {
+    "cwise": "^1.0.9",
     "d3": "^4.4.0",
     "gaussian": "^1.1.0",
     "json-loader": "^0.5.4",

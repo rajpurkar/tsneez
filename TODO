@@ -1,7 +1,7 @@
 # TODO
 
  - Debug tSNE (definitely doesn't look right)
- - Use typed arrays, or a suitable math library (scijs/ndarray, toji/gl-matrix?)
  - Implement (some version of) A-tSNE
  - Refactor interface to allow streaming input
  - Experiment with float sizes
+ - Combine loops instead of using ndarray-ops (or use cwise?)
