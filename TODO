@@ -1,0 +1,6 @@
+# TODO
+
+ - Debug tSNE (definitely doesn't look right)
+ - Use typed arrays, or a suitable math library (scijs/ndarray, toji/gl-matrix?)
+ - Implement (some version of) A-tSNE
+ - Refactor interface to allow streaming input
