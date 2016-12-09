@@ -1,6 +1,7 @@
 # TODO
 
  - Why is this so much slower than Karpathy's?
+ - Profile code in Chrome debugger
  - Implement (some version of) A-tSNE
  - Refactor interface to allow streaming input
  - Try different gradient descent methods
