@@ -318,9 +318,9 @@ var tsne = tsne || {}
             KL -= Pij * Math.log(Qij)
 
             const mulFactor = 4 * (exag * Pij - Qij) * this.Qu.get(i, j)
-            for (let d = 0; d < dims; d++) {
-              gradi[d] += mulFactor * (this.Y.get(i, d) - this.Y.get(j, d))
-            }
+            // Unfurled loop, but 2D only
+            gradi[0] += mulFactor * (this.Y.get(i, 0) - this.Y.get(j, 0))
+            gradi[1] += mulFactor * (this.Y.get(i, 1) - this.Y.get(j, 1))
           }
 
           // Set gradient
