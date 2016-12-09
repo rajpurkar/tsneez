@@ -1,4 +1,3 @@
-const math = require('mathjs')
 const gaussian = require('gaussian')
 const ndarray = require('ndarray')
 const pool = require('ndarray-scratch')
@@ -184,13 +183,9 @@ var tsne = tsne || {}
         }
       } while (Math.abs(Hdiff) > 1e-05 && numTries < 50)
     }
-    // console.log('Sigma mean: ' + math.mean(math.sqrt(math.dotDivide(1, beta))))
-    //
-    // console.log('nan?', !ndtest.equal(P, P))
 
     // Symmetrize conditional distribution
     symmetrize(P)
-    // console.log('nan symmetrized?', !ndtest.equal(P, P))
     return P
   }
 
@@ -234,7 +229,6 @@ var tsne = tsne || {}
           this.Y.set(i, d, this.Y.get(i, d) - Ymean[d] / n)
         }
       }
-      this.learningRate *= 0.99
     },
 
     updateQ: function () {
