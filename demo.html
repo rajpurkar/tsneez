@@ -65,9 +65,11 @@ function zoomHandler() {
 }
 
 var stepnum = 0;
+var tic = performance.now()
 function step() {
   var cost = T.step();
-  $("#cost").html("iteration " + T.iter + ", cost: " + cost);
+  var fps = Math.round((T.iter / (performance.now() - tic)) * 1000);
+  $("#cost").html("iteration " + T.iter + ", fps: " + fps + ", cost: " + cost);
   updateEmbedding();
 }
 

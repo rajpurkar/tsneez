@@ -294,14 +294,12 @@ var tsne = tsne || {}
     },
 
     updateGrad: function () {
-      this.profileStart('updateQ')
+      // Compute low dimensional affinities
       this.updateQ()
-      this.profileEnd('updateQ')
 
       // Early exaggeration
       const exag = this.iter < 100 ? 4 : 1
 
-      this.profileStart('computeGrad')
 
       var KL = 0
       // Compute gradient of the KL divergence
@@ -334,7 +332,6 @@ var tsne = tsne || {}
         }
       }
 
-      this.profileEnd('computeGrad')
 
       return KL
     },
@@ -369,9 +366,7 @@ var tsne = tsne || {}
       this.Y = temp
 
       // Perform update
-      this.profileStart('updateY')
       this.updateY()
-      this.profileEnd('updateY')
 
       this.iter++
       return cost
