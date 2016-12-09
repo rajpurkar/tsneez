@@ -8,6 +8,9 @@
     "gaussian": "^1.1.0",
     "json-loader": "^0.5.4",
     "mathjs": "^3.7.0",
+    "ndarray": "^1.0.18",
+    "ndarray-ops": "^1.2.2",
+    "ndarray-scratch": "^1.2.0",
     "webpack-dev-server": "^1.16.2"
   },
   "devDependencies": {

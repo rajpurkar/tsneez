@@ -5,10 +5,5 @@ module.exports = {
   output: {
     path: path.resolve(__dirname, 'dist'),
     filename: 'streaming-tsne.js'
-  },
-  module: {
-    rules: [
-      {test: /\.json$/, use: 'json-loader'}
-    ]
   }
 };

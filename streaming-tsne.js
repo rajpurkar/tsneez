@@ -1,6 +1,9 @@
 const math = require('mathjs')
 const gaussian = require('gaussian')
-const data = require('json-loader!./wordvecs50dtop1000.json')
+const ndarray = require('ndarray')
+const pool = require('ndarray-scratch')
+const ops = require("ndarray-ops")
+const ndtest = require('ndarray-tests');
 
 var tsne = tsne || {}
 
@@ -13,11 +16,12 @@ var tsne = tsne || {}
     return x - Math.floor(x)
   }
 
-  const sampleYs = function (numSamples) {
+  const initialY = function (numSamples) {
     const distribution = gaussian(0, 1e-4)
-    const ys = math.zeros([numSamples, 2])
+    const ys = pool.zeros([numSamples, 2])
     for (let i = 0; i < numSamples; i++) {
-      ys[i] = [distribution.ppf(tmpRandom()), distribution.ppf(tmpRandom())]
+      ys.set(i, 0, distribution.ppf(tmpRandom()))
+      ys.set(distribution.ppf(tmpRandom()))
     }
     return ys
   }
@@ -70,72 +74,130 @@ var tsne = tsne || {}
     return cost
   }
 
-  // Get Pairwise distances. Based on whole squared expansion (a - b)^2 = a^2 - 2ab + b^2, where a and b are rows of x.
-  const xToD = function (x) {
-    const xSquared = math.square(x)
-    const onesXX = math.ones([x[0].length, x.length])
-    const xSquaredMat = math.multiply(xSquared, onesXX)
-    const xIxJPairTerm = math.multiply(-2, math.multiply(x, math.transpose(x)))
-    const D = math.add(math.add(xIxJPairTerm, xSquaredMat), math.transpose(xSquaredMat))
+  const euclideanDistance = function (x, y) {
+    // Compute Euclidean distance
+    const m = x.length
+    let d = 0
+    for (let k = 0; k < m; k++) {
+      let xk = x[k]
+      let yk = y[k]
+      d += (xk - yk) * (xk - yk)
+    }
+    return d
+  }
+
+  // Compute pairwise Euclidean distances.
+  // NOT Based on whole squared expansion:
+  // (a - b)^2 = a^2 - 2ab + b^2, where a and b are rows of x.
+  // CURRENTLY brute force until we reach correctness and can optimize.
+  const XToD = function (X) {
+    // const n = X.shape[0]
+    // const m = X.shape[1]
+    // X is an array of arrays
+    const n = X.length
+    const D = pool.zeros([n, n])
+    for (let i = 0; i < n; i++) {
+      for (let j = 0; j < n; j++) {
+        const d = euclideanDistance(X[i], X[j])
+        D.set(i, j, d)
+        D.set(j, i, d)
+      }
+    }
     return D
   }
 
-  const DToP = function (D, perplexity) {
-    const n = math.size(D)[0]
-    const P = math.zeros([n, n])
-    const beta = math.ones([n])
-    const logU = math.log(perplexity)
+  const getpIAndH = function (Pi, Di, beta, i) {
+    // Compute a single row Pi of the kernel and the Shannon entropy H
+    // FIXME: can reuse this array for subsequent calls
+    const m = Di.shape[0]
+    ops.muls(Pi, Di, -beta)  // scalar multiply by -beta, store in Pi
+    ops.expeq(Pi)             // exponentiate Pi in place
+    Pi.set(i, 0)              // affinity is zero between the same point
 
-    var getpIAndH = function (dI, betaI, i) {
-      let pI = math.exp(math.multiply(-betaI, dI))
-      pI[i] = 0
-      const sumP = math.sum(pI)
-      let H = 0.0
-      for (var j = 0; j < math.size(dI)[0]; j++) {
-        if (sumP === 0) {
-          pI[j] = 0
-        } else {
-          pI[j] = pI[j] / sumP
-        }
-        if (pI[j] > 1e-7) H -= pI[j] * Math.log(pI[j])
-      }
-      // const H = math.log(sumP) + betaI * math.multiply(dI, pI) / sumP
-      // pI = math.divide(pI, sumP)
-      return [pI, H]
+    // Normalize
+    const sumPi = ops.sum(Pi)
+    if (sumPi === 0) {
+      ops.assigns(sumPi, 0)
+    } else {
+      ops.divseq(Pi, sumPi)
     }
 
+    // Compute entropy H
+    // FIXME: this can be vectorized too, but maybe slower
+    let H = 0
+    for (var j = 0; j < m; j++) {
+      const Pji = Pi.get(j)
+      // Skip small values to avoid NaNs or exploding values
+      if (Pji > 1e-7) {
+        H -= Pji * Math.log2(Pji)
+      }
+    }
+
+    return H
+  }
+
+  const symmetrize = function (P) {
+    // Symmetrize in place according to:
+    //         p_j|i + p_i|j
+    // p_ij = ---------------
+    //              2n
+    const n = P.shape[0]
+    ops.addeq(P, P.transpose(1, 0))
+    ops.divseq(P, 2 * n)
+  }
+
+  const DToP = function (D, perplexity) {
+    const n = D.shape[0]
+    const P = pool.zeros([n, n])
+
+    // Shannon entropy H is log2 of perplexity
+    const Hdesired = Math.log2(perplexity)
+
     for (let i = 0; i < n; i++) {
+      // We perform binary search to find the beta such that
+      // the conditional distribution P_i has the given perplexity.
+      // We define:
+      //   beta = 1 / (2 * sigma_i^2)
+      // where sigma_i is the bandwith of the Gaussian kernel
+      // for the conditional distribution P_i
+      let beta = 1
       let betamin = -Infinity
       let betamax = Infinity
-      const dI = D[i]
-      let Hdiff, pI
+      let Hdiff
       let numTries = 0
       do {
         numTries++
-        const pIAndH = getpIAndH(dI, beta[i], i)
-        pI = pIAndH[0]
-        let H = pIAndH[1]
-        Hdiff = H - logU
+        const Pi = P.pick(i, null)
+        const Di = D.pick(i, null)
+        const H = getpIAndH(Pi, Di, beta, i)
+        Hdiff = H - Hdesired
 
         if (Hdiff > 0) {
-          betamin = beta[i]
+          // Entropy too high, beta is too small
+          betamin = beta
           if (betamax === Infinity) {
-            beta[i] = beta[i] * 2
+            beta = beta * 2
           } else {
-            beta[i] = (beta[i] + betamax) / 2
+            beta = (beta + betamax) / 2
           }
         } else {
-          betamax = beta[i]
+          // Entropy is too low, beta is too big
+          betamax = beta
           if (betamin === -Infinity) {
-            beta[i] = beta[i] / 2
+            beta = beta / 2
           } else {
-            beta[i] = (beta[i] + betamin) / 2
+            beta = (beta + betamin) / 2
           }
         }
-      } while (math.abs(Hdiff) > 1e-05 && numTries < 50)
-      P[i] = pI
+      } while (Math.abs(Hdiff) > 1e-05 && numTries < 50)
     }
-    console.log('Sigma mean: ' + math.mean(math.sqrt(math.dotDivide(1, beta))))
+    // console.log('Sigma mean: ' + math.mean(math.sqrt(math.dotDivide(1, beta))))
+    //
+    // console.log('nan?', !ndtest.equal(P, P))
+
+    // Symmetrize conditional distribution
+    symmetrize(P)
+    // console.log('nan symmetrized?', !ndtest.equal(P, P))
     return P
   }
 
@@ -163,21 +225,14 @@ var tsne = tsne || {}
     }
   }
 
-  const symmetrizeP = function (P) {
-    P = math.add(P, math.transpose(P))
-    P = math.divide(P, math.sum(P))
-    return P
-  }
-
   let TSNE = function (opt) {}
 
   TSNE.prototype = {
     initData: function (data) {
       const numSamples = data.length
-      const D = xToD(data)
-      const pUnsymmetrized = DToP(D, 30)
-      this.p = symmetrizeP(pUnsymmetrized)
-      this.y = sampleYs(numSamples)
+      const D = XToD(data)
+      this.p = DToP(D, 30)
+      this.y = initialY(numSamples)
       this.ytMinus1 = this.y
       this.ytMinus2 = this.y
     },
@@ -186,7 +241,7 @@ var tsne = tsne || {}
       const cost = computeCost(this.p, q)
       console.log('Cost: ' + cost)
       let grad = gradKL(this.p, q, this.y)
-      //debugGrad(grad, cost, this.y, this.p)
+      // debugGrad(grad, cost, this.y, this.p)
       this.yTMinus2 = this.ytMinus1
       this.ytMinus1 = this.y
       this.y = updateY(grad, this.ytMinus1, this.yTMinus2)
@@ -207,5 +262,4 @@ var tsne = tsne || {}
     window.tsne = lib // in ordinary browser attach library to window
   }
 })(tsne)
-
 
