@@ -23,7 +23,7 @@ var tsne = tsne || {}
   const initialY = function (numSamples) {
     // FIXME: allow arbitrary dimensions??
     const distribution = gaussian(0, 1e-4)
-    const ys = pool.zeros([numSamples, 2], 'float32')
+    const ys = pool.zeros([numSamples, 2])
     for (let i = 0; i < numSamples; i++) {
       ys.set(i, 0, distribution.ppf(Math.random()))
       ys.set(i, 1, distribution.ppf(Math.random()))
@@ -64,7 +64,7 @@ var tsne = tsne || {}
     // const m = X.shape[1]
     // X is an array of arrays
     const n = X.length
-    const D = pool.zeros([n, n], 'float32')
+    const D = pool.zeros([n, n])
     for (let i = 0; i < n; i++) {
       for (let j = 0; j < n; j++) {
         const d = euclideanDistance(X[i], X[j])
@@ -124,7 +124,7 @@ var tsne = tsne || {}
 
   const DToP = function (D, perplexity) {
     const n = D.shape[0]
-    const P = pool.zeros([n, n], 'float32')
+    const P = pool.zeros([n, n])
 
     // Shannon entropy H is log2 of perplexity
     const Hdesired = Math.log2(perplexity)
@@ -177,37 +177,6 @@ var tsne = tsne || {}
     return P
   }
 
-  const checkGrad = function (grad, cost, Y, P) {
-    const n = Y.shape[0]
-    const dims = Y.shape[1]
-    const epsilon = 1e-5
-    for (var i = 0; i < n; i++) {
-      for (var d = 0; d < dims; d++) {
-        var yold = Y.get(i, d)
-
-        Y.set(i, d, yold + epsilon)
-        const [q0, qu0] = this.updateQ()
-        const cg0 = computeKL(P, q0)
-        pool.free(q0)
-        pool.free(qu0)
-
-        Y.set(i, d, yold - epsilon)
-        const [q1, qu1] = this.updateQ()
-        const cg1 = computeKL(P, q1)
-        pool.free(q1)
-        pool.free(qu1)
-
-        var analytic = grad.get(i, d)
-        var numerical = (cg0 - cg1) / (2 * epsilon)
-        if (analytic - numerical > 1e-5) {
-          console.error(i + ',' + d + ': analytic: ' + analytic + ' vs. numerical: ' + numerical)
-        } else {
-          console.log(i + ',' + d + ': analytic: ' + analytic + ' vs. numerical: ' + numerical)
-        }
-        Y.set(i, d, yold)
-      }
-    }
-  }
 
   function sign(x) { return x > 0 ? 1 : x < 0 ? -1 : 0; }
 
@@ -283,11 +252,39 @@ var tsne = tsne || {}
       }
     },
 
+    checkGrad: function () {
+      const n = this.Y.shape[0]
+      const dims = this.Y.shape[1]
+      const epsilon = 1e-5
+      for (var i = 0; i < n; i++) {
+        for (var d = 0; d < dims; d++) {
+          var yold = this.Y.get(i, d)
+
+          this.Y.set(i, d, yold + epsilon)
+          this.updateQ()
+          const cg0 = computeKL(this.P, this.Q)
+
+          this.Y.set(i, d, yold - epsilon)
+          this.updateQ()
+          const cg1 = computeKL(this.P, this.Q)
+
+          var analytic = this.grad.get(i, d)
+          var numerical = (cg0 - cg1) / (2 * epsilon)
+          if (analytic - numerical > 1e-5) {
+            console.error(i + ',' + d + ': analytic: ' + analytic + ' vs. numerical: ' + numerical)
+          } else {
+            console.log(i + ',' + d + ': analytic: ' + analytic + ' vs. numerical: ' + numerical)
+          }
+          this.Y.set(i, d, yold)
+        }
+      }
+    },
+
     updateGrad: function () {
       this.updateQ()
 
       // Early exaggeration
-      const exag = this.iter < 100 ? 4 : 1;
+      const exag = this.iter < 100 ? 4 : 1
 
       // Compute gradient of the KL divergence
       const n = this.Y.shape[0]
@@ -324,8 +321,8 @@ var tsne = tsne || {}
       this.P = DToP(D, 30)
       pool.free(D)
       this.Y = initialY(numSamples)
-      this.ytMinus1 = pool.clone(this.Y, 'float32')
-      this.ytMinus2 = pool.clone(this.Y, 'float32')
+      this.ytMinus1 = pool.clone(this.Y)
+      this.ytMinus2 = pool.clone(this.Y)
       this.Ygains = pool.ones(this.Y.shape)
       this.iter = 0
       this.learningRate = 10
@@ -335,9 +332,10 @@ var tsne = tsne || {}
     },
 
     step: function () {
+      const tic = performance.now()
       const cost = this.updateGrad()
-      // if (this.iter == 10) {
-      //   checkGrad(grad, cost, this.Y, this.P)
+      // if (this.iter > 100) {
+      //   this.checkGrad()
       // }
       const temp = this.ytMinus2
       this.ytMinus2 = this.ytMinus1
@@ -345,6 +343,8 @@ var tsne = tsne || {}
       this.Y = temp  // recycle buffer
       this.updateY()
       this.iter++
+      const toc = performance.now()
+      console.log('step: ' + (toc - tic) + 'ms')
       return cost
     },
   }
