@@ -1,8 +1,14 @@
 # TODO
 
+ - Why is this so much slower than Karpathy's?
  - Implement (some version of) A-tSNE
  - Refactor interface to allow streaming input
- - Experiment with float sizes
- - Try combining loops instead of using ndarray-ops
  - Try different gradient descent methods
+ - Refactor visualization to be more modular and support streaming
+
+
+## Done
+ - Try combining loops instead of using ndarray-ops (it's slower in getpIAndH)
+ - Experiment with float sizes (leads to NaNs)
  - Reuse arrays liberally
+ - Is ndarray using column major instead of row major format? (ndarray-scratch gives row-major)
