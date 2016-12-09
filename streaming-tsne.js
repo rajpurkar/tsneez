@@ -20,6 +20,23 @@ var tsne = tsne || {}
     return x - Math.floor(x)
   }
 
+  const profileTime = {}
+  const profileCount = {}
+  const profile = function (name, fn) {
+    const tic = performance.now()
+    const result = fn()
+    const toc = performance.now()
+    const elapsed = Math.round(toc - tic)
+    if (!profileCount.hasOwnProperty(name)) {
+      profileCount[name] = 0
+      profileTime[name] = 0
+    }
+    profileCount[name]++
+    profileTime[name] += (elapsed - profileTime[name]) / profileCount[name]
+    console.log(name + ': ' + elapsed + 'ms' + ', avg ' + Math.round(profileTime[name]) + 'ms')
+    return result
+  }
+
   const initialY = function (numSamples) {
     // FIXME: allow arbitrary dimensions??
     const distribution = gaussian(0, 1e-4)
@@ -281,37 +298,43 @@ var tsne = tsne || {}
     },
 
     updateGrad: function () {
-      this.updateQ()
+      profile('updateQ', () => {
+        this.updateQ()
+      })
 
       // Early exaggeration
       const exag = this.iter < 100 ? 4 : 1
 
-      // Compute gradient of the KL divergence
-      const n = this.Y.shape[0]
-      const dims = this.Y.shape[1]
       let KL = 0
-      let gradi = [0, 0]  // FIXME: 2D only
-      for (let i = 0; i < n; i++) {
-        // Reset
-        gradi[0] = gradi[1] = 0  // FIXME: 2D only
+      profile('computeGrad', () => {
+        // Compute gradient of the KL divergence
+        const n = this.Y.shape[0]
+        const dims = this.Y.shape[1]
+        let gradi = [0, 0]  // FIXME: 2D only
+        for (let i = 0; i < n; i++) {
+          // Reset
+          gradi[0] = gradi[1] = 0  // FIXME: 2D only
 
-        // Accumulate gradient over j
-        for (let j = 0; j < n; j++) {
+          // Accumulate gradient over j
+          for (let j = 0; j < n; j++) {
+            const Pij = this.P.get(i, j)
+            const Qij = this.Q.get(i, j)
 
-          // Accumulate KL divergence
-          KL -= this.P.get(i, j) * Math.log(this.Q.get(i, j))
+            // Accumulate KL divergence
+            KL -= Pij * Math.log(Qij)
 
-          const mulFactor = 4 * (exag * this.P.get(i, j) - this.Q.get(i, j)) * this.Qu.get(i, j)
+            const mulFactor = 4 * (exag * Pij - Qij) * this.Qu.get(i, j)
+            for (let d = 0; d < dims; d++) {
+              gradi[d] += mulFactor * (this.Y.get(i, d) - this.Y.get(j, d))
+            }
+          }
+
+          // Set gradient
           for (let d = 0; d < dims; d++) {
-            gradi[d] += mulFactor * (this.Y.get(i, d) - this.Y.get(j, d))
+            this.grad.set(i, d, gradi[d])
           }
         }
-
-        // Set gradient
-        for (let d = 0; d < dims; d++) {
-          this.grad.set(i, d, gradi[d])
-        }
-      }
+      })
       return KL
     },
 
@@ -332,19 +355,24 @@ var tsne = tsne || {}
     },
 
     step: function () {
-      const tic = performance.now()
+      // Compute gradient
       const cost = this.updateGrad()
       // if (this.iter > 100) {
       //   this.checkGrad()
       // }
+
+      // Rotate buffers
       const temp = this.ytMinus2
       this.ytMinus2 = this.ytMinus1
       this.ytMinus1 = this.Y
-      this.Y = temp  // recycle buffer
-      this.updateY()
+      this.Y = temp
+
+      // Perform update
+      profile('updateY', () => {
+        this.updateY()
+      })
+
       this.iter++
-      const toc = performance.now()
-      console.log('step: ' + (toc - tic) + 'ms')
       return cost
     },
   }
