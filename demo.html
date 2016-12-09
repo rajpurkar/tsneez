@@ -94,8 +94,8 @@ $(window).load(function() {
     const n = Math.sqrt(Tkarpathy.P.length);
     for (let i = 0; i < n; i++) {
       for (let j = i + 1; j < n; j++) {
-        if (Math.abs(Tkarpathy.P[i*n+j] - T.p.get(i, j)) > 1e-5) {
-          console.log('bad', Tkarpathy.P[i*n+j], T.p.get(i, j))
+        if (Math.abs(Tkarpathy.P[i*n+j] - T.P.get(i, j)) > 1e-5) {
+          console.log('bad', Tkarpathy.P[i*n+j], T.P.get(i, j))
         }
       }
     }

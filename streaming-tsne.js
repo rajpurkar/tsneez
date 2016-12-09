@@ -23,81 +23,12 @@ var tsne = tsne || {}
   const initialY = function (numSamples) {
     // FIXME: allow arbitrary dimensions??
     const distribution = gaussian(0, 1e-4)
-    const ys = pool.zeros([numSamples, 2])
+    const ys = pool.zeros([numSamples, 2], 'float32')
     for (let i = 0; i < numSamples; i++) {
       ys.set(i, 0, distribution.ppf(Math.random()))
       ys.set(i, 1, distribution.ppf(Math.random()))
     }
     return ys
-  }
-
-  const lowDimAffinities = function (Y) {
-    // FIXME: Q and Qu need to be freed
-    const n = Y.shape[0]
-    const dims = Y.shape[1]
-    const Qu = pool.zeros([n, n])
-    let qtotal = 0
-    for (let i = 0; i < n; i++) {
-      for (let j = i + 1; j < n; j++) {
-        let dist = 0
-        for (let d = 0; d < dims; d++) {
-          const diff = Y.get(i, d) - Y.get(j, d)
-          dist += diff * diff
-        }
-        const affinity = 1. / (1. + dist)
-        Qu.set(i, j, affinity)
-        Qu.set(j, i, affinity)
-        qtotal += 2 * affinity
-      }
-    }
-    const Q = pool.zeros([n, n])
-    for (let i = 0; i < n; i++) {
-      for (let j = i + 1; j < n; j++) {
-        const Qij = Math.max(Qu.get(i, j) / qtotal, 1e-100)
-        Q.set(i, j, Qij)
-        Q.set(j, i, Qij)
-      }
-    }
-    for (let i = 0; i < n; i++) {
-      Q.set(i, i, 1e-100)
-    }
-    return [Q, Qu]
-  }
-
-  const gradKL = function (grad, P, Y, iter) {
-    const [Q, Qu] = lowDimAffinities(Y)
-
-    // Early exaggeration
-    const exag = iter < 100 ? 4 : 1;
-
-    // Compute gradient of the KL divergence
-    const n = Y.shape[0]
-    const dims = Y.shape[1]
-    let KL = 0
-    let gradi = [0, 0]  // FIXME: 2D only
-    for (let i = 0; i < n; i++) {
-      // Reset
-      gradi[0] = gradi[1] = 0  // FIXME: 2D only
-
-      // Accumulate gradient over j
-      for (let j = 0; j < n; j++) {
-
-        // Accumulate KL divergence
-        KL -= P.get(i, j) * Math.log(Q.get(i, j))
-
-        const mulFactor = 4 * (exag * P.get(i, j) - Q.get(i, j)) * Qu.get(i, j)
-        for (let d = 0; d < dims; d++) {
-          gradi[d] += mulFactor * (Y.get(i, d) - Y.get(j, d))
-        }
-      }
-      // Set gradient
-      for (let d = 0; d < dims; d++) {
-        grad.set(i, d, gradi[d])
-      }
-    }
-    pool.free(Q)
-    pool.free(Qu)
-    return KL
   }
 
   const computeKL = function (P, Q) {
@@ -133,7 +64,7 @@ var tsne = tsne || {}
     // const m = X.shape[1]
     // X is an array of arrays
     const n = X.length
-    const D = pool.zeros([n, n])
+    const D = pool.zeros([n, n], 'float32')
     for (let i = 0; i < n; i++) {
       for (let j = 0; j < n; j++) {
         const d = euclideanDistance(X[i], X[j])
@@ -193,7 +124,7 @@ var tsne = tsne || {}
 
   const DToP = function (D, perplexity) {
     const n = D.shape[0]
-    const P = pool.zeros([n, n])
+    const P = pool.zeros([n, n], 'float32')
 
     // Shannon entropy H is log2 of perplexity
     const Hdesired = Math.log2(perplexity)
@@ -246,7 +177,7 @@ var tsne = tsne || {}
     return P
   }
 
-  const checkGrad = function (grad, cost, Y, p) {
+  const checkGrad = function (grad, cost, Y, P) {
     const n = Y.shape[0]
     const dims = Y.shape[1]
     const epsilon = 1e-5
@@ -255,14 +186,14 @@ var tsne = tsne || {}
         var yold = Y.get(i, d)
 
         Y.set(i, d, yold + epsilon)
-        const [q0, qu0] = lowDimAffinities(Y)
-        const cg0 = computeKL(p, q0)
+        const [q0, qu0] = this.updateQ()
+        const cg0 = computeKL(P, q0)
         pool.free(q0)
         pool.free(qu0)
 
         Y.set(i, d, yold - epsilon)
-        const [q1, qu1] = lowDimAffinities(Y)
-        const cg1 = computeKL(p, q1)
+        const [q1, qu1] = this.updateQ()
+        const cg1 = computeKL(P, q1)
         pool.free(q1)
         pool.free(qu1)
 
@@ -320,23 +251,93 @@ var tsne = tsne || {}
       this.learningRate *= 0.99
     },
 
+    updateQ: function () {
+      // Update low dimensional affinities of the embedding
+      const n = this.Y.shape[0]
+      const dims = this.Y.shape[1]
+      let qtotal = 0
+      for (let i = 0; i < n; i++) {
+        for (let j = i + 1; j < n; j++) {
+          let dist = 0
+          for (let d = 0; d < dims; d++) {
+            const diff = this.Y.get(i, d) - this.Y.get(j, d)
+            dist += diff * diff
+          }
+          const affinity = 1. / (1. + dist)
+          this.Qu.set(i, j, affinity)
+          this.Qu.set(j, i, affinity)
+          qtotal += 2 * affinity
+        }
+      }
+
+      // Normalize
+      for (let i = 0; i < n; i++) {
+        for (let j = i + 1; j < n; j++) {
+          const Qij = Math.max(this.Qu.get(i, j) / qtotal, 1e-100)
+          this.Q.set(i, j, Qij)
+          this.Q.set(j, i, Qij)
+        }
+      }
+      for (let i = 0; i < n; i++) {
+        this.Q.set(i, i, 1e-100)
+      }
+    },
+
+    updateGrad: function () {
+      this.updateQ()
+
+      // Early exaggeration
+      const exag = this.iter < 100 ? 4 : 1;
+
+      // Compute gradient of the KL divergence
+      const n = this.Y.shape[0]
+      const dims = this.Y.shape[1]
+      let KL = 0
+      let gradi = [0, 0]  // FIXME: 2D only
+      for (let i = 0; i < n; i++) {
+        // Reset
+        gradi[0] = gradi[1] = 0  // FIXME: 2D only
+
+        // Accumulate gradient over j
+        for (let j = 0; j < n; j++) {
+
+          // Accumulate KL divergence
+          KL -= this.P.get(i, j) * Math.log(this.Q.get(i, j))
+
+          const mulFactor = 4 * (exag * this.P.get(i, j) - this.Q.get(i, j)) * this.Qu.get(i, j)
+          for (let d = 0; d < dims; d++) {
+            gradi[d] += mulFactor * (this.Y.get(i, d) - this.Y.get(j, d))
+          }
+        }
+
+        // Set gradient
+        for (let d = 0; d < dims; d++) {
+          this.grad.set(i, d, gradi[d])
+        }
+      }
+      return KL
+    },
+
     initData: function (data) {
       const numSamples = data.length
       const D = XToD(data)
-      this.p = DToP(D, 30)
+      this.P = DToP(D, 30)
+      pool.free(D)
       this.Y = initialY(numSamples)
-      this.ytMinus1 = pool.clone(this.Y)
-      this.ytMinus2 = pool.clone(this.Y)
+      this.ytMinus1 = pool.clone(this.Y, 'float32')
+      this.ytMinus2 = pool.clone(this.Y, 'float32')
       this.Ygains = pool.ones(this.Y.shape)
       this.iter = 0
       this.learningRate = 10
       this.grad = pool.zeros(this.Y.shape)
+      this.Q = pool.zeros(this.P.shape)
+      this.Qu = pool.zeros(this.P.shape)
     },
 
     step: function () {
-      const cost = gradKL(this.grad, this.p, this.Y, this.iter)
+      const cost = this.updateGrad()
       // if (this.iter == 10) {
-      //   checkGrad(grad, cost, this.Y, this.p)
+      //   checkGrad(grad, cost, this.Y, this.P)
       // }
       const temp = this.ytMinus2
       this.ytMinus2 = this.ytMinus1
