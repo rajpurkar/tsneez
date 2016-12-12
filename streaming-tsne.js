@@ -1,8 +1,7 @@
 var gaussian = require('gaussian')
-var ndarray = require('ndarray')
 var pool = require('ndarray-scratch')
-var ops = require("ndarray-ops")
-var ndtest = require('ndarray-tests');
+var ops = require('ndarray-ops')
+var ndtest = require('ndarray-tests')
 
 var tsne = tsne || {}
 
@@ -12,13 +11,6 @@ var tsne = tsne || {}
   var hasNaN = function (M) {
     return !ndtest.equal(M, M)
   }
-
-  var seed = 1
-  var tmpRandom = function () {
-    var x = Math.sin(seed++) * 10000
-    return x - Math.floor(x)
-  }
-
 
   var initialY = function (numSamples) {
     // FIXME: allow arbitrary dimensions??
@@ -173,8 +165,7 @@ var tsne = tsne || {}
     return P
   }
 
-
-  function sign(x) { return x > 0 ? 1 : x < 0 ? -1 : 0; }
+  function sign (x) { return x > 0 ? 1 : x < 0 ? -1 : 0 }
 
   var TSNE = function (opt) {}
 
@@ -184,12 +175,12 @@ var tsne = tsne || {}
       if (!this.profileRecord.hasOwnProperty(name)) {
         this.profileRecord[name] = {
           count: 0,
-          time: 0,
+          time: 0
         }
       }
       this.profileRecord[name].tic = performance.now()
     },
-    profileEnd: function(name) {
+    profileEnd: function (name) {
       var toc = performance.now()
       var record = this.profileRecord[name]
       var elapsed = Math.round(toc - record.tic)
@@ -245,7 +236,7 @@ var tsne = tsne || {}
             var diff = this.Y.get(i, d) - this.Y.get(j, d)
             dist += diff * diff
           }
-          var affinity = 1. / (1. + dist)
+          var affinity = 1.0 / (1.0 + dist)
           this.Qu.set(i, j, affinity)
           this.Qu.set(j, i, affinity)
           qtotal += 2 * affinity
@@ -332,7 +323,6 @@ var tsne = tsne || {}
         }
       }
 
-
       return KL
     },
 
@@ -370,7 +360,7 @@ var tsne = tsne || {}
 
       this.iter++
       return cost
-    },
+    }
   }
 
   global.TSNE = TSNE
