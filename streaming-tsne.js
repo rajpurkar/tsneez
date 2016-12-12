@@ -1,9 +1,9 @@
 var gaussian = require('gaussian')
-var ndarray = require('ndarray')
 var pool = require('ndarray-scratch')
-var ops = require("ndarray-ops")
-var ndtest = require('ndarray-tests');
 var BarnesHutTree = require('./sptree.js')
+var ops = require('ndarray-ops')
+var ndtest = require('ndarray-tests')
+var vptree = require('./vptree.js')
 
 var tsne = tsne || {}
 
@@ -13,13 +13,6 @@ var tsne = tsne || {}
   var hasNaN = function (M) {
     return !ndtest.equal(M, M)
   }
-
-  var seed = 1
-  var tmpRandom = function () {
-    var x = Math.sin(seed++) * 10000
-    return x - Math.floor(x)
-  }
-
 
   var initialY = function (numSamples) {
     // FIXME: allow arbitrary dimensions??
@@ -44,7 +37,7 @@ var tsne = tsne || {}
     return cost
   }
 
-  var euclideanDistance = function (x, y) {
+  var squared_euclidean = function (x, y) {
     // Compute Euclidean distance between two vectors as Arrays
     var m = x.length
     var d = 0
@@ -56,36 +49,20 @@ var tsne = tsne || {}
     return d
   }
 
-  // Compute pairwise Euclidean distances.
-  // NOT Based on whole squared expansion:
-  // (a - b)^2 = a^2 - 2ab + b^2, where a and b are rows of x.
-  // CURRENTLY brute force until we reach correctness and can optimize.
-  var XToD = function (X) {
-    // var n = X.shape[0]
-    // var m = X.shape[1]
-    // X is an array of arrays
-    var n = X.length
-    var D = pool.zeros([n, n])
-    for (var i = 0; i < n; i++) {
-      for (var j = 0; j < n; j++) {
-        var d = euclideanDistance(X[i], X[j])
-        D.set(i, j, d)
-        D.set(j, i, d)
-      }
-    }
-    return D
+  var euclidean = function (x, y) {
+    return Math.sqrt(squared_euclidean(x, y))
   }
 
-  var getpIAndH = function (Pi, Di, beta, i) {
+  var getpIAndH = function (Pi, Xi, beta, vpt, numNeighbors) {
     // Compute a single row Pi of the kernel and the Shannon entropy H
-    var n = Di.shape[0]
-    //for (var j = 0; j < n; j++) {
-    //  Pi.set(j, Math.exp(- beta * Di))
-    //}
+    var neighbors = vpt.search(Xi, numNeighbors)
+    for (var j = 0; j < neighbors.length; j++) {
+      Pi.set(neighbors[j]['i'], Math.exp(-beta * neighbors[j]['d']))
+    }
 
-    ops.muls(Pi, Di, -beta)   // scalar multiply by -beta, store in Pi
-    ops.expeq(Pi)             // exponentiate Pi in place
-    Pi.set(i, 0)              // affinity is zero between the same point
+    // ops.muls(Pi, Di, -beta)   // scalar multiply by -beta, store in Pi
+    // ops.expeq(Pi)             // exponentiate Pi in place
+    // Pi.set(i, 0)              // affinity is zero between the same point
 
     // Normalize
     var sumPi = ops.sum(Pi)
@@ -97,10 +74,10 @@ var tsne = tsne || {}
 
     // Compute entropy H
     var H = 0
-    for (var j = 0; j < n; j++) {
-      var Pji = Pi.get(j)
+    for (j = 0; j < neighbors.length; j++) {
+      var Pji = Pi.get(neighbors[j]['i'])
       // Skip small values to avoid NaNs or exploding values
-      if (Pji > 1e-7) {
+      if (Pji > 1e-7) { // do we need this?
         H -= Pji * Math.log2(Pji)
       }
     }
@@ -123,8 +100,8 @@ var tsne = tsne || {}
     }
   }
 
-  var DToP = function (D, perplexity) {
-    var n = D.shape[0]
+  var XToP = function (X, perplexity, vpt, numNeighbors) {
+    var n = X.length
     var P = pool.zeros([n, n])
 
     // Shannon entropy H is log2 of perplexity
@@ -145,8 +122,8 @@ var tsne = tsne || {}
       do {
         numTries++
         var Pi = P.pick(i, null)
-        var Di = D.pick(i, null)
-        var H = getpIAndH(Pi, Di, beta, i)
+        var Xi = X[i]
+        var H = getpIAndH(Pi, Xi, beta, vpt, numNeighbors)
         Hdiff = H - Hdesired
 
         if (Hdiff > 0) {
@@ -174,8 +151,7 @@ var tsne = tsne || {}
     return P
   }
 
-
-  function sign(x) { return x > 0 ? 1 : x < 0 ? -1 : 0; }
+  function sign (x) { return x > 0 ? 1 : x < 0 ? -1 : 0 }
 
   var TSNE = function (opt) {}
 
@@ -185,12 +161,12 @@ var tsne = tsne || {}
       if (!this.profileRecord.hasOwnProperty(name)) {
         this.profileRecord[name] = {
           count: 0,
-          time: 0,
+          time: 0
         }
       }
       this.profileRecord[name].tic = performance.now()
     },
-    profileEnd: function(name) {
+    profileEnd: function (name) {
       var toc = performance.now()
       var record = this.profileRecord[name]
       var elapsed = Math.round(toc - record.tic)
@@ -246,7 +222,7 @@ var tsne = tsne || {}
             var diff = this.Y.get(i, d) - this.Y.get(j, d)
             dist += diff * diff
           }
-          var affinity = 1. / (1. + dist)
+          var affinity = 1.0 / (1.0 + dist)
           this.Qu.set(i, j, affinity)
           this.Qu.set(j, i, affinity)
           qtotal += 2 * affinity
@@ -301,7 +277,6 @@ var tsne = tsne || {}
       // Early exaggeration
       var exag = this.iter < 100 ? 4 : 1
 
-
       var KL = 0
       // Compute gradient of the KL divergence
       var n = this.Y.shape[0]
@@ -333,15 +308,15 @@ var tsne = tsne || {}
         }
       }
 
-
       return KL
     },
 
     initData: function (data) {
       var numSamples = data.length
-      var D = XToD(data)
-      this.P = DToP(D, 30)
-      pool.free(D)
+      var numNeighbors = 90
+      var perplexity = 30
+      var vpt = vptree.build(data, euclidean)
+      this.P = XToP(data, perplexity, vpt, numNeighbors)
       this.Y = initialY(numSamples)
       this.ytMinus1 = pool.clone(this.Y)
       this.ytMinus2 = pool.clone(this.Y)
@@ -371,7 +346,7 @@ var tsne = tsne || {}
 
       this.iter++
       return cost
-    },
+    }
   }
 
   global.TSNE = TSNE
@@ -388,4 +363,3 @@ var tsne = tsne || {}
     window.tsne = lib // in ordinary browser attach library to window
   }
 })(tsne)
-
