@@ -221,4 +221,8 @@ Point.prototype = {
   }
 }
 
-module.exports = BarnesHutTree
+module.exports = {
+  BarnesHutTree: BarnesHutTree,
+  Point: Point,
+  Particle: Particle,
+}

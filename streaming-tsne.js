@@ -1,6 +1,6 @@
 var gaussian = require('gaussian')
 var pool = require('ndarray-scratch')
-var BarnesHutTree = require('./sptree.js')
+var bhtree = require('./bhtree.js')
 var ops = require('ndarray-ops')
 var ndtest = require('ndarray-tests')
 var vptree = require('./vptree.js')
@@ -363,3 +363,4 @@ var tsne = tsne || {}
     window.tsne = lib // in ordinary browser attach library to window
   }
 })(tsne)
+
