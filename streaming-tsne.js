@@ -3,6 +3,7 @@ var ndarray = require('ndarray')
 var pool = require('ndarray-scratch')
 var ops = require("ndarray-ops")
 var ndtest = require('ndarray-tests');
+var BarnesHutTree = require('./sptree.js')
 
 var tsne = tsne || {}
 
