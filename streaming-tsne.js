@@ -183,7 +183,7 @@ var tsne = tsne || {}
         sum += elem
       })
 
-      if (sum === 0) { window.alert() }
+      if (sum === 0) { window.alert('sum equals zero') }
 
       var H = 0
       Object.keys(pi).forEach(function (key) {
@@ -293,7 +293,7 @@ var tsne = tsne || {}
       this.n = data.length
       this.numNeighbors = 150 // 3 * 50
       var perplexity = 50  // 30
-      this.theta = 0  // tunes the barnes-hut approximation, higher is more coarse
+      this.theta = 0.5  // tunes the barnes-hut approximation, higher is more coarse
       this.XToD(data)
       this.DToP(perplexity)
       this.Y = initialY(this.n)
