@@ -64,6 +64,7 @@ function zoomHandler() {
   ss = d3.event.scale;
 }
 
+var stepHandle;
 var stepnum = 0;
 var tic = performance.now()
 function step() {
@@ -71,6 +72,10 @@ function step() {
   var fps = Math.round((T.iter / (performance.now() - tic)) * 1000);
   $("#cost").html("iteration " + T.iter + ", fps: " + fps + ", cost: " + cost);
   updateEmbedding();
+
+  if (stepnum > 1000) {
+    clearInterval(stepHandle);
+  }
 }
 
 $(window).load(function() {
@@ -102,7 +107,7 @@ $(window).load(function() {
     //  }
     //}
     drawEmbedding(); // draw initial embedding
-    setInterval(step, 0);
+    stepHandle = setInterval(step, 0);
     step();
 
   });

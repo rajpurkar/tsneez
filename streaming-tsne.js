@@ -240,6 +240,8 @@ var tsne = tsne || {}
       for (var i = 0; i < n; i++) {
         this.Q.set(i, i, 1e-100)
       }
+      //debug
+      this.qtotal = qtotal
     },
 
     checkGrad: function () {
@@ -273,16 +275,37 @@ var tsne = tsne || {}
     updateGradBH: function () {
       this.updateQ()
       // Early exaggeration
-      var exag = this.iter < 100 ? 4 : 1
+      var exag = this.iter < 250 ? 12 : 1
 
       var bht = bhtree.BarnesHutTree()
-      bht.initWithData(this.Y, 1e-5)
+      bht.initWithData(this.Y, 0.5)
 
       var KL = 0
       // Compute gradient of the KL divergence
       var n = this.Y.shape[0]
       var dims = this.Y.shape[1]
-      var gradi = [0, 0]  // FIXME: 2D only
+      var gradi = [0, 0]
+
+      var Z = 0
+      for (var i = 0; i < n; i++) {
+        // Reset
+        // FIXME: 2D only
+        gradi[0] = 0
+        gradi[1] = 0
+
+        // Compute Frep using Barnes-Hut
+        var Frep = bht.computeForces(this.Y.get(i, 0), this.Y.get(i, 1))
+        gradi[0] += 4 * Frep.x
+        gradi[1] += 4 * Frep.y
+        Z += Frep.Z
+
+        // Set gradient
+        for (var d = 0; d < dims; d++) {
+          this.grad.set(i, d, gradi[d])
+        }
+      }
+      console.log('Zest:', Z, 'qtot:', this.qtotal)
+
       for (var i = 0; i < n; i++) {
         // Reset
         // FIXME: 2D only
@@ -302,27 +325,12 @@ var tsne = tsne || {}
           gradi[0] += mulFactor * (this.Y.get(i, 0) - this.Y.get(j, 0))
           gradi[1] += mulFactor * (this.Y.get(i, 1) - this.Y.get(j, 1))
         }
-
-        // Accumulate Frep over j
-        //for (var j = 0; j < n; j++) {
-        //  var Qij = this.Q.get(i, j)
-
-        //  var mulFactor = - 4 * Qij * this.Qu.get(i, j)
-        //  // Unfurled loop, but 2D only
-        //  gradi[0] += mulFactor * (this.Y.get(i, 0) - this.Y.get(j, 0))
-        //  gradi[1] += mulFactor * (this.Y.get(i, 1) - this.Y.get(j, 1))
-        //}
-
-        // Compute Frep using Barnes-Hut
-        var Frep = bht.computeForces(this.Y.get(i, 0), this.Y.get(i, 1))
-        gradi[0] += 4 * Frep[0]
-        gradi[1] += 4 * Frep[1]
-
-        // Set gradient
+        // Normalize then increment gradient
         for (var d = 0; d < dims; d++) {
-          this.grad.set(i, d, gradi[d])
+          this.grad.set(i, d, this.grad.get(i, d) / Z + gradi[d])
         }
       }
+
     },
 
     updateGrad: function () {
@@ -369,7 +377,7 @@ var tsne = tsne || {}
     initData: function (data) {
       var numSamples = data.length
       var numNeighbors = 90
-      var perplexity = 30
+      var perplexity = 50 // 30
       var vpt = vptree.build(data, euclidean)
       this.P = XToP(data, perplexity, vpt, numNeighbors)
       this.Y = initialY(numSamples)
@@ -377,7 +385,7 @@ var tsne = tsne || {}
       this.ytMinus2 = pool.clone(this.Y)
       this.Ygains = pool.ones(this.Y.shape)
       this.iter = 0
-      this.learningRate = 10
+      this.learningRate = 200
       this.grad = pool.zeros(this.Y.shape)
       this.Q = pool.zeros(this.P.shape)
       this.Qu = pool.zeros(this.P.shape)
