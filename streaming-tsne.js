@@ -231,7 +231,7 @@ var tsne = tsne || {}
     },
 
     XToNN: function (data) {
-      /* Construct a n x numNeighbors matrix, where each element ij is the index of jth nearest neighbor of i in data. Simulataneous a distance matrix D is constructed such that ij is the distance between X[i] and X[NN[i, j]]. */
+      /* Construct a n x numNeighbors matrix, where each element ij is the index of jth nearest neighbor of i in data. Simulataneous a distance matrix D is constructed such that Dij is the distance between X[i] and X[NN[i, j]]. */
       var n = data.length
       this.NN = pool.zeros([n, this.numNeighbors])
       this.D = pool.zeros([n, this.numNeighbors])
@@ -242,8 +242,8 @@ var tsne = tsne || {}
         neighbors.shift() // first element is own self
         for (var j = 0; j < neighbors.length; j++) {
           var neighbor = neighbors[j]
-          this.NN.set(i, j, neighbor['i'])
-          this.D.set(i, j, Math.pow(neighbor['d'], 2))
+          this.NN.set(i, j, neighbor.i)
+          this.D.set(i, j, neighbor.d * neighbor.d))
         }
       }
     },
