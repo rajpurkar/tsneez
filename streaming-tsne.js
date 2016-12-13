@@ -49,24 +49,6 @@ var tsne = tsne || {}
     }
   }
 
-  var symmetrize = function (P) {
-    // Symmetrize in place according to:
-    //         p_j|i + p_i|j
-    // p_ij = ---------------
-    //              2n
-    var n = P.shape[0]
-    for (var i = 0; i < n; i++) {
-      for (var s = 0; s < this.numNeighbors; s++) {
-        var j = this.NN.get(i, s)
-      }
-      for (var j = i + 1; j < n; j++) {
-        var Pij = (P.get(i, j) + P.get(j, i)) / (2 * n)
-        P.set(i, j, Pij)
-        P.set(j, i, Pij)
-      }
-    }
-  }
-
   function sign (x) { return x > 0 ? 1 : x < 0 ? -1 : 0 }
 
   var TSNE = function (opt) {}
@@ -125,71 +107,6 @@ var tsne = tsne || {}
         }
       }
     },
-
-    updateQ: function () {
-      this.Q = pool.zeros([this.n, this.n])
-      this.Qu = pool.zeros([this.n, this.n])
-      // Update low dimensional affinities of the embedding
-      var n = this.Y.shape[0]
-      var dims = this.Y.shape[1]
-      var qtotal = 0
-      for (var i = 0; i < n; i++) {
-        for (var j = i + 1; j < n; j++) {
-          var dist = 0
-          for (var d = 0; d < dims; d++) {
-            var diff = this.Y.get(i, d) - this.Y.get(j, d)
-            dist += diff * diff
-          }
-          var affinity = 1.0 / (1.0 + dist)
-          this.Qu.set(i, j, affinity)
-          this.Qu.set(j, i, affinity)
-          qtotal += 2 * affinity
-        }
-      }
-
-      // Normalize
-      for (var i = 0; i < n; i++) {
-        for (var j = i + 1; j < n; j++) {
-          var Qij = Math.max(this.Qu.get(i, j) / qtotal, 1e-100)
-          this.Q.set(i, j, Qij)
-          this.Q.set(j, i, Qij)
-        }
-      }
-      for (var i = 0; i < n; i++) {
-        this.Q.set(i, i, 1e-100)
-      }
-      //debug
-      this.qtotal = qtotal
-    },
-
-    checkGrad: function () {
-      var n = this.Y.shape[0]
-      var dims = this.Y.shape[1]
-      var epsilon = 1e-5
-      for (var i = 0; i < n; i++) {
-        for (var d = 0; d < dims; d++) {
-          var yold = this.Y.get(i, d)
-
-          this.Y.set(i, d, yold + epsilon)
-          this.updateQ()
-          var cg0 = computeKL(this.P, this.Q)
-
-          this.Y.set(i, d, yold - epsilon)
-          this.updateQ()
-          var cg1 = computeKL(this.P, this.Q)
-
-          var analytic = this.grad.get(i, d)
-          var numerical = (cg0 - cg1) / (2 * epsilon)
-          if (analytic - numerical > 1e-5) {
-            console.error(i + ',' + d + ': analytic: ' + analytic + ' vs. numerical: ' + numerical)
-          } else {
-            console.log(i + ',' + d + ': analytic: ' + analytic + ' vs. numerical: ' + numerical)
-          }
-          this.Y.set(i, d, yold)
-        }
-      }
-    },
-
     updateGradBH: function () {
       // Early exaggeration
       var exag = this.iter < 250 ? 4 : 1 // todo: this is important... see how can be tuned
@@ -219,16 +136,16 @@ var tsne = tsne || {}
         for (var d = 0; d < dims; d++) gradi[d] = 0
 
         // Accumulate Fattr over nearest neighbors
-        for (var s = 0; s < this.numNeighbors; s++) {
-          var index = this.NN.get(i, s)
-          var Pij = this.P.get(i, s)
-          var Dij = this.D.get(i, s)
-
+        var that = this
+        var pi = this.symP[i]
+        Object.keys(pi).forEach(function (j) {
           // Unfurled loop, but 2D only
-          var mulFactor = 4 * exag * Pij * (1. / (1. + Dij))
-          gradi[0] += mulFactor * (this.Y.get(i, 0) - this.Y.get(index, 0))
-          gradi[1] += mulFactor * (this.Y.get(i, 1) - this.Y.get(index, 1))
-        }
+          var Dij = that.D[i][j] || that.D[j][i]
+          var mulFactor = 4 * exag * pi[j] * (1.0 / (1.0 + Dij))
+          gradi[0] += mulFactor * (that.Y.get(i, 0) - that.Y.get(j, 0))
+          gradi[1] += mulFactor * (that.Y.get(i, 1) - that.Y.get(j, 1))
+        })
+
         // Normalize Fattr then increment gradient
         for (var d = 0; d < dims; d++) {
           this.grad.set(i, d, this.grad.get(i, d) / Z + gradi[d])
@@ -238,55 +155,94 @@ var tsne = tsne || {}
       return null
     },
 
-    XToNN: function (data) {
-      /* Construct a n x numNeighbors matrix, where each element ij is the index of jth nearest neighbor of i in data. Simulataneous a distance matrix D is constructed such that Dij is the distance between X[i] and X[NN[i, j]]. */
+    XToD: function (data) {
       var n = data.length
-      this.NN = pool.zeros([n, this.numNeighbors])
-      this.D = pool.zeros([n, this.numNeighbors])
       var indices = Array.apply(null, Array(n)).map(function (_, i) { return i })
       var vpt = vptree.build(indices, euclidean(data))
       for (var i = 0; i < n; i++) {
         var neighbors = vpt.search(i, this.numNeighbors + 1)
         neighbors.shift() // first element is own self
+        var elem = {}
         for (var j = 0; j < neighbors.length; j++) {
           var neighbor = neighbors[j]
-          this.NN.set(i, j, neighbor.i)
-          this.D.set(i, j, neighbor.d * neighbor.d)
+          elem[neighbor.i] = neighbor.d * neighbor.d
         }
+        this.D.push(elem)
       }
     },
 
     setPiAndGetH: function (i, beta) {
       // Compute a single row Pi of the kernel and the Shannon entropy H
-      var Pi = this.P.pick(i, null)
-      for (var j = 0; j < this.numNeighbors; j++) {
-        var dist = this.D.get(i, j)
-        Pi.set(j, Math.exp(-beta * dist))
-      }
 
-      // Normalize
-      var sumPi = ops.sum(Pi)
-      if (sumPi !== 0) {
-        ops.divseq(Pi, sumPi)
-      }
+      var pi = {}
+      var sum = 0
+      var that = this
+      Object.keys(this.D[i]).forEach(function (key) {
+        var elem = Math.exp(-beta * that.D[i][key])
+        pi[key] = elem
+        sum += elem
+      })
 
-      // Compute entropy H
+      if (sum === 0) { window.alert() }
+
       var H = 0
-      for (j = 0; j < this.numNeighbors; j++) {
-        var Pji = Pi.get(j)
-        // Skip small values to avoid NaNs or exploding values
-        if (Pji > 1e-7) { // TODO: do we need this?
-          H -= Pji * Math.log2(Pji)
+      Object.keys(pi).forEach(function (key) {
+        var val = pi[key] / sum
+        pi[key] = val
+        if (val > 1e-7) { // TODO: do we need this?
+          H -= val * Math.log2(val)
         }
+      })
+
+      this.P[i] = pi
+      return H
+    },
+
+    symmetrizeP: function () {
+      // Symmetrize in place according to:
+      //         p_j|i + p_i|j
+      // p_ij = ---------------
+      //              2n
+      this.symP = []
+      for (var i = 0; i < this.n; i++) {
+        this.symP.push({})
       }
 
-      return H
+      var that = this
+      this.P.forEach(function (pi, i) {
+        Object.keys(pi).forEach(function (j) {
+          if (j === i) { window.alert('not possible') }
+          var pji = 0
+          if (i in that.P[j]) {
+            pji = that.P[j][i]
+          }
+          var val = (pi[j] + pji) / (2 * that.n)
+
+          // sanity check
+          if (j in that.symP[i]) {
+            if (val !== that.symP[i][j]) {
+              window.alert('nooo')
+            }
+          }
+          if (i in that.symP[j]) {
+            if (val !== that.symP[j][i]) {
+              window.alert('nooo')
+            }
+          }
+
+          that.symP[i][j] = val
+          that.symP[j][i] = val
+        })
+      })
     },
 
     DToP: function (perplexity) {
       // Shannon entropy H is log2 of perplexity
-      this.P = pool.zeros([this.n, this.numNeighbors])
       var Hdesired = Math.log2(perplexity)
+      this.P = []
+      for (var i = 0; i < this.n; i++) {
+        this.P.push({})
+      }
 
       for (var i = 0; i < this.n; i++) {
         // We perform binary search to find the beta such that
@@ -328,15 +284,17 @@ var tsne = tsne || {}
 
       // FIXME: symmetrize
       // Symmetrize conditional distribution
-      // symmetrize(P)
+      this.symmetrizeP()
     },
 
     initData: function (data) {
+      this.P = []
+      this.D = []
       this.n = data.length
-      this.numNeighbors = 999 // 3 * 50
+      this.numNeighbors = 150 // 3 * 50
       var perplexity = 50  // 30
       this.theta = 0  // tunes the barnes-hut approximation, higher is more coarse
-      this.XToNN(data)
+      this.XToD(data)
       this.DToP(perplexity)
       this.Y = initialY(this.n)
       this.ytMinus1 = pool.clone(this.Y)
