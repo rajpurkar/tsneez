@@ -104,12 +104,10 @@ $(window).load(function() {
     }
 
     // compare with karpathy's tSNE
-    //let Tkarpathy = new tsnejs.tSNE();
-    //console.log(Tkarpathy);
-    //tic = performance.now()
-    //Tkarpathy.initDataRaw(data.vecs);
-    //toc = performance.now()
-    //console.log('karpathy:', toc - tic)
+    let Tkarpathy = new tsnejs.tSNE();
+    console.time('karpathyInit');
+    Tkarpathy.initDataRaw(data.vecs);
+    console.timeEnd('karpathyInit')
     /*
     const n = Math.sqrt(Tkarpathy.P.length);
     for (let i = 0; i < n; i++) {
