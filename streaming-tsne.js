@@ -1,18 +1,11 @@
 var gaussian = require('gaussian')
 var pool = require('ndarray-scratch')
-var BarnesHutTree = require('./sptree.js')
 var ops = require('ndarray-ops')
-var ndtest = require('ndarray-tests')
 var vptree = require('./vptree.js')
-
 var tsne = tsne || {}
 
 ;(function (global) {
   'use strict'
-
-  var hasNaN = function (M) {
-    return !ndtest.equal(M, M)
-  }
 
   var initialY = function (numSamples) {
     // FIXME: allow arbitrary dimensions??
@@ -37,7 +30,7 @@ var tsne = tsne || {}
     return cost
   }
 
-  var squared_euclidean = function (x, y) {
+  var squaredEuclidean = function (x, y) {
     // Compute Euclidean distance between two vectors as Arrays
     var m = x.length
     var d = 0
@@ -49,40 +42,10 @@ var tsne = tsne || {}
     return d
   }
 
-  var euclidean = function (x, y) {
-    return Math.sqrt(squared_euclidean(x, y))
-  }
-
-  var getpIAndH = function (Pi, Xi, beta, vpt, numNeighbors) {
-    // Compute a single row Pi of the kernel and the Shannon entropy H
-    var neighbors = vpt.search(Xi, numNeighbors)
-    for (var j = 0; j < neighbors.length; j++) {
-      Pi.set(neighbors[j]['i'], Math.exp(-beta * neighbors[j]['d']))
+  var euclidean = function (data) {
+    return function (x, y) {
+      return Math.sqrt(squaredEuclidean(data[x], data[y]))
     }
-
-    // ops.muls(Pi, Di, -beta)   // scalar multiply by -beta, store in Pi
-    // ops.expeq(Pi)             // exponentiate Pi in place
-    // Pi.set(i, 0)              // affinity is zero between the same point
-
-    // Normalize
-    var sumPi = ops.sum(Pi)
-    if (sumPi === 0) {
-      ops.assigns(sumPi, 0)
-    } else {
-      ops.divseq(Pi, sumPi)
-    }
-
-    // Compute entropy H
-    var H = 0
-    for (j = 0; j < neighbors.length; j++) {
-      var Pji = Pi.get(neighbors[j]['i'])
-      // Skip small values to avoid NaNs or exploding values
-      if (Pji > 1e-7) { // do we need this?
-        H -= Pji * Math.log2(Pji)
-      }
-    }
-
-    return H
   }
 
   var symmetrize = function (P) {
@@ -92,63 +55,17 @@ var tsne = tsne || {}
     //              2n
     var n = P.shape[0]
     for (var i = 0; i < n; i++) {
+      for (var s = 0; s < this.numNeighbors; s++) {
+        var j = this.NN.get(i, s)
+
+      }
+    }
       for (var j = i + 1; j < n; j++) {
         var Pij = (P.get(i, j) + P.get(j, i)) / (2 * n)
         P.set(i, j, Pij)
         P.set(j, i, Pij)
       }
     }
-  }
-
-  var XToP = function (X, perplexity, vpt, numNeighbors) {
-    var n = X.length
-    var P = pool.zeros([n, n])
-
-    // Shannon entropy H is log2 of perplexity
-    var Hdesired = Math.log2(perplexity)
-
-    for (var i = 0; i < n; i++) {
-      // We perform binary search to find the beta such that
-      // the conditional distribution P_i has the given perplexity.
-      // We define:
-      //   beta = 1 / (2 * sigma_i^2)
-      // where sigma_i is the bandwith of the Gaussian kernel
-      // for the conditional distribution P_i
-      var beta = 1
-      var betamin = -Infinity
-      var betamax = Infinity
-      var Hdiff
-      var numTries = 0
-      do {
-        numTries++
-        var Pi = P.pick(i, null)
-        var Xi = X[i]
-        var H = getpIAndH(Pi, Xi, beta, vpt, numNeighbors)
-        Hdiff = H - Hdesired
-
-        if (Hdiff > 0) {
-          // Entropy too high, beta is too small
-          betamin = beta
-          if (betamax === Infinity) {
-            beta = beta * 2
-          } else {
-            beta = (beta + betamax) / 2
-          }
-        } else {
-          // Entropy is too low, beta is too big
-          betamax = beta
-          if (betamin === -Infinity) {
-            beta = beta / 2
-          } else {
-            beta = (beta + betamin) / 2
-          }
-        }
-      } while (Math.abs(Hdiff) > 1e-05 && numTries < 50)
-    }
-
-    // Symmetrize conditional distribution
-    symmetrize(P)
-    return P
   }
 
   function sign (x) { return x > 0 ? 1 : x < 0 ? -1 : 0 }
@@ -211,6 +128,8 @@ var tsne = tsne || {}
     },
 
     updateQ: function () {
+      this.Q = pool.zeros([this.n, this.n])
+      this.Qu = pool.zeros([this.n, this.n])
       // Update low dimensional affinities of the embedding
       var n = this.Y.shape[0]
       var dims = this.Y.shape[1]
@@ -289,17 +208,18 @@ var tsne = tsne || {}
         gradi[1] = 0
 
         // Accumulate gradient over j
-        for (var j = 0; j < n; j++) {
-          var Pij = this.P.get(i, j)
-          var Qij = this.Q.get(i, j)
+        for (var s = 0; s < this.numNeighbors; s++) {
+          var index = this.NN.get(i, s)
+          var Pij = this.P.get(i, s)
+          var Qij = this.Q.get(i, index)
 
           // Accumulate KL divergence
           KL -= Pij * Math.log(Qij)
 
-          var mulFactor = 4 * (exag * Pij - Qij) * this.Qu.get(i, j)
+          var mulFactor = 4 * (exag * Pij - Qij) * this.Qu.get(i, index)
           // Unfurled loop, but 2D only
-          gradi[0] += mulFactor * (this.Y.get(i, 0) - this.Y.get(j, 0))
-          gradi[1] += mulFactor * (this.Y.get(i, 1) - this.Y.get(j, 1))
+          gradi[0] += mulFactor * (this.Y.get(i, 0) - this.Y.get(index, 0))
+          gradi[1] += mulFactor * (this.Y.get(i, 1) - this.Y.get(index, 1))
         }
 
         // Set gradient
@@ -307,25 +227,115 @@ var tsne = tsne || {}
           this.grad.set(i, d, gradi[d])
         }
       }
-
       return KL
     },
 
+    XToNN: function (data) {
+      /* Construct a n x numNeighbors matrix, where each element ij is the index of jth nearest neighbor of i in data. Simulataneous a distance matrix D is constructed such that ij is the distance between X[i] and X[NN[i, j]]. */
+      var n = data.length
+      this.NN = pool.zeros([n, this.numNeighbors])
+      this.D = pool.zeros([n, this.numNeighbors])
+      var indices = Array.apply(null, Array(n)).map(function (_, i) { return i })
+      var vpt = vptree.build(indices, euclidean(data))
+      for (var i = 0; i < n; i++) {
+        var neighbors = vpt.search(i, this.numNeighbors + 1) 
+        neighbors.shift() // first element is own self
+        for (var j = 0; j < neighbors.length; j++) {
+          var neighbor = neighbors[j]
+          this.NN.set(i, j, neighbor['i'])
+          this.D.set(i, j, Math.pow(neighbor['d'], 2))
+        }
+      }
+    },
+
+    setPiAndGetH: function (i, beta) {
+      // Compute a single row Pi of the kernel and the Shannon entropy H
+      var Pi = this.P.pick(i, null)
+      for (var j = 0; j < this.numNeighbors; j++) {
+        var dist = this.D.get(i, j)
+        Pi.set(j, Math.exp(-beta * dist))
+      }
+
+      // Normalize
+      var sumPi = ops.sum(Pi)
+      if (sumPi !== 0) {
+        ops.divseq(Pi, sumPi)
+      }
+
+      // Compute entropy H
+      var H = 0
+      for (j = 0; j < this.numNeighbors; j++) {
+        var Pji = Pi.get(j)
+        // Skip small values to avoid NaNs or exploding values
+        if (Pji > 1e-7) { // TODO: do we need this?
+          H -= Pji * Math.log2(Pji)
+        }
+      }
+
+      return H
+    },
+
+    DToP: function (perplexity) {
+      // Shannon entropy H is log2 of perplexity
+      this.P = pool.zeros([this.n, this.numNeighbors])
+      var Hdesired = Math.log2(perplexity)
+
+      for (var i = 0; i < this.n; i++) {
+        // We perform binary search to find the beta such that
+        // the conditional distribution P_i has the given perplexity.
+        // We define:
+        //   beta = 1 / (2 * sigma_i^2)
+        // where sigma_i is the bandwith of the Gaussian kernel
+        // for the conditional distribution P_i
+        var beta = 1
+        var betamin = -Infinity
+        var betamax = Infinity
+        var Hdiff
+        var numTries = 0
+
+        do {
+          numTries++
+          var H = this.setPiAndGetH(i, beta)
+          Hdiff = H - Hdesired
+
+          if (Hdiff > 0) {
+            // Entropy too high, beta is too small
+            betamin = beta
+            if (betamax === Infinity) {
+              beta = beta * 2
+            } else {
+              beta = (beta + betamax) / 2
+            }
+          } else {
+            // Entropy is too low, beta is too big
+            betamax = beta
+            if (betamin === -Infinity) {
+              beta = beta / 2
+            } else {
+              beta = (beta + betamin) / 2
+            }
+          }
+        } while (Math.abs(Hdiff) > 1e-05 && numTries < 50)
+      }
+
+      // FIXME: symmetrize
+      // Symmetrize conditional distribution
+      // symmetrize(P)
+    },
+
     initData: function (data) {
-      var numSamples = data.length
-      var numNeighbors = 90
-      var perplexity = 30
-      var vpt = vptree.build(data, euclidean)
-      this.P = XToP(data, perplexity, vpt, numNeighbors)
-      this.Y = initialY(numSamples)
+      this.n = data.length
+      this.numNeighbors = 999
+      var perplexity = 40
+      this.XToNN(data)
+      this.DToP(perplexity)
+      this.Y = initialY(this.n)
       this.ytMinus1 = pool.clone(this.Y)
       this.ytMinus2 = pool.clone(this.Y)
       this.Ygains = pool.ones(this.Y.shape)
       this.iter = 0
       this.learningRate = 10
       this.grad = pool.zeros(this.Y.shape)
-      this.Q = pool.zeros(this.P.shape)
-      this.Qu = pool.zeros(this.P.shape)
     },
 
     step: function () {

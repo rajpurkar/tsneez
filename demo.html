@@ -92,7 +92,7 @@ $(window).load(function() {
     Tkarpathy.initDataRaw(data.vecs);
     toc = performance.now()
     console.log('karpathy:', toc - tic)
-
+    /*
     const n = Math.sqrt(Tkarpathy.P.length);
     for (let i = 0; i < n; i++) {
       for (let j = i + 1; j < n; j++) {
@@ -101,6 +101,7 @@ $(window).load(function() {
         }
       }
     }
+    */
     drawEmbedding(); // draw initial embedding
     setInterval(step, 0);
     step();
