@@ -6,7 +6,6 @@ var browserSync = require('browser-sync').create()
 
 
 var webpack_opts = {
-  context: path.join(__dirname, '.'),
   entry: './streaming-tsne.js',
   plugins: []
 }
