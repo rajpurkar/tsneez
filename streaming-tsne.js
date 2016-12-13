@@ -205,21 +205,20 @@ var tsne = tsne || {}
     },
 
     updateGradBH: function () {
-      this.updateQ()
       // Early exaggeration
-      var exag = this.iter < 250 ? 12 : 1
+      var exag = this.iter < 250 ? 12 : 1 // todo: this is important... see how can be tuned
 
+      // Initialize quadtree
       var bht = bhtree.BarnesHutTree()
-      bht.initWithData(this.Y, 0.8)
+      bht.initWithData(this.Y, this.theta)
 
-      var KL = 0
       // Compute gradient of the KL divergence
       var n = this.Y.shape[0]
       var dims = this.Y.shape[1]
 
+      // Compute Frep using Barnes-Hut
       var Z = 0
       for (var i = 0; i < n; i++) {
-        // Compute Frep using Barnes-Hut
         // NOTE: 2D only
         var Frep = bht.computeForces(this.Y.get(i, 0), this.Y.get(i, 1))
         this.grad.set(i, 0, 4 * Frep.x)
@@ -227,71 +226,29 @@ var tsne = tsne || {}
         Z += Frep.Z
       }
 
+      // Compute Fattr over sparse P
       var gradi = new Float64Array(dims)
       for (var i = 0; i < n; i++) {
         // Reset
         for (var d = 0; d < dims; d++) gradi[d] = 0
 
-        // Accumulate Fattr over j
-        for (var j = 0; j < n; j++) {
-          var Pij = this.P.get(i, j)
-          var Qij = this.Q.get(i, j)
+        // Accumulate Fattr over nearest neighbors
+        for (var s = 0; s < this.numNeighbors; s++) {
+          var Pij = this.P.get(i, s)
+          var Dij = this.D.get(i, s)
 
-          // Accumulate KL divergence
-          KL -= Pij * Math.log(Qij)
-
-          var mulFactor = 4 * (exag * Pij * this.Qu.get(i, j))
           // Unfurled loop, but 2D only
-          gradi[0] += mulFactor * (this.Y.get(i, 0) - this.Y.get(j, 0))
-          gradi[1] += mulFactor * (this.Y.get(i, 1) - this.Y.get(j, 1))
+          var mulFactor = 4 * exag * Pij * (1. / (1. + Dij))
+          gradi[0] += mulFactor * (this.Y.get(i, 0) - this.Y.get(index, 0))
+          gradi[1] += mulFactor * (this.Y.get(i, 1) - this.Y.get(index, 1))
         }
-        // Normalize then increment gradient
+        // Normalize Fattr then increment gradient
         for (var d = 0; d < dims; d++) {
           this.grad.set(i, d, this.grad.get(i, d) / Z + gradi[d])
         }
       }
 
-    },
-
-    updateGrad: function () {
-      // Compute low dimensional affinities
-      this.updateQ()
-
-      // Early exaggeration
-      var exag = this.iter < 100 ? 4 : 1 // todo: this is important... see how can be tuned
-
-      var KL = 0
-      // Compute gradient of the KL divergence
-      var n = this.Y.shape[0]
-      var dims = this.Y.shape[1]
-      var gradi = [0, 0]  // FIXME: 2D only
-      for (var i = 0; i < n; i++) {
-        // Reset
-        // FIXME: 2D only
-        gradi[0] = 0
-        gradi[1] = 0
-
-        // Accumulate gradient over j
-        for (var s = 0; s < this.numNeighbors; s++) {
-          var index = this.NN.get(i, s)
-          var Pij = this.P.get(i, s)
-          var Qij = this.Q.get(i, index)
-
-          // Accumulate KL divergence
-          KL -= Pij * Math.log(Qij)
-
-          var mulFactor = 4 * (exag * Pij - Qij) * this.Qu.get(i, index)
-          // Unfurled loop, but 2D only
-          gradi[0] += mulFactor * (this.Y.get(i, 0) - this.Y.get(index, 0))
-          gradi[1] += mulFactor * (this.Y.get(i, 1) - this.Y.get(index, 1))
-        }
-
-        // Set gradient
-        for (var d = 0; d < dims; d++) {
-          this.grad.set(i, d, gradi[d])
-        }
-      }
-      return KL
+      return null
     },
 
     XToNN: function (data) {
@@ -389,8 +346,9 @@ var tsne = tsne || {}
 
     initData: function (data) {
       this.n = data.length
-      this.numNeighbors = 999
-      var perplexity = 50 // 30
+      this.numNeighbors = 3 * 50
+      var perplexity = 50  // 30
+      this.theta = 0.8  // tunes the barnes-hut approximation, higher is more coarse
       this.XToNN(data)
       this.DToP(perplexity)
       this.Y = initialY(this.n)
