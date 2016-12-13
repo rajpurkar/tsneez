@@ -13,7 +13,7 @@ var BarnesHutTree = function(){
   var _branchCtr = 0
   var _root = null
   var _theta = .5
-  
+
   var that = {
     init:function(topleft, bottomright, theta){
       _theta = theta
@@ -24,8 +24,31 @@ var BarnesHutTree = function(){
       _root.origin = topleft
       _root.size = bottomright.subtract(topleft)
     },
-    
-    insert:function(newParticle){
+
+    initWithData: function(data, theta) {
+      // compute top left and top right based on data and call init
+      var N = data.shape[0]
+      var topleft = new Point(0, 0)
+      var bottomright = new Point(0, 0)
+      for (var i = 0; i < N; i++) {
+        var x = data.get(i, 0)
+        var y = data.get(i, 1)
+        if (x < topleft.x) topleft.x = x
+        if (y < topleft.y) topleft.y = y
+        if (x > bottomright.x) bottomright.x = x
+        if (y > bottomright.y) bottomright.y = y
+      }
+      that.init(topleft, bottomright, theta);
+      // then insert all the points
+      for (var i = 0; i < N; i++) {
+        that.insert(data.get(i, 0), data.get(i, 1));
+      }
+    },
+
+    insert:function(x, y){
+      // Create new particle of mass = 1 (this lets us keep a count of the points in a cell)
+      var newParticle = new Particle(new Point(x, y), 1)
+
       // add a particle to the tree, starting at the current _root and working down
       var node = _root
       var queue = [newParticle]
@@ -44,14 +67,14 @@ var BarnesHutTree = function(){
           }else{
             node.p = particle.p.multiply(p_mass)
           }
-          
+
         }else if ('origin' in node[p_quad]){
           // slot conatins a branch node, keep iterating with the branch
           // as our new root
           node.mass += (p_mass)
           if (node.p) node.p = node.p.add(particle.p.multiply(p_mass))
           else node.p = particle.p.multiply(p_mass)
-          
+
           node = node[p_quad]
           queue.unshift(particle)
         }else{
@@ -76,13 +99,13 @@ var BarnesHutTree = function(){
             // have identical coordinates by jostling one of them slightly
             var x_spread = branch_size.x*.08
             var y_spread = branch_size.y*.08
-            oldParticle.p.x = Math.min(branch_origin.x+branch_size.x,  
-                                       Math.max(branch_origin.x,  
-                                                oldParticle.p.x - x_spread/2 + 
+            oldParticle.p.x = Math.min(branch_origin.x+branch_size.x,
+                                       Math.max(branch_origin.x,
+                                                oldParticle.p.x - x_spread/2 +
                                                 Math.random()*x_spread))
-            oldParticle.p.y = Math.min(branch_origin.y+branch_size.y,  
-                                       Math.max(branch_origin.y,  
-                                                oldParticle.p.y - y_spread/2 + 
+            oldParticle.p.y = Math.min(branch_origin.y+branch_size.y,
+                                       Math.max(branch_origin.y,
+                                                oldParticle.p.y - y_spread/2 +
                                                 Math.random()*y_spread))
           }
 
@@ -96,27 +119,37 @@ var BarnesHutTree = function(){
 
     },
 
-    applyForces:function(particle, repulsion){
-      // find all particles/branch nodes this particle interacts with and apply
-      // the specified repulsion to the particle
+    computeForces:function(x, y){
+      // Compute forces on point at x
+      // Create new particle of zero
+      var particle = new Particle(new Point(x, y), 1)
+
+      var qsum = 0.  // Z
+
       var queue = [_root]
       while (queue.length){
         node = queue.shift()
         if (node===undefined) continue
         if (particle===node) continue
-        
+
+        // TODO: Collect Z
+
         if ('f' in node){
           // this is a particle leafnode, so just apply the force directly
           var d = particle.p.subtract(node.p);
-          var distance = Math.max(1.0, d.magnitude());
-          var direction = ((d.magnitude()>0) ? d : Point.random(1)).normalize()
-          particle.applyForce(direction.multiply(repulsion*(node._m||node.m))
-                                    .divide(distance * distance) );
+          var aff = 1. / (1. + d.magnitudeSquared())
+          var force = - aff * aff  // (qijZ)^2
+          if (d.magnitude() < 1e-5) {
+            continue
+          }
+          var direction = (d.magnitude()>0) ? d : Point.random(1e-3)
+          particle.applyForce(direction.multiply(force))
+          qsum += aff
         }else{
           // it's a branch node so decide if it's cluster-y and distant enough
           // to summarize as a single point. if it's too complex, open it and deal
           // with its quadrants in turn
-          var dist = particle.p.subtract(node.p.divide(node.mass)).magnitude()
+          var dist = particle.p.subtract(node.p).magnitudeSquared()
           var size = Math.sqrt(node.size.x * node.size.y)
           if (size/dist > _theta){ // i.e., s/d > Θ
             // open the quad and recurse
@@ -126,16 +159,20 @@ var BarnesHutTree = function(){
             queue.push(node.sw)
           }else{
             // treat the quad as a single body
-            var d = particle.p.subtract(node.p.divide(node.mass));
-            var distance = Math.max(1.0, d.magnitude());
-            var direction = ((d.magnitude()>0) ? d : Point.random(1)).normalize()
-            particle.applyForce(direction.multiply(repulsion*(node.mass))
-                                         .divide(distance * distance) );
+            var d = particle.p.subtract(node.p);
+            var aff = 1. / (1. + d.magnitudeSquared())
+            var force = - node.mass * aff * aff  // - N_cell * (q_{i,cell} * Z)^2
+            var direction = (d.magnitude()>0) ? d : Point.random(1e-3)
+            particle.applyForce(direction.multiply(force));
+            qsum += node.mass * aff
           }
         }
       }
+
+      // Return accumulated forces on the particle
+      return [particle.f.x / qsum, particle.f.y / qsum]
     },
-    
+
     _whichQuad:function(particle, node){
       // sort the particle into one of the quadrants of this node
       if (particle.p.exploded()) return null
@@ -149,7 +186,7 @@ var BarnesHutTree = function(){
         else return 'se'
       }
     },
-    
+
     _newBranch:function(){
       // to prevent a gc horrorshow, recycle the tree nodes between iterations
       if (_branches[_branchCtr]){
@@ -158,7 +195,7 @@ var BarnesHutTree = function(){
         branch.mass = 0
         delete branch.p
       }else{
-        branch = {origin:null, size:null, 
+        branch = {origin:null, size:null,
                   nw:undefined, ne:undefined, sw:undefined, se:undefined, mass:0}
         _branches[_branchCtr] = branch
       }
@@ -167,7 +204,7 @@ var BarnesHutTree = function(){
       return branch
     }
   }
-  
+
   return that
 }
 
@@ -186,7 +223,7 @@ var Point = function(x, y){
     y = x.y; x=x.x;
   }
   this.x = x;
-  this.y = y;  
+  this.y = y;
 }
 
 Point.random = function(radius){
@@ -212,6 +249,9 @@ Point.prototype = {
   },
   magnitude:function(){
   	return Math.sqrt(this.x*this.x + this.y*this.y);
+  },
+  magnitudeSquared:function(){
+  	return this.x*this.x + this.y*this.y;
   },
   normal:function(){
   	return new Point(-this.y, this.x);

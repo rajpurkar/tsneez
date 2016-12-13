@@ -270,6 +270,61 @@ var tsne = tsne || {}
       }
     },
 
+    updateGradBH: function () {
+      this.updateQ()
+      // Early exaggeration
+      var exag = this.iter < 100 ? 4 : 1
+
+      var bht = bhtree.BarnesHutTree()
+      bht.initWithData(this.Y, 1e-5)
+
+      var KL = 0
+      // Compute gradient of the KL divergence
+      var n = this.Y.shape[0]
+      var dims = this.Y.shape[1]
+      var gradi = [0, 0]  // FIXME: 2D only
+      for (var i = 0; i < n; i++) {
+        // Reset
+        // FIXME: 2D only
+        gradi[0] = 0
+        gradi[1] = 0
+
+        // Accumulate Fattr over j
+        for (var j = 0; j < n; j++) {
+          var Pij = this.P.get(i, j)
+          var Qij = this.Q.get(i, j)
+
+          // Accumulate KL divergence
+          KL -= Pij * Math.log(Qij)
+
+          var mulFactor = 4 * (exag * Pij * this.Qu.get(i, j))
+          // Unfurled loop, but 2D only
+          gradi[0] += mulFactor * (this.Y.get(i, 0) - this.Y.get(j, 0))
+          gradi[1] += mulFactor * (this.Y.get(i, 1) - this.Y.get(j, 1))
+        }
+
+        // Accumulate Frep over j
+        //for (var j = 0; j < n; j++) {
+        //  var Qij = this.Q.get(i, j)
+
+        //  var mulFactor = - 4 * Qij * this.Qu.get(i, j)
+        //  // Unfurled loop, but 2D only
+        //  gradi[0] += mulFactor * (this.Y.get(i, 0) - this.Y.get(j, 0))
+        //  gradi[1] += mulFactor * (this.Y.get(i, 1) - this.Y.get(j, 1))
+        //}
+
+        // Compute Frep using Barnes-Hut
+        var Frep = bht.computeForces(this.Y.get(i, 0), this.Y.get(i, 1))
+        gradi[0] += 4 * Frep[0]
+        gradi[1] += 4 * Frep[1]
+
+        // Set gradient
+        for (var d = 0; d < dims; d++) {
+          this.grad.set(i, d, gradi[d])
+        }
+      }
+    },
+
     updateGrad: function () {
       // Compute low dimensional affinities
       this.updateQ()
@@ -326,11 +381,12 @@ var tsne = tsne || {}
       this.grad = pool.zeros(this.Y.shape)
       this.Q = pool.zeros(this.P.shape)
       this.Qu = pool.zeros(this.P.shape)
+
     },
 
     step: function () {
       // Compute gradient
-      var cost = this.updateGrad()
+      var cost = this.updateGradBH()
       // if (this.iter > 100) {
       //   this.checkGrad()
       // }
