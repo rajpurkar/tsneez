@@ -8,15 +8,11 @@ var browserSync = require('browser-sync').create()
 var webpack_opts = {
   context: path.join(__dirname, '.'),
   entry: './streaming-tsne.js',
-  output: {
-    path: path.resolve(__dirname, 'dist'),
-    filename: 'streaming-tsne.js'
-  },
   plugins: []
 }
 
 gulp.task('webpack', function () {
-  var return_obj = gulp.src('.')
+  var return_obj = gulp.src('./src')
     .pipe(g_webpack(webpack_opts))
     .pipe(gulp.dest('dist/'))
 
