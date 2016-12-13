@@ -192,7 +192,7 @@ var tsne = tsne || {}
 
     updateGradBH: function () {
       // Early exaggeration
-      var exag = this.iter < 250 ? 12 : 1 // todo: this is important... see how can be tuned
+      var exag = this.iter < 250 ? 4 : 1 // todo: this is important... see how can be tuned
 
       // Initialize quadtree
       var bht = bhtree.BarnesHutTree()
@@ -343,7 +343,7 @@ var tsne = tsne || {}
       this.ytMinus2 = pool.clone(this.Y)
       this.Ygains = pool.ones(this.Y.shape)
       this.iter = 0
-      this.learningRate = 200
+      this.learningRate = 10
       this.grad = pool.zeros(this.Y.shape)
     },
 
