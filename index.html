@@ -22,8 +22,8 @@ function updateEmbedding() {
   svg.selectAll('.u')
     .data(data.words)
     .attr("transform", function(d, i) { return "translate(" +
-                                          ((Y.get(i, 0)*20*ss + tx) + 400) + "," +
-                                          ((Y.get(i, 1)*20*ss + ty) + 400) + ")"; });
+                                          ((Y.get(i, 0)*200*ss + tx) + 400) + "," +
+                                          ((Y.get(i, 1)*200*ss + ty) + 400) + ")"; });
 }
 
 var svg;
@@ -81,16 +81,24 @@ function step() {
 }
 
 $(window).load(function() {
-  $.getJSON( "wordvecs50dtop1000.json", function( j ) {
+  $.getJSON( "shortglove.json", function( j ) {
     let tic, toc
     data = j;
     // data.words = data.words.splice(0, 100);
     // data.vecs = data.vecs.splice(0, 100);
 
+    //if (window.console && window.console.profile) {
+    // console.profile("initialization");
+    //}
+
     tic = performance.now()
     T.initData(data.vecs); // init embedding  WITH SUBSET
     toc = performance.now()
     console.log('streaming:', toc - tic)
+
+    //if (window.console && window.console.profile) {
+    // console.profileEnd();
+    //}
 
     // compare with karpathy's tSNE
     let Tkarpathy = new tsnejs.tSNE();
