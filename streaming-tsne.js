@@ -278,39 +278,27 @@ var tsne = tsne || {}
       var exag = this.iter < 250 ? 12 : 1
 
       var bht = bhtree.BarnesHutTree()
-      bht.initWithData(this.Y, 0.5)
+      bht.initWithData(this.Y, 0.8)
 
       var KL = 0
       // Compute gradient of the KL divergence
       var n = this.Y.shape[0]
       var dims = this.Y.shape[1]
-      var gradi = [0, 0]
 
       var Z = 0
       for (var i = 0; i < n; i++) {
-        // Reset
-        // FIXME: 2D only
-        gradi[0] = 0
-        gradi[1] = 0
-
         // Compute Frep using Barnes-Hut
+        // NOTE: 2D only
         var Frep = bht.computeForces(this.Y.get(i, 0), this.Y.get(i, 1))
-        gradi[0] += 4 * Frep.x
-        gradi[1] += 4 * Frep.y
+        this.grad.set(i, 0, 4 * Frep.x)
+        this.grad.set(i, 1, 4 * Frep.y)
         Z += Frep.Z
-
-        // Set gradient
-        for (var d = 0; d < dims; d++) {
-          this.grad.set(i, d, gradi[d])
-        }
       }
-      console.log('Zest:', Z, 'qtot:', this.qtotal)
 
+      var gradi = new Float64Array(dims)
       for (var i = 0; i < n; i++) {
         // Reset
-        // FIXME: 2D only
-        gradi[0] = 0
-        gradi[1] = 0
+        for (var d = 0; d < dims; d++) gradi[d] = 0
 
         // Accumulate Fattr over j
         for (var j = 0; j < n; j++) {
