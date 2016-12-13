@@ -183,7 +183,7 @@ var tsne = tsne || {}
         sum += elem
       })
 
-      if (sum === 0) { window.alert('sum equals zero') }
+      if (sum === 0) { console.count('sum equals zero') }
 
       var H = 0
       Object.keys(pi).forEach(function (key) {
@@ -292,7 +292,7 @@ var tsne = tsne || {}
       this.D = []
       this.n = data.length
       var perplexity = 50  // (van der Maaten 2014)
-      this.numNeighbors = 3 * this.perplexity  // (van der Maaten 2014)
+      this.numNeighbors = 3 * perplexity  // (van der Maaten 2014)
       this.theta = 0.5  // [0, 1] tunes the barnes-hut approximation, 0 is exact
       this.XToD(data)
       this.DToP(perplexity)
