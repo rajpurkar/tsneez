@@ -1,7 +1,7 @@
 var gaussian = require('gaussian')
 var pool = require('ndarray-scratch')
-var bhtree = require('./bhtree.js')
-var vptree = require('./vptree.js')
+var bhtree = require('./includes/bhtree.js')
+var vptree = require('./includes/vptree.js')
 var tsne = tsne || {}
 
 ;(function (global) {
