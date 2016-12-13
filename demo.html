@@ -87,20 +87,18 @@ $(window).load(function() {
     // data.words = data.words.splice(0, 100);
     // data.vecs = data.vecs.splice(0, 100);
 
-    if (window.console && window.console.profile) {
-     console.profile("initialization");
-    }
+    //if (window.console && window.console.profile) {
+    // console.profile("initialization");
+    //}
 
     tic = performance.now()
     T.initData(data.vecs); // init embedding  WITH SUBSET
     toc = performance.now()
     console.log('streaming:', toc - tic)
 
-    if (window.console && window.console.profile) {
-     console.profileEnd();
-    }
-
-    return
+    //if (window.console && window.console.profile) {
+    // console.profileEnd();
+    //}
 
     // compare with karpathy's tSNE
     let Tkarpathy = new tsnejs.tSNE();

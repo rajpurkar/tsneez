@@ -159,6 +159,7 @@ var tsne = tsne || {}
       var n = data.length
       var indices = Array.apply(null, Array(n)).map(function (_, i) { return i })
       var vpt = vptree.build(indices, euclidean(data))
+      this.NN = pool.zeros([n, this.numNeighbors])
       for (var i = 0; i < n; i++) {
         var neighbors = vpt.search(i, this.numNeighbors + 1)
         neighbors.shift() // first element is own self
@@ -166,6 +167,7 @@ var tsne = tsne || {}
         for (var j = 0; j < neighbors.length; j++) {
           var neighbor = neighbors[j]
           elem[neighbor.i] = neighbor.d * neighbor.d
+        this.NN.set(i, j, neighbor.i)
         }
         this.D.push(elem)
       }
@@ -176,23 +178,28 @@ var tsne = tsne || {}
 
       var pi = {}
       var sum = 0
-      var that = this
-      Object.keys(this.D[i]).forEach(function (key) {
-        var elem = Math.exp(-beta * that.D[i][key])
+      var Di = this.D[i]
+      for (var k = 0; k < this.numNeighbors; k++) {
+        var key = this.NN.get(i, k)
+        var elem = Math.exp(-beta * Di[key])
         pi[key] = elem
         sum += elem
-      })
+      }
 
-      if (sum === 0) { console.count('sum equals zero') }
+      // For debugging
+      //if (sum === 0) {
+      //  console.count('sum equals zero')
+      //}
 
       var H = 0
-      Object.keys(pi).forEach(function (key) {
+      for (var k = 0; k < this.numNeighbors; k++) {
+        var key = this.NN.get(i, k)
         var val = pi[key] / sum
         pi[key] = val
         if (val > 1e-7) { // TODO: do we need this?
           H -= val * Math.log2(val)
         }
-      })
+      }
 
       this.P[i] = pi
       return H
@@ -208,32 +215,33 @@ var tsne = tsne || {}
         this.symP.push({})
       }
 
-      var that = this
-      this.P.forEach(function (pi, i) {
-        Object.keys(pi).forEach(function (j) {
-          if (j === i) { window.alert('not possible') }
+      for (var i = 0; i < this.n; i++) {
+        var pi = this.P[i]
+        for (var k = 0; k < this.numNeighbors; k++) {
+          var j = this.NN.get(i, k)
+          //if (j === i) { window.alert('not possible') }
           var pji = 0
-          if (i in that.P[j]) {
-            pji = that.P[j][i]
+          if (i in this.P[j]) {
+            pji = this.P[j][i]
           }
-          var val = (pi[j] + pji) / (2 * that.n)
+          var val = (pi[j] + pji) / (2 * this.n)
 
           // sanity check
-          if (j in that.symP[i]) {
-            if (val !== that.symP[i][j]) {
-              window.alert('nooo')
-            }
-          }
-          if (i in that.symP[j]) {
-            if (val !== that.symP[j][i]) {
-              window.alert('nooo')
-            }
-          }
+          //if (j in this.symP[i]) {
+          //  if (val !== this.symP[i][j]) {
+          //    window.alert('nooo')
+          //  }
+          //}
+          //if (i in this.symP[j]) {
+          //  if (val !== this.symP[j][i]) {
+          //    window.alert('nooo')
+          //  }
+          //}
 
-          that.symP[i][j] = val
-          that.symP[j][i] = val
-        })
-      })
+          this.symP[i][j] = val
+          this.symP[j][i] = val
+        }
+      }
     },
 
     DToP: function (perplexity) {
