@@ -291,9 +291,9 @@ var tsne = tsne || {}
       this.P = []
       this.D = []
       this.n = data.length
-      this.numNeighbors = 150 // 3 * 50
-      var perplexity = 50  // 30
-      this.theta = 0.5  // tunes the barnes-hut approximation, higher is more coarse
+      var perplexity = 50  // (van der Maaten 2014)
+      this.numNeighbors = 3 * this.perplexity  // (van der Maaten 2014)
+      this.theta = 0.5  // [0, 1] tunes the barnes-hut approximation, 0 is exact
       this.XToD(data)
       this.DToP(perplexity)
       this.Y = initialY(this.n)
