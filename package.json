@@ -4,14 +4,14 @@
   "description": "streaming t-sne implementation",
   "main": "streaming-tsne.js",
   "dependencies": {
-    "cwise": "^1.0.9",
+    "browser-sync": "^2.18.5",
     "d3": "^4.4.0",
     "gaussian": "^1.1.0",
+    "gulp": "^3.9.1",
+    "gulp-webpack": "^1.5.0",
     "json-loader": "^0.5.4",
-    "mathjs": "^3.7.0",
-    "ndarray": "^1.0.18",
-    "ndarray-ops": "^1.2.2",
     "ndarray-scratch": "^1.2.0",
+    "nodemon": "^1.11.0",
     "webpack-dev-server": "^1.16.2"
   },
   "devDependencies": {
@@ -19,8 +19,7 @@
   },
   "scripts": {
     "test": "echo \"Error: no test specified\" && exit 1",
-    "make": "webpack --config webpack.config.js",
-    "dev": "webpack-dev-server --progress --colors"
+    "dev": "NODE_ENV=development gulp"
   },
   "repository": {
     "type": "git",

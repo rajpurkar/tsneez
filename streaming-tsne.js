@@ -1,7 +1,6 @@
 var gaussian = require('gaussian')
 var pool = require('ndarray-scratch')
 var bhtree = require('./bhtree.js')
-var ops = require('ndarray-ops')
 var vptree = require('./vptree.js')
 var tsne = tsne || {}
 
@@ -17,18 +16,6 @@ var tsne = tsne || {}
       ys.set(i, 1, distribution.ppf(Math.random()))
     }
     return ys
-  }
-
-  var computeKL = function (P, Q) {
-    // Compute KL divergence, minus the constant term of sum(p_ij * log(p_ij))
-    var n = P.shape[0]
-    var cost = 0
-    for (var i = 0; i < n; i++) {
-      for (var j = 0; j < n; j++) {
-        cost -= P.get(i, j) * Math.log(Q.get(i, j))
-      }
-    }
-    return cost
   }
 
   var squaredEuclidean = function (x, y) {
@@ -109,6 +96,7 @@ var tsne = tsne || {}
     },
     updateGradBH: function () {
       // Early exaggeration
+
       var exag = this.iter < 250 ? 4 : 1 // todo: this is important... see how can be tuned
 
       // Initialize quadtree
@@ -292,7 +280,7 @@ var tsne = tsne || {}
       this.D = []
       this.n = data.length
       this.numNeighbors = 150 // 3 * 50
-      var perplexity = 50  // 30
+      var perplexity = 20  // 30
       this.theta = 0.5  // tunes the barnes-hut approximation, higher is more coarse
       this.XToD(data)
       this.DToP(perplexity)
