@@ -14,7 +14,6 @@
       <script type="text/javascript">
 
 var T = new tsne.TSNE(); // create a tSNE instance
-
 var data;
 
 function updateEmbedding() {
@@ -88,8 +87,6 @@ function step() {
 $(window).load(function() {
   $.getJSON( "data/wordvecs50dtop1000.json", function( j ) {
     data = j;
-    // data.words = data.words.splice(0, 100);
-    // data.vecs = data.vecs.splice(0, 100);
 
     if (window.console && window.console.profile) {
      console.profile("initialization");
@@ -104,7 +101,7 @@ $(window).load(function() {
     }
 
     // compare with karpathy's tSNE
-    let Tkarpathy = new tsnejs.tSNE();
+    var Tkarpathy = new tsnejs.tSNE();
     console.time('karpathyInit');
     Tkarpathy.initDataRaw(data.vecs);
     console.timeEnd('karpathyInit')
