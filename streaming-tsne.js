@@ -126,13 +126,14 @@ var tsne = tsne || {}
         // Accumulate Fattr over nearest neighbors
         var that = this
         var pi = this.symP[i]
-        Object.keys(pi).forEach(function (j) {
+        for (var k = 0; k < this.numNeighbors; k++) {
+          var j = this.NN.get(i, k)
           // Unfurled loop, but 2D only
           var Dij = that.D[i][j] || that.D[j][i]
           var mulFactor = 4 * exag * pi[j] * (1.0 / (1.0 + Dij))
           gradi[0] += mulFactor * (that.Y.get(i, 0) - that.Y.get(j, 0))
           gradi[1] += mulFactor * (that.Y.get(i, 1) - that.Y.get(j, 1))
-        })
+        }
 
         // Normalize Fattr then increment gradient
         for (var d = 0; d < dims; d++) {
@@ -287,7 +288,7 @@ var tsne = tsne || {}
       this.P = []
       this.D = []
       this.n = data.length
-      var perplexity = 50  // (van der Maaten 2014)
+      var perplexity = 30  // (van der Maaten 2014)
       this.numNeighbors = 3 * perplexity  // (van der Maaten 2014)
       this.theta = 0.5  // [0, 1] tunes the barnes-hut approximation, 0 is exact
       this.XToD(data)
