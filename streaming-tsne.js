@@ -43,21 +43,9 @@ var tsne = tsne || {}
     return d
   }
 
-<<<<<<< HEAD
-  var euclidean = function (x, y) {
-    return Math.sqrt(squaredEuclidean(x, y))
-  }
-
-  var getpIAndH = function (Pi, Xi, beta, vpt, numNeighbors) {
-    // Compute a single row Pi of the kernel and the Shannon entropy H
-    var neighbors = vpt.search(Xi, numNeighbors)
-    for (var j = 0; j < neighbors.length; j++) {
-      Pi.set(neighbors[j]['i'], Math.exp(-beta * neighbors[j]['d']))
-=======
   var euclidean = function (data) {
     return function (x, y) {
       return Math.sqrt(squaredEuclidean(data[x], data[y]))
->>>>>>> nn-cut-2
     }
   }
 
@@ -70,9 +58,7 @@ var tsne = tsne || {}
     for (var i = 0; i < n; i++) {
       for (var s = 0; s < this.numNeighbors; s++) {
         var j = this.NN.get(i, s)
-
       }
-    }
       for (var j = i + 1; j < n; j++) {
         var Pij = (P.get(i, j) + P.get(j, i)) / (2 * n)
         P.set(i, j, Pij)
@@ -234,6 +220,7 @@ var tsne = tsne || {}
 
         // Accumulate Fattr over nearest neighbors
         for (var s = 0; s < this.numNeighbors; s++) {
+          var index = this.NN.get(i, s)
           var Pij = this.P.get(i, s)
           var Dij = this.D.get(i, s)
 
@@ -259,12 +246,12 @@ var tsne = tsne || {}
       var indices = Array.apply(null, Array(n)).map(function (_, i) { return i })
       var vpt = vptree.build(indices, euclidean(data))
       for (var i = 0; i < n; i++) {
-        var neighbors = vpt.search(i, this.numNeighbors + 1) 
+        var neighbors = vpt.search(i, this.numNeighbors + 1)
         neighbors.shift() // first element is own self
         for (var j = 0; j < neighbors.length; j++) {
           var neighbor = neighbors[j]
           this.NN.set(i, j, neighbor.i)
-          this.D.set(i, j, neighbor.d * neighbor.d))
+          this.D.set(i, j, neighbor.d * neighbor.d)
         }
       }
     },
@@ -346,9 +333,9 @@ var tsne = tsne || {}
 
     initData: function (data) {
       this.n = data.length
-      this.numNeighbors = 3 * 50
+      this.numNeighbors = 999 // 3 * 50
       var perplexity = 50  // 30
-      this.theta = 0.8  // tunes the barnes-hut approximation, higher is more coarse
+      this.theta = 0  // tunes the barnes-hut approximation, higher is more coarse
       this.XToNN(data)
       this.DToP(perplexity)
       this.Y = initialY(this.n)

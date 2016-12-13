@@ -75,7 +75,7 @@ function step() {
   $("#cost").html("iteration " + T.iter + ", fps: " + fps + ", cost: " + cost);
   updateEmbedding();
 
-  if (stepnum > 1000) {
+  if (stepnum > 5) {
     clearInterval(stepHandle);
   }
 }
@@ -110,7 +110,7 @@ $(window).load(function() {
     }
     */
     drawEmbedding(); // draw initial embedding
-    stepHandle = setInterval(step, 0);
+    //stepHandle = setInterval(step, 0);
     step();
   });
 });
