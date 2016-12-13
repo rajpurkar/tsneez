@@ -185,7 +185,7 @@ var BarnesHutTree = function(){
           }else{
             // treat the quad as a single body
             var d = particle.p.subtract(node.p);
-            var aff = 1. / (1. + d.magnitudeSquared())
+            var aff = 1.0 / (1.0 + d.magnitudeSquared())
             var force = - node.mass * aff * aff  // - N_cell * (q_{i,cell} * Z)^2
             var direction = (d.magnitude()>0) ? d : Point.random(1e-5)
             particle.applyForce(direction.multiply(force));

@@ -68,7 +68,9 @@ var stepHandle;
 var stepnum = 0;
 var tic = performance.now()
 function step() {
-  var cost = T.step();
+  if(T.iter < 500) {
+    var cost = T.step();
+  }
   var fps = Math.round((T.iter / (performance.now() - tic)) * 1000);
   $("#cost").html("iteration " + T.iter + ", fps: " + fps + ", cost: " + cost);
   updateEmbedding();
@@ -109,7 +111,6 @@ $(window).load(function() {
     drawEmbedding(); // draw initial embedding
     stepHandle = setInterval(step, 0);
     step();
-
   });
 });
 
