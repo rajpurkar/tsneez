@@ -67,7 +67,9 @@ function zoomHandler() {
 var stepnum = 0;
 var tic = performance.now()
 function step() {
-  var cost = T.step();
+  if(T.iter < 500) {
+    var cost = T.step();
+  }
   var fps = Math.round((T.iter / (performance.now() - tic)) * 1000);
   $("#cost").html("iteration " + T.iter + ", fps: " + fps + ", cost: " + cost);
   updateEmbedding();
@@ -86,25 +88,26 @@ $(window).load(function() {
     console.log('streaming:', toc - tic)
 
     // compare with karpathy's tSNE
-    //let Tkarpathy = new tsnejs.tSNE();
-    //console.log(Tkarpathy);
-    //tic = performance.now()
-    //Tkarpathy.initDataRaw(data.vecs);
-    //toc = performance.now()
-    //console.log('karpathy:', toc - tic)
+    let Tkarpathy = new tsnejs.tSNE();
+    console.log(Tkarpathy);
+    tic = performance.now()
+    Tkarpathy.initDataRaw(data.vecs);
+    toc = performance.now()
+    console.log('karpathy:', toc - tic)
 
-    //const n = Math.sqrt(Tkarpathy.P.length);
-    //for (let i = 0; i < n; i++) {
-    //  for (let j = i + 1; j < n; j++) {
-    //    if (Math.abs(Tkarpathy.P[i*n+j] - T.P.get(i, j)) > 1e-5) {
-    //      console.log('bad', Tkarpathy.P[i*n+j], T.P.get(i, j))
-    //    }
-    //  }
-    //}
-    drawEmbedding(); // draw initial embedding
+    const n = Math.sqrt(Tkarpathy.P.length);
+    /* 
+    for (let i = 0; i < n; i++) {
+      for (let j = i + 1; j < n; j++) {
+        if (Math.abs(Tkarpathy.P[i*n+j] - T.P.get(i, j)) > 1e-5) {
+          console.log('bad', Tkarpathy.P[i*n+j], T.P.get(i, j))
+        }
+      }
+    }
+    */
+    drawEmbedding();
     setInterval(step, 0);
     step();
-
   });
 });
 

@@ -10,10 +10,6 @@ var tsne = tsne || {}
 ;(function (global) {
   'use strict'
 
-  var hasNaN = function (M) {
-    return !ndtest.equal(M, M)
-  }
-
   var initialY = function (numSamples) {
     // FIXME: allow arbitrary dimensions??
     var distribution = gaussian(0, 1e-4)
@@ -37,7 +33,7 @@ var tsne = tsne || {}
     return cost
   }
 
-  var squared_euclidean = function (x, y) {
+  var squaredEuclidean = function (x, y) {
     // Compute Euclidean distance between two vectors as Arrays
     var m = x.length
     var d = 0
@@ -50,7 +46,7 @@ var tsne = tsne || {}
   }
 
   var euclidean = function (x, y) {
-    return Math.sqrt(squared_euclidean(x, y))
+    return Math.sqrt(squaredEuclidean(x, y))
   }
 
   var getpIAndH = function (Pi, Xi, beta, vpt, numNeighbors) {
@@ -330,7 +326,7 @@ var tsne = tsne || {}
       this.updateQ()
 
       // Early exaggeration
-      var exag = this.iter < 100 ? 4 : 1
+      var exag = this.iter < 100 ? 4 : 1 // todo: this is important... see how can be tuned
 
       var KL = 0
       // Compute gradient of the KL divergence
@@ -368,7 +364,7 @@ var tsne = tsne || {}
 
     initData: function (data) {
       var numSamples = data.length
-      var numNeighbors = 90
+      var numNeighbors = 10
       var perplexity = 30
       var vpt = vptree.build(data, euclidean)
       this.P = XToP(data, perplexity, vpt, numNeighbors)
