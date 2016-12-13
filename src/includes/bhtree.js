@@ -146,60 +146,64 @@ var BarnesHutTree = function(){
     },
 
     computeForces:function(x, y){
-      // Compute forces on point at x
-      // Create new particle of zero
-      var particle = new Particle(new Point(x, y), 1)
+      var xForce = 0.
+      var yForce = 0.
 
-      var qsum = 0.  // Z
+      var Z = 0.  // Z
       var count = 0
 
       var queue = [_root]
       while (queue.length){
         node = queue.shift()
         if (node===undefined) continue
-        if (particle===node) continue
 
         if ('f' in node){
           count++
           // this is a particle leafnode, so just apply the force directly
-          var d = particle.p.subtract(node.p);
-          var aff = 1. / (1. + d.magnitudeSquared())
+          var dx = x - node.p.x
+          var dy = y - node.p.y
+          var distSq = dx*dx + dy*dy
+          var aff = 1. / (1. + distSq)
           var force = - aff * aff  // -qu_ij^2 = -(q_ij * Z)^2
-          if (d.magnitude() < 1e-5) {
-            continue
-          }
-          particle.applyForce(d.multiply(force))
-          qsum += aff
+          if (distSq < 1e-5) continue
+          // Accumulate force and Z
+          xForce += force * dx
+          yForce += force * dy
+          Z += aff
         }else{
           // it's a branch node so decide if it's cluster-y and distant enough
           // to summarize as a single point. if it's too complex, open it and deal
           // with its quadrants in turn
-          var dist = particle.p.subtract(node.p).magnitude()
+          var dx = x - node.p.x
+          var dy = y - node.p.y
+          var distSq = dx*dx + dy*dy
+          var dist = Math.sqrt(distSq)
           var rcell = Math.max(node.size.x, node.size.y)
-          if (rcell/dist > _theta){ // i.e., s/d > Θ
+          if (rcell/dist > _theta) { // i.e., s/d > Θ
             // open the quad and recurse
             queue.push(node.ne)
             queue.push(node.nw)
             queue.push(node.se)
             queue.push(node.sw)
-          }else{
-            // treat the quad as a single body
-            var d = particle.p.subtract(node.p);
-            var aff = 1.0 / (1.0 + d.magnitudeSquared())
-            var force = - node.mass * aff * aff  // - N_cell * (q_{i,cell} * Z)^2
-            var direction = (d.magnitude()>0) ? d : Point.random(1e-5)
-            particle.applyForce(direction.multiply(force));
-            qsum += node.mass * aff
+          } else {
             count += node.mass
+            // treat the quad as a single body
+            var aff = 1.0 / (1.0 + distSq)
+            var force = - node.mass * aff * aff  // - N_cell * (q_{i,cell} * Z)^2
+            //var direction = (d.magnitude()>0) ? d : Point.random(1e-5)
+            // Accumulate force and Z
+            xForce += force * dx
+            yForce += force * dy
+            Z += node.mass * aff
           }
         }
       }
 
       // Return accumulated forces on the particle
       return {
-        x: particle.f.x,
-        y: particle.f.y,
-        Z: qsum,
+        x: xForce,
+        y: yForce,
+        Z: Z,
         count: count
       }
     },
