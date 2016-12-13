@@ -10,7 +10,7 @@ var webpack_opts = {
   entry: './streaming-tsne.js',
   output: {
     path: path.resolve(__dirname, 'dist'),
-    filename: 'streaming-tsne-wow.js'
+    filename: 'streaming-tsne.js'
   },
   plugins: []
 }
@@ -46,6 +46,7 @@ if (process.env.NODE_ENV === 'development') {
         baseDir: "./"
       }
     })
+    gulp.watch("*.html").on('change', browserSync.reload);
   })
 
   gulp.task('default', ['webpack', 'browser-sync'])
