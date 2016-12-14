@@ -68,19 +68,22 @@
         console.profileEnd()
       }
     }
-    //if (stepnum > 10) {
-    //  clearInterval(stepHandle)
-    //}
 
     stepnum++
+    requestAnimationFrame(step)
   }
 
   var DO_PROFILE = true
 
   $(window).load(function () {
-    //$.getJSON('/data/wordvecs50dtop1000.json', function (j) {
-    $.getJSON('/data/shortglove.json', function (j) {
-      data = j
+    $.getJSON('/data/wordvecs50dtop1000.json', function (j) {
+    //$.getJSON('/data/shortglove.json', function (j) {
+      //data = j
+      var N = 100
+      data = {
+        words: j.words.slice(0, N),
+        vecs: j.vecs.slice(0, N),
+      }
 
       if (DO_PROFILE && window.console && window.console.profile) {
         console.profile('initialization')
@@ -113,8 +116,15 @@
       if (DO_PROFILE && window.console && window.console.profile) {
         console.profile('step')
       }
-      stepHandle = setInterval(step, 0)
-      step()
+      requestAnimationFrame(step)
+
+      $('#cost').click(function() {
+        console.log('adding word', j.words[N])
+        T.add(j.vecs[N])
+        N++
+        data.words = j.words.slice(0, N)
+        drawEmbedding()  // redraw?
+      })
     })
   })
 })(tsne, $, d3, performance, tsnejs)

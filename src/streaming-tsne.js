@@ -1,5 +1,6 @@
 var gaussian = require('gaussian')
 var pool = require('ndarray-scratch')
+var ops = require('ndarray-ops')
 var bhtree = require('./includes/bhtree.js')
 var vptree = require('./includes/vptree.js')
 var tsne = tsne || {}
@@ -18,7 +19,7 @@ var tsne = tsne || {}
   var initialY = function (numSamples) {
     // FIXME: allow arbitrary dimensions??
     var distribution = gaussian(0, 1e-4)
-    var ys = pool.zeros([numSamples, 2])
+    var ys = pool.zeros([numSamples * 2, 2])  // initialize with twice as much room as necessary
     for (var i = 0; i < numSamples; i++) {
       ys.set(i, 0, distribution.ppf(Math.random()))
       ys.set(i, 1, distribution.ppf(Math.random()))
@@ -30,15 +31,16 @@ var tsne = tsne || {}
     // Compute Euclidean distance between two vectors as Arrays
     var m = x.length
     var d = 0
-    for (var k = 0; k < m; k++) {
-      var xk = x[k]
-      var yk = y[k]
+    var k, xk, yk
+    for (k = 0; k < m; k++) {
+      xk = x[k]
+      yk = y[k]
       d += (xk - yk) * (xk - yk)
     }
     return d
   }
 
-  var euclidean = function (data) {
+  var euclideanOf = function (data) {
     return function (x, y) {
       return Math.sqrt(squaredEuclidean(data[x], data[y]))
     }
@@ -47,8 +49,9 @@ var tsne = tsne || {}
   function sign (x) { return x > 0 ? 1 : x < 0 ? -1 : 0 }
 
   var TSNE = function (opt) {
-    this.perplexity = getopt(opt, 'perplexity', 30)  // (van der Maaten 2014)
-    this.numNeighbors = getopt(opt, 'numNeighbors', 3 * this.perplexity)  // (van der Maaten 2014)
+    var perplexity = getopt(opt, 'perplexity', 30)  // (van der Maaten 2014)
+    this.Hdesired = Math.log2(perplexity)
+    this.numNeighbors = getopt(opt, 'numNeighbors', 3 * perplexity)  // (van der Maaten 2014)
     this.theta = getopt(opt, 'theta', 0.5)  // [0, 1] tunes the barnes-hut approximation, 0 is exact
   }
 
@@ -74,8 +77,8 @@ var tsne = tsne || {}
     updateY: function () {
       // Perform gradient update in place
       var alpha = this.iter < 250 ? 0.5 : 0.8
-      var n = this.Y.shape[0]
-      var dims = this.Y.shape[1]
+      var n = this.n
+      var dims = this.dims
       var Ymean = [0, 0]  // FIXME: only two dimensional
       for (var i = 0; i < n; i++) {
         for (var d = 0; d < dims; d++) {
@@ -113,11 +116,11 @@ var tsne = tsne || {}
 
       // Initialize quadtree
       var bht = bhtree.BarnesHutTree()
-      bht.initWithData(this.Y, this.theta)
+      bht.initWithData(this.Y, this.theta, this.n)
 
       // Compute gradient of the KL divergence
-      var n = this.Y.shape[0]
-      var dims = this.Y.shape[1]
+      var n = this.n
+      var dims = this.dims
 
       // Compute Frep using Barnes-Hut
       var Z = 0
@@ -162,19 +165,35 @@ var tsne = tsne || {}
     XToD: function (data) {
       var n = data.length
       var indices = Array.apply(null, Array(n)).map(function (_, i) { return i })
-      var vpt = vptree.build(indices, euclidean(data))
-      this.NN = pool.zeros([n, this.numNeighbors])
+      this.vpt = vptree.build(indices, euclideanOf(data))
+      this.NN = pool.zeros([n * 2, this.numNeighbors])  // FIXME: either switch to Array of Arrays or make sure this gets expanded
+      this.dmax = []
+      this.kmax = []
       for (var i = 0; i < n; i++) {
-        var neighbors = vpt.search(i, this.numNeighbors + 1)
-        neighbors.shift() // first element is own self
-        var elem = {}
-        for (var j = 0; j < neighbors.length; j++) {
-          var neighbor = neighbors[j]
-          elem[neighbor.i] = neighbor.d * neighbor.d
-          this.NN.set(i, j, neighbor.i)
-        }
-        this.D.push(elem)
+        this.pushD(i)
       }
+    },
+
+    pushD: function(i) {
+      var neighbors = this.vpt.search(i, this.numNeighbors + 1)
+      neighbors.shift() // first element is own self
+      var elem = {}
+      var dmaxi = 0
+      var kmaxi
+      for (var j = 0; j < neighbors.length; j++) {
+        var neighbor = neighbors[j]
+        elem[neighbor.i] = neighbor.d * neighbor.d
+        this.NN.set(i, j, neighbor.i)
+
+        // Keep track of maximum distance
+        if (neighbor.d > dmaxi) {
+          dmaxi = neighbor.d
+          kmaxi = neighbor.i
+        }
+      }
+      this.D.push(elem)
+      this.dmax.push(dmaxi)
+      this.kmax.push(kmaxi)
     },
 
     setPiAndGetH: function (i, beta) {
@@ -206,66 +225,114 @@ var tsne = tsne || {}
       }
 
       this.P[i] = pi
+      this.Psum[i] = sum
       return H
     },
 
-    DToP: function (perplexity) {
-      // Shannon entropy H is log2 of perplexity
-      var Hdesired = Math.log2(perplexity)
+    DToP: function () {
       this.P = []
-      for (var i = 0; i < this.n; i++) {
-        this.P.push({})
-      }
+      this.Psum = []
+      this.beta = []
 
       for (var i = 0; i < this.n; i++) {
-        // We perform binary search to find the beta such that
-        // the conditional distribution P_i has the given perplexity.
-        // We define:
-        //   beta = 1 / (2 * sigma_i^2)
-        // where sigma_i is the bandwith of the Gaussian kernel
-        // for the conditional distribution P_i
-        var beta = 1
-        var betamin = -Infinity
-        var betamax = Infinity
-        var Hdiff
-        var numTries = 0
-
-        do {
-          numTries++
-          var H = this.setPiAndGetH(i, beta)
-          Hdiff = H - Hdesired
-
-          if (Hdiff > 0) {
-            // Entropy too high, beta is too small
-            betamin = beta
-            if (betamax === Infinity) {
-              beta = beta * 2
-            } else {
-              beta = (beta + betamax) / 2
-            }
-          } else {
-            // Entropy is too low, beta is too big
-            betamax = beta
-            if (betamin === -Infinity) {
-              beta = beta / 2
-            } else {
-              beta = (beta + betamin) / 2
-            }
-          }
-        } while (Math.abs(Hdiff) > 1e-05 && numTries < 50)
+        this.pushP(i)
       }
-
-      // FIXME: symmetrize
-      // Symmetrize conditional distribution
-      //this.symmetrizeP()
     },
+
+    pushP: function (i) {
+      // We perform binary search to find the beta such that
+      // the conditional distribution P_i has the given perplexity.
+      // We define:
+      //   beta = 1 / (2 * sigma_i^2)
+      // where sigma_i is the bandwith of the Gaussian kernel
+      // for the conditional distribution P_i
+      var beta = 1
+      var betamin = -Infinity
+      var betamax = Infinity
+      var Hdiff
+      var numTries = 0
+
+      do {
+        numTries++
+        var H = this.setPiAndGetH(i, beta)
+        Hdiff = H - this.Hdesired
+
+        if (Hdiff > 0) {
+          // Entropy too high, beta is too small
+          betamin = beta
+          if (betamax === Infinity) {
+            beta = beta * 2
+          } else {
+            beta = (beta + betamax) / 2
+          }
+        } else {
+          // Entropy is too low, beta is too big
+          betamax = beta
+          if (betamin === -Infinity) {
+            beta = beta / 2
+          } else {
+            beta = (beta + betamin) / 2
+          }
+        }
+      } while (Math.abs(Hdiff) > 1e-05 && numTries < 50)
+      this.beta.push(beta)
+    },
+
+    /* Update neighborhoods of other points
+     *
+     * newj - index of the new point
+     */
+    updateNeighborhoods: function (newj) {
+      var i, newd, kmax, dmax, jmax, newdSq
+      for (i = 0; i < newj; i++) {
+        dmax = this.dmax[i]
+        newdSq = squaredEuclidean(this.X[newj], this.X[i])
+        newd = Math.sqrt(newdSq)
+
+        if (newd < dmax) {
+          // Xnewj is in the neighborhood of Xi!
+          // Replace the point farthest away from Xi in neighborhood
+          kmax = this.kmax[i]
+          jmax = this.NN[kmax]
+          this.NN[kmax] = newj
+          delete this.P[i][jmax]  // or this.P[i][jmax] = 0?
+
+          // Compute approximate update with old beta and Psum
+          // (Note that to compute an exact update, we have to redo the
+          // search for beta, or at least renormalize Pi)
+          this.P[i][newj] = Math.exp(-this.beta[i] * newdSq) / this.Psum[i]
+        }
+      }
+    },
+
+    pushY: function(newi) {
+      // Initialize embedding as weighted average of its neighbors (Pezzotti)
+      var Pi = this.P[newi]
+      var y0 = 0
+      var y1 = 0
+      var k, j, Pji
+      for (k = 0; k < this.numNeighbors; k++) {
+        j = this.NN.get(newi, k)
+        Pji = Pi[j]
+        y0 = Pji * this.Y.get(j, 0)
+        y1 = Pji * this.Y.get(j, 1)
+      }
+      this.Y.set(newi, 0, y0)
+      this.Y.set(newi, 1, y1)
+    },
+
+    /************************
+     * PUBLIC API STARTS HERE
+     ************************/
 
     initData: function (data) {
       this.P = []
       this.D = []
+      this.X = data
       this.n = data.length
+      this.dims = 2
       this.XToD(data)
-      this.DToP(this.perplexity)
+      this.DToP()
       this.Y = initialY(this.n)
       this.ytMinus1 = pool.clone(this.Y)
       this.ytMinus2 = pool.clone(this.Y)
@@ -273,6 +340,27 @@ var tsne = tsne || {}
       this.iter = 0
       this.learningRate = 10
       this.grad = pool.zeros(this.Y.shape)
+    },
+
+    expandYbuffers: function() {
+        var newlen = this.n * 2
+        //TODO
+    },
+
+    /*
+     * x - array containing the new point
+     */
+    add: function (x) {
+      if (x.length != this.X[0].length) throw "new point doesn't match input dimensions"
+      var newi = this.n++
+      this.X.push(x)
+      this.updateNeighborhoods(newi)
+      this.pushD(newi)
+      this.pushP(newi)
+      this.pushY(newi)
+      if (this.n > this.Y.shape[0]) {
+        this.expandYbuffers()
+      }
     },
 
     step: function () {

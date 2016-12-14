@@ -39,10 +39,9 @@ var BarnesHutTree = function(){
       _root = that._newBranch(topleft, bottomright.subtract(topleft))
     },
 
-    initWithData: function(data, theta) {
+    initWithData: function(data, theta, N) {
       // TODO: keep the data in place?
       // compute top left and top right based on data and call init
-      var N = data.shape[0]
       var topleft = new Point(0, 0)
       var bottomright = new Point(0, 0)
       for (var i = 0; i < N; i++) {
