@@ -54,9 +54,11 @@
   var stepnum = 0
   var tic = performance.now()
   function step () {
-    console.time('step')
-    var cost = T.step()
-    console.timeEnd('step')
+    if (stepnum < Infinity) {
+      console.time('step')
+      var cost = T.step()
+      console.timeEnd('step')
+    }
     var fps = Math.round((T.iter / (performance.now() - tic)) * 1000)
     $('#cost').html('iteration ' + T.iter + ', fps: ' + fps + ', cost: ' + cost)
     updateEmbedding()
@@ -66,9 +68,7 @@
         console.profileEnd()
       }
     }
-    if (stepnum > 10) {
-      clearInterval(stepHandle)
-    }
+      //clearInterval(stepHandle)
 
     stepnum++
   }

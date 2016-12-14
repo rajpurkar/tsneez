@@ -66,9 +66,9 @@
         console.profileEnd()
       }
     }
-    if (stepnum > 10) {
-      clearInterval(stepHandle)
-    }
+    //if (stepnum > 10) {
+    //  clearInterval(stepHandle)
+    //}
 
     stepnum++
   }
@@ -76,7 +76,8 @@
   var DO_PROFILE = true
 
   $(window).load(function () {
-    $.getJSON('/data/wordvecs50dtop1000.json', function (j) {
+    //$.getJSON('/data/wordvecs50dtop1000.json', function (j) {
+    $.getJSON('/data/shortglove.json', function (j) {
       data = j
 
       if (DO_PROFILE && window.console && window.console.profile) {
