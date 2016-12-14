@@ -79,7 +79,7 @@
     $.getJSON('/data/wordvecs50dtop1000.json', function (j) {
     //$.getJSON('/data/shortglove.json', function (j) {
       //data = j
-      var N = 100
+      var N = 500
       data = {
         words: j.words.slice(0, N),
         vecs: j.vecs.slice(0, N),
