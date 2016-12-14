@@ -123,6 +123,7 @@
         T.add(j.vecs[N])
         N++
         data.words = j.words.slice(0, N)
+        d3.selectAll('.viewport > svg').remove()
         drawEmbedding()  // redraw?
       })
     })
