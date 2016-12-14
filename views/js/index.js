@@ -16,7 +16,7 @@
 
   function resize () {
     var width = $('.viewport').width()
-    var height = 600
+    var height = 400
     svg.attr('width', width).attr('height', height)
   }
 
@@ -94,7 +94,7 @@
     $.getJSON('/data/wordvecs50dtop1000.json', function (j) {
     //$.getJSON('/data/shortglove.json', function (j) {
       //data = j
-      var N = 100
+      var N = 300
       data = {
         words: j.words.slice(0, N),
         vecs: j.vecs.slice(0, N),
@@ -133,7 +133,7 @@
       }
       requestAnimationFrame(step)
 
-      $('#cost').click(function() {
+      $('#addPoints').click(function() {
         console.log('adding word', j.words[N])
         T.add(j.vecs[N])
         N++
