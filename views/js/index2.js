@@ -5,19 +5,46 @@
       theta: 0.8
     }) // create a tSNE instance
 
-    var data
+    var vecs
+    var words
     var svg
-    $.getJSON('/data/wordvecs50dtop1000.json', function (j) {
-      data = j
-      T.initData(data.vecs)
-      drawEmbedding() // draw initial embedding
+    $.getJSON('/data/wordvecs50dtop1000.json', function (dataAll) {
+      var spliceIndex = 100
+      vecs = dataAll.vecs.splice(0, spliceIndex)
+      words = dataAll.words.splice(0, spliceIndex)
+      T.initData(vecs)
+      setInterval(function () {
+        var vec = dataAll.vecs.splice(0, 1)[0]
+        var word = dataAll.words.splice(0, 1)[0]
+        T.add(vec)
+        words.push(word)
+        // updateEmbedding()
+      }, 3000) 
+      var div = d3.select('.viewport')
+      svg = div.append('svg') // svg is global
+      var zoomListener = d3.behavior.zoom()
+        .scaleExtent([0.1, 10])
+        .center([0, 0])
+        .on('zoom', zoomHandler)
+      zoomListener(svg)
+      d3.select(window).on('resize', resize)
+      resize()
       d3.timer(step)
     })
 
     function updateEmbedding () {
+      var g = svg.selectAll('.b')
+        .data(words)
+        .enter().append('g')
+        .attr('class', 'u')
+
+      g.append('text')
+        .attr('fill', '#333')
+        .text(function (d) { return d })
+
       var Y = T.Y
       svg.selectAll('.u')
-      .data(data.words)
+      .data(words)
       .attr('transform', function (d, i) {
         return 'translate(' +
           ((Y.get(i, 0) * 200 * ss + tx) + 400) + ',' +
@@ -28,29 +55,6 @@
       var width = $('.viewport').width()
       var height = 400
       svg.attr('width', width).attr('height', height)
-    }
-
-    function drawEmbedding () {
-      var div = d3.select('.viewport')
-
-      svg = div.append('svg') // svg is global
-
-      var g = svg.selectAll('.b')
-        .data(data.words)
-        .enter().append('g')
-        .attr('class', 'u')
-
-      g.append('text')
-        .attr('fill', '#333')
-        .text(function (d) { return d })
-
-      var zoomListener = d3.behavior.zoom()
-        .scaleExtent([0.1, 10])
-        .center([0, 0])
-        .on('zoom', zoomHandler)
-      zoomListener(svg)
-      d3.select(window).on('resize', resize)
-      resize()
     }
 
     var tx = 0
