@@ -9,12 +9,13 @@
     var words
     var svg
     $.getJSON('/data/wordvecs50dtop1000.json', function (dataAll) {
-      var spliceIndex = 100
+      var spliceIndex = 200
       vecs = dataAll.vecs.splice(0, spliceIndex)
       words = dataAll.words.splice(0, spliceIndex)
       T.initData(vecs)
       var numAdded = 0
-      var MAX_TO_ADD = 100 
+      var MAX_TO_ADD = 50
+      /*
       var timer = setInterval(function () {
         numAdded++
         if (numAdded > MAX_TO_ADD) {
@@ -24,8 +25,9 @@
         var word = dataAll.words.splice(0, 1)[0]
         T.add(vec)
         words.push(word)
-      }, 400)
-
+        addStuff()
+      }, 1000)
+      */
       var div = d3.select('.viewport')
       svg = div.append('svg') // svg is global
       var zoomListener = d3.behavior.zoom()
@@ -35,10 +37,11 @@
       zoomListener(svg)
       d3.select(window).on('resize', resize)
       resize()
+      addStuff()
       d3.timer(step)
     })
 
-    function updateEmbedding () {
+    function addStuff () {
       var g = svg.selectAll('.b')
         .data(words)
         .enter().append('g')
@@ -47,7 +50,9 @@
       g.append('text')
         .attr('fill', '#333')
         .text(function (d) { return d })
+    }
 
+    function updateEmbedding () {
       var Y = T.Y
       svg.selectAll('.u')
       .data(words)
