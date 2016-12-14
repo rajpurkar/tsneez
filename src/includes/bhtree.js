@@ -7,6 +7,20 @@
 //  Created by Christian Swinehart on 2011-01-14.
 //  Copyright (c) 2011 Samizdat Drafting Co. All rights reserved.
 //
+//
+
+var Cell = function (origin, size) {
+    this.nw = undefined
+    this.ne = undefined
+    this.sw = undefined
+    this.se = undefined
+    this.origin = origin
+    this.size = size
+    this.p = undefined
+    this.mass = 0
+}
+
+
 
 var BarnesHutTree = function(){
   var _branches = []
@@ -20,12 +34,11 @@ var BarnesHutTree = function(){
 
       // create a fresh root node for these spatial bounds
       _branchCtr = 0
-      _root = that._newBranch()
-      _root.origin = topleft
-      _root.size = bottomright.subtract(topleft)
+      _root = that._newBranch(topleft, bottomright.subtract(topleft))
     },
 
     initWithData: function(data, theta) {
+      // TODO: keep the data in place?
       // compute top left and top right based on data and call init
       var N = data.shape[0]
       var topleft = new Point(0, 0)
@@ -50,7 +63,7 @@ var BarnesHutTree = function(){
 
 
       var recurse = function(pnode, node) {
-        if (node===undefined){
+        if (node === undefined){
           return true;
         }
 
@@ -113,9 +126,7 @@ var BarnesHutTree = function(){
 
           // replace the previously particle-occupied quad with a new internal branch node
           var oldParticle = node[p_quad]
-          node[p_quad] = that._newBranch()
-          node[p_quad].origin = branch_origin
-          node[p_quad].size = branch_size
+          node[p_quad] = that._newBranch(branch_origin, branch_size)
 
           // Switch down into the new branch
           node = node[p_quad]
@@ -155,7 +166,7 @@ var BarnesHutTree = function(){
       var queue = [_root]
       while (queue.length){
         node = queue.shift()
-        if (node===undefined) continue
+        if (node === undefined) continue
 
         if ('f' in node){
           count++
@@ -170,7 +181,7 @@ var BarnesHutTree = function(){
           xForce += force * dx
           yForce += force * dy
           Z += aff
-        }else{
+        } else {
           // it's a branch node so decide if it's cluster-y and distant enough
           // to summarize as a single point. if it's too complex, open it and deal
           // with its quadrants in turn
@@ -186,7 +197,7 @@ var BarnesHutTree = function(){
             queue.push(node.se)
             queue.push(node.sw)
           } else {
-            count += node.mass
+            count++
             // treat the quad as a single body
             var aff = 1.0 / (1.0 + distSq)
             var force = - node.mass * aff * aff  // - N_cell * (q_{i,cell} * Z)^2
@@ -204,7 +215,6 @@ var BarnesHutTree = function(){
         x: xForce,
         y: yForce,
         Z: Z,
-        count: count
       }
     },
 
@@ -222,16 +232,19 @@ var BarnesHutTree = function(){
       }
     },
 
-    _newBranch:function(){
+    _newBranch:function(origin, size){
       // to prevent a gc horrorshow, recycle the tree nodes between iterations
-      if (_branches[_branchCtr]){
+      if (_branches[_branchCtr]) {
+        // Use old node object if one exists
         var branch = _branches[_branchCtr]
         branch.ne = branch.nw = branch.se = branch.sw = undefined
+        branch.origin = origin
+        branch.size = size
         branch.mass = 0
-        delete branch.p
-      }else{
-        branch = {origin:null, size:null,
-                  nw:undefined, ne:undefined, sw:undefined, se:undefined, mass:0}
+        branch.p = undefined
+      } else {
+        // Create new branch object
+        branch = new Cell(origin, size)
         _branches[_branchCtr] = branch
       }
 
