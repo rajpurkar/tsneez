@@ -136,18 +136,21 @@ var tsne = tsne || {}
         for (var d = 0; d < dims; d++) gradi[d] = 0
 
         // Accumulate Fattr over nearest neighbors
-        var that = this
-        var pi = this.symP[i]
+        var pi = this.P[i]
         for (var k = 0; k < this.numNeighbors; k++) {
           var j = this.NN.get(i, k)
+          var Dij = this.D[i][j]
+
+          // Symmetrize on-demand
+          var Pij = (pi[j] + (this.P[j][i] || 0)) / (2 * this.n)
+
           // Unfurled loop, but 2D only
-          var Dij = that.D[i][j] || that.D[j][i]
-          var mulFactor = 4 * exag * pi[j] * (1.0 / (1.0 + Dij))
-          gradi[0] += mulFactor * (that.Y.get(i, 0) - that.Y.get(j, 0))
-          gradi[1] += mulFactor * (that.Y.get(i, 1) - that.Y.get(j, 1))
+          var mulFactor = 4 * exag * Pij * (1.0 / (1.0 + Dij))
+          gradi[0] += mulFactor * (this.Y.get(i, 0) - this.Y.get(j, 0))
+          gradi[1] += mulFactor * (this.Y.get(i, 1) - this.Y.get(j, 1))
         }
 
-        // Normalize Fattr then increment gradient
+        // Normalize Frep then increment gradient
         for (var d = 0; d < dims; d++) {
           this.grad.set(i, d, this.grad.get(i, d) / Z + gradi[d])
         }
@@ -206,45 +209,6 @@ var tsne = tsne || {}
       return H
     },
 
-    symmetrizeP: function () {
-      // Symmetrize in place according to:
-      //         p_j|i + p_i|j
-      // p_ij = ---------------
-      //              2n
-      this.symP = []
-      for (var i = 0; i < this.n; i++) {
-        this.symP.push({})
-      }
-
-      for (var i = 0; i < this.n; i++) {
-        var pi = this.P[i]
-        for (var k = 0; k < this.numNeighbors; k++) {
-          var j = this.NN.get(i, k)
-          // if (j === i) { window.alert('not possible') }
-          var pji = 0
-          if (i in this.P[j]) {
-            pji = this.P[j][i]
-          }
-          var val = (pi[j] + pji) / (2 * this.n)
-
-          // sanity check
-          // if (j in this.symP[i]) {
-          //  if (val !== this.symP[i][j]) {
-          //    window.alert('nooo')
-          //  }
-          // }
-          // if (i in this.symP[j]) {
-          //  if (val !== this.symP[j][i]) {
-          //    window.alert('nooo')
-          //  }
-          // }
-
-          this.symP[i][j] = val
-          this.symP[j][i] = val
-        }
-      }
-    },
-
     DToP: function (perplexity) {
       // Shannon entropy H is log2 of perplexity
       var Hdesired = Math.log2(perplexity)
@@ -293,7 +257,7 @@ var tsne = tsne || {}
 
       // FIXME: symmetrize
       // Symmetrize conditional distribution
-      this.symmetrizeP()
+      //this.symmetrizeP()
     },
 
     initData: function (data) {
