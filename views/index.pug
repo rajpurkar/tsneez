@@ -1,0 +1,30 @@
+extends layout
+
+block title
+  title TSNE
+
+block description
+  meta(name='description', content='TSNE')
+
+block extralinks
+  link(rel='stylesheet', href='/stylesheets/index.css')
+  script(async defer src="https://buttons.github.io/buttons.js")
+
+block extrascripts
+  script(src="/javascripts/karpathy-tsne.js")
+  script(src="/dist/streaming-tsne.js")
+  script(src="/javascripts/index.js")
+
+block content
+  .cover#contentCover
+    .container
+      .row
+        .col-md-12
+          .infoCard
+            .infoBody
+              .infoHeadline
+                  b TSNE
+              #embed
+              #cost
+              .infoSubheadline
+                include includes/github

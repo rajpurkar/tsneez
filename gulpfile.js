@@ -1,15 +1,19 @@
 var gulp = require('gulp')
+var pug = require('gulp-pug')
 var g_webpack = require('gulp-webpack')
 var webpack = require('webpack')
 var path = require('path')
 var browserSync = require('browser-sync').create()
+var stylus = require('gulp-stylus')
+var minify = require('gulp-minify')
+var bower = require('gulp-bower')
 
+var build_dir = 'streaming-tsne-js/'
 
 var webpack_opts = {
   context: path.join(__dirname, 'src/'),
   entry: './streaming-tsne.js',
   output: {
-    path: path.resolve(__dirname, 'dist'),
     filename: 'streaming-tsne.js'
   },
   plugins: []
@@ -18,7 +22,7 @@ var webpack_opts = {
 gulp.task('webpack', function () {
   var return_obj = gulp.src('.')
     .pipe(g_webpack(webpack_opts))
-    .pipe(gulp.dest('dist/'))
+    .pipe(gulp.dest(build_dir + 'dist/'))
 
   if (process.env.NODE_ENV === 'development') {
     return_obj = return_obj.pipe(browserSync.stream())
@@ -26,6 +30,24 @@ gulp.task('webpack', function () {
 
   return return_obj
 })
+
+gulp.task('copy_data', function () {
+  gulp
+    .src('data/*')
+    .pipe(gulp.dest('./' + build_dir + 'data/'))
+})
+
+gulp.task('bower', function () {
+  return bower()
+    .pipe(gulp.dest('./' + build_dir + 'bower_components/'))
+})
+
+gulp.task('css', function () {
+  return gulp.src('./views/styles/*.styl')
+    .pipe(stylus())
+    .pipe(gulp.dest('./' + build_dir + 'stylesheets'))
+})
+
 
 if (process.env.NODE_ENV === 'development') {
   webpack_opts.devtool = 'eval-source-map'
@@ -39,16 +61,24 @@ if (process.env.NODE_ENV === 'development') {
   ])
 }
 
-if (process.env.NODE_ENV === 'development') {
-  gulp.task('browser-sync', function () {
-    browserSync.init({
-      server: {
-        baseDir: "./"
-      }
-    })
-    gulp.watch("*.html").on('change', browserSync.reload);
-    gulp.watch("src/example.js").on('change', browserSync.reload);
-  })
+gulp.task('js', function () {
+  return gulp.src('./views/js/*')
+    .pipe(minify())
+    .pipe(gulp.dest('./' + build_dir + 'javascripts/'))
+})
 
-  gulp.task('default', ['webpack', 'browser-sync'])
-}
+gulp.task('html', function () {
+  return gulp.src('views/index.pug')
+    .pipe(pug())
+    .pipe(gulp.dest('./' + build_dir))
+})
+
+gulp.task('browser-sync', function () {
+  browserSync.init({
+    server: {
+      baseDir: build_dir
+    }
+  })
+})
+
+gulp.task('default', ['webpack', 'browser-sync', 'css', 'html', 'js', 'bower', 'copy_data'])
