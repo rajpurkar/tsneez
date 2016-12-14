@@ -109,7 +109,7 @@ var tsne = tsne || {}
     updateGradBH: function () {
       // Early exaggeration
 
-      var exag = this.iter < 250 ? 4 : 1 // todo: this is important... see how can be tuned
+      var exag = this.iter < 250 ? 12 : 1 // todo: this is important... see how can be tuned
 
       // Initialize quadtree
       var bht = bhtree.BarnesHutTree()
