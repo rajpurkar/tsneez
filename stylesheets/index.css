@@ -1,0 +1,10 @@
+.viewport svg {
+  display: block;
+}
+.viewport svg text {
+  pointer-events: none;
+  font-family: 'Lato', Arial;
+  font-weight: 500;
+  font-size: 1em;
+  fill: #222;
+}
