@@ -89,15 +89,16 @@ var BarnesHutTree = function(){
       // add a particle to the tree, starting at the current _root and working down
       var node = _root
       var queue = [new Point(x, y)]
+      var point, p_quad, mult1, mult2, branch_size, branch_origin, oldPoint
 
       while (queue.length){
-        var point = queue.shift()
-        var p_quad = that._whichQuad(point, node)
+        point = queue.shift()
+        p_quad = that._whichQuad(point, node)
 
         // Increment total mass (count) and update center
         node.mass += 1.
-        var mult1 = (node.mass - 1) / node.mass
-        var mult2 = 1 / node.mass
+        mult1 = (node.mass - 1) / node.mass
+        mult2 = 1 / node.mass
         if (node.p) {
           node.p = node.p.multiply(mult1).add(point.multiply(mult2))
         } else {
@@ -117,13 +118,13 @@ var BarnesHutTree = function(){
         }else{
           // slot contains a point, create a new branch (subdivide)
           // and recurse with both points in the queue now
-          var branch_size = node.size.divide(2)
-          var branch_origin = new Point(node.origin)
+          branch_size = node.size.divide(2)
+          branch_origin = new Point(node.origin)
           if (p_quad[0]=='s') branch_origin.y += branch_size.y
           if (p_quad[1]=='e') branch_origin.x += branch_size.x
 
           // replace the previously point-occupied quad with a new internal branch node
-          var oldPoint = node[p_quad]
+          oldPoint = node[p_quad]
           node[p_quad] = that._newBranch(branch_origin, branch_size)
 
           // Switch down into the new branch
@@ -161,6 +162,8 @@ var BarnesHutTree = function(){
       var Z = 0.  // Z
       var count = 0
 
+      var dx, dy, distSq, dist, aff, force, rcell, node
+
       var queue = [_root]
       while (queue.length) {
         count++
@@ -169,11 +172,11 @@ var BarnesHutTree = function(){
           continue
         } else if (node instanceof Point){
           // this is a point leafnode, so just apply the force directly
-          var dx = x - node.x
-          var dy = y - node.y
-          var distSq = dx*dx + dy*dy
-          var aff = 1. / (1. + distSq)
-          var force = - aff * aff  // -qu_ij^2 = -(q_ij * Z)^2
+          dx = x - node.x
+          dy = y - node.y
+          distSq = dx*dx + dy*dy
+          aff = 1. / (1. + distSq)
+          force = - aff * aff  // -qu_ij^2 = -(q_ij * Z)^2
           if (distSq < 1e-5) continue
           // Accumulate force and Z
           xForce += force * dx
@@ -183,11 +186,11 @@ var BarnesHutTree = function(){
           // it's a branch node so decide if it's cluster-y and distant enough
           // to summarize as a single point. if it's too complex, open it and deal
           // with its quadrants in turn
-          var dx = x - node.p.x
-          var dy = y - node.p.y
-          var distSq = dx*dx + dy*dy
-          var dist = Math.sqrt(distSq)
-          var rcell = node.size.x > node.size.y ? node.size.x : node.size.y
+          dx = x - node.p.x
+          dy = y - node.p.y
+          distSq = dx*dx + dy*dy
+          dist = Math.sqrt(distSq)
+          rcell = node.size.x > node.size.y ? node.size.x : node.size.y
           if (rcell/dist > _theta) { // i.e., s/d > Θ
             // open the quad and recurse
             queue.push(node.ne)
@@ -196,8 +199,8 @@ var BarnesHutTree = function(){
             queue.push(node.sw)
           } else {
             // treat the quad as a single body
-            var aff = 1.0 / (1.0 + distSq)
-            var force = - node.mass * aff * aff  // - N_cell * (q_{i,cell} * Z)^2
+            aff = 1.0 / (1.0 + distSq)
+            force = - node.mass * aff * aff  // - N_cell * (q_{i,cell} * Z)^2
             //var direction = (d.magnitude()>0) ? d : Point.random(1e-5)
             // Accumulate force and Z
             xForce += force * dx
