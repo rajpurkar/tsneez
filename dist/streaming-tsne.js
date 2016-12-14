@@ -1,41 +1,41 @@
 /******/ (function(modules) { // webpackBootstrap
 /******/ 	// The module cache
 /******/ 	var installedModules = {};
-
+/******/
 /******/ 	// The require function
 /******/ 	function __webpack_require__(moduleId) {
-
+/******/
 /******/ 		// Check if module is in cache
 /******/ 		if(installedModules[moduleId])
 /******/ 			return installedModules[moduleId].exports;
-
+/******/
 /******/ 		// Create a new module (and put it into the cache)
 /******/ 		var module = installedModules[moduleId] = {
 /******/ 			exports: {},
 /******/ 			id: moduleId,
 /******/ 			loaded: false
 /******/ 		};
-
+/******/
 /******/ 		// Execute the module function
 /******/ 		modules[moduleId].call(module.exports, module, module.exports, __webpack_require__);
-
+/******/
 /******/ 		// Flag the module as loaded
 /******/ 		module.loaded = true;
-
+/******/
 /******/ 		// Return the exports of the module
 /******/ 		return module.exports;
 /******/ 	}
-
-
+/******/
+/******/
 /******/ 	// expose the modules object (__webpack_modules__)
 /******/ 	__webpack_require__.m = modules;
-
+/******/
 /******/ 	// expose the module cache
 /******/ 	__webpack_require__.c = installedModules;
-
+/******/
 /******/ 	// __webpack_public_path__
 /******/ 	__webpack_require__.p = "";
-
+/******/
 /******/ 	// Load entry module and return exports
 /******/ 	return __webpack_require__(0);
 /******/ })
@@ -44,121 +44,5386 @@
 /* 0 */
 /***/ function(module, exports, __webpack_require__) {
 
-	eval("var gaussian = __webpack_require__(1)\nvar pool = __webpack_require__(2)\nvar ops = __webpack_require__(6)\nvar bhtree = __webpack_require__(18)\nvar vptree = __webpack_require__(19)\nvar tsne = tsne || {}\n\n;(function (global) {\n  'use strict'\n\n  var getopt = function (opt, key, def) {\n    if (opt[key] == null) {\n      return def\n    } else {\n      return opt[key]\n    }\n  }\n\n  var initialY = function (numSamples) {\n    // FIXME: allow arbitrary dimensions??\n    var distribution = gaussian(0, 1e-4)\n    var ys = pool.zeros([numSamples * 2, 2])  // initialize with twice as much room as necessary\n    for (var i = 0; i < numSamples; i++) {\n      ys.set(i, 0, distribution.ppf(Math.random()))\n      ys.set(i, 1, distribution.ppf(Math.random()))\n    }\n    return ys\n  }\n\n  var squaredEuclidean = function (x, y) {\n    // Compute Euclidean distance between two vectors as Arrays\n    var m = x.length\n    var d = 0\n    var k, xk, yk\n    for (k = 0; k < m; k++) {\n      xk = x[k]\n      yk = y[k]\n      d += (xk - yk) * (xk - yk)\n    }\n    return d\n  }\n\n  var euclideanOf = function (data) {\n    return function (x, y) {\n      return Math.sqrt(squaredEuclidean(data[x], data[y]))\n    }\n  }\n\n  function sign (x) { return x > 0 ? 1 : x < 0 ? -1 : 0 }\n\n  var TSNE = function (opt) {\n    var perplexity = getopt(opt, 'perplexity', 30)  // (van der Maaten 2014)\n    this.Hdesired = Math.log2(perplexity)\n    this.numNeighbors = getopt(opt, 'numNeighbors', 3 * perplexity)  // (van der Maaten 2014)\n    this.theta = getopt(opt, 'theta', 0.5)  // [0, 1] tunes the barnes-hut approximation, 0 is exact\n    this.learningRate = getopt(opt, 'learningRate', 10)  // [0, 1] tunes the barnes-hut approximation, 0 is exact\n  }\n\n  TSNE.prototype = {\n    profileRecord: {},\n    profileStart: function (name) {\n      if (!this.profileRecord.hasOwnProperty(name)) {\n        this.profileRecord[name] = {\n          count: 0,\n          time: 0\n        }\n      }\n      this.profileRecord[name].tic = performance.now()\n    },\n    profileEnd: function (name) {\n      var toc = performance.now()\n      var record = this.profileRecord[name]\n      var elapsed = Math.round(toc - record.tic)\n      record.count++\n      record.time += (elapsed - record.time) / record.count\n      console.log(name + ': ' + elapsed + 'ms' + ', avg ' + Math.round(record.time) + 'ms')\n    },\n    updateY: function () {\n      // Perform gradient update in place\n      var alpha = this.iter < this.exagEndIter ? 0.5 : 0.8\n      var n = this.n\n      var dims = this.dims\n      var Ymean = [0, 0]  // FIXME: only two dimensional\n      for (var i = 0; i < n; i++) {\n        for (var d = 0; d < dims; d++) {\n          var gradid = this.grad.get(i, d)\n          var stepid = this.ytMinus1.get(i, d) - this.ytMinus2.get(i, d)\n          var gainid = this.Ygains.get(i, d)\n\n          // Update gain\n          var newgain = Math.max(\n              sign(gradid) === sign(stepid) ? gainid * 0.8 : gainid + 0.2, 0.01)\n          this.Ygains.set(i, d, newgain)\n\n          // Update Y\n          var Yid = (this.ytMinus1.get(i, d)\n                       - this.learningRate * newgain * gradid\n                       + alpha * stepid)\n          this.Y.set(i, d, Yid)\n\n          // Accumulate mean for centering\n          Ymean[d] += Yid\n        }\n      }\n\n      // Recenter\n      for (var i = 0; i < n; i++) {\n        for (var d = 0; d < dims; d++) {\n          this.Y.set(i, d, this.Y.get(i, d) - Ymean[d] / n)\n        }\n      }\n    },\n    updateGradBH: function () {\n      // Early exaggeration\n      var exag = Math.max(8 - 0.4 * Math.sqrt(this.iter), 0.2) // spent lot of time tuning this\n      // var exag = this.iter < this.exagEndIter ? 12 - (0.01 * this.iter) : 1 // todo: this is important... see how can be tuned\n\n      // Initialize quadtree\n      var bht = bhtree.BarnesHutTree()\n      bht.initWithData(this.Y, this.theta, this.n)\n\n      // Compute gradient of the KL divergence\n      var n = this.n\n      var dims = this.dims\n\n      // Compute Frep using Barnes-Hut\n      var Z = 0\n      for (var i = 0; i < n; i++) {\n        // NOTE: 2D only\n        var Frep = bht.computeForces(this.Y.get(i, 0), this.Y.get(i, 1))\n        this.grad.set(i, 0, 4 * Frep.x)\n        this.grad.set(i, 1, 4 * Frep.y)\n        Z += Frep.Z\n      }\n\n      // Compute Fattr over sparse P\n      var gradi = new Float64Array(dims)\n      for (var i = 0; i < n; i++) {\n        // Reset\n        for (var d = 0; d < dims; d++) gradi[d] = 0\n\n        // Accumulate Fattr over nearest neighbors\n        var pi = this.P[i]\n        for (var k = 0; k < this.numNeighbors; k++) {\n          var j = this.NN.get(i, k)\n          var Dij = this.D[i][j]\n\n          // Symmetrize on-demand\n          var Pij = (pi[j] + (this.P[j][i] || 0)) / (2 * this.n)\n\n          // Unfurled loop, but 2D only\n          var mulFactor = 4 * exag * Pij * (1.0 / (1.0 + Dij))\n          gradi[0] += mulFactor * (this.Y.get(i, 0) - this.Y.get(j, 0))\n          gradi[1] += mulFactor * (this.Y.get(i, 1) - this.Y.get(j, 1))\n        }\n\n        // Normalize Frep then increment gradient\n        for (var d = 0; d < dims; d++) {\n          this.grad.set(i, d, this.grad.get(i, d) / Z + gradi[d])\n        }\n      }\n\n      return null\n    },\n\n    XToD: function () {\n      var indices = Array.apply(null, Array(this.n)).map(function (_, i) { return i })\n      this.vpt = vptree.build(indices, euclideanOf(this.X))\n      this.D = []\n      this.dmax = []\n      this.kmax = []\n      for (var i = 0; i < this.n; i++) {\n        this.pushD(i)\n      }\n    },\n\n    pushD: function(i) {\n      var neighbors = this.vpt.search(i, this.numNeighbors + 1)\n      neighbors.shift() // first element is own self\n      var elem = {}\n      var dmaxi = 0\n      var kmaxi\n      for (var j = 0; j < neighbors.length; j++) {\n        var neighbor = neighbors[j]\n        elem[neighbor.i] = neighbor.d * neighbor.d\n        this.NN.set(i, j, neighbor.i)\n\n        // Keep track of maximum distance\n        if (neighbor.d > dmaxi) {\n          dmaxi = neighbor.d\n          kmaxi = neighbor.i\n        }\n      }\n      this.D.push(elem)\n      this.dmax.push(dmaxi)\n      this.kmax.push(kmaxi)\n    },\n\n    setPiAndGetH: function (i, beta) {\n      // Compute a single row Pi of the kernel and the Shannon entropy H\n\n      var pi = {}\n      var sum = 0\n      var Di = this.D[i]\n      for (var k = 0; k < this.numNeighbors; k++) {\n        var key = this.NN.get(i, k)\n        var elem = Math.exp(-beta * Di[key])\n        pi[key] = elem\n        sum += elem\n      }\n\n      // For debugging\n      // if (sum === 0) {\n      //  console.count('sum equals zero')\n      // }\n\n      var H = 0\n      for (var k = 0; k < this.numNeighbors; k++) {\n        var key = this.NN.get(i, k)\n        var val = pi[key] / sum\n        pi[key] = val\n        if (val > 1e-7) { // TODO: do we need this?\n          H -= val * Math.log2(val)\n        }\n      }\n\n      this.P[i] = pi\n      this.Psum[i] = sum\n      return H\n    },\n\n    DToP: function () {\n      this.P = []\n      this.Psum = []\n      this.beta = []\n\n      for (var i = 0; i < this.n; i++) {\n        this.pushP(i)\n      }\n    },\n\n    pushP: function (i) {\n      // We perform binary search to find the beta such that\n      // the conditional distribution P_i has the given perplexity.\n      // We define:\n      //   beta = 1 / (2 * sigma_i^2)\n      // where sigma_i is the bandwith of the Gaussian kernel\n      // for the conditional distribution P_i\n      var beta = 1\n      var betamin = -Infinity\n      var betamax = Infinity\n      var Hdiff\n      var numTries = 0\n\n      do {\n        numTries++\n        var H = this.setPiAndGetH(i, beta)\n        Hdiff = H - this.Hdesired\n\n        if (Hdiff > 0) {\n          // Entropy too high, beta is too small\n          betamin = beta\n          if (betamax === Infinity) {\n            beta = beta * 2\n          } else {\n            beta = (beta + betamax) / 2\n          }\n        } else {\n          // Entropy is too low, beta is too big\n          betamax = beta\n          if (betamin === -Infinity) {\n            beta = beta / 2\n          } else {\n            beta = (beta + betamin) / 2\n          }\n        }\n      } while (Math.abs(Hdiff) > 1e-05 && numTries < 50)\n      this.beta.push(beta)\n    },\n\n    /* Update neighborhoods of other points\n     *\n     * newj - index of the new point\n     */\n    updateNeighborhoods: function (newj) {\n      var i, newd, kmax, dmax, jmax, newdSq\n      for (i = 0; i < newj; i++) {\n        dmax = this.dmax[i]\n        newdSq = squaredEuclidean(this.X[newj], this.X[i])\n        newd = Math.sqrt(newdSq)\n\n        if (newd < dmax) {\n          // Xnewj is in the neighborhood of Xi!\n          // Replace the point farthest away from Xi in neighborhood\n          kmax = this.kmax[i]\n          jmax = this.NN[kmax]\n          this.NN[kmax] = newj\n          delete this.P[i][jmax]  // or this.P[i][jmax] = 0?\n\n          // Compute approximate update with old beta and Psum\n          // (Note that to compute an exact update, we have to redo the\n          // search for beta, or at least renormalize Pi)\n          this.P[i][newj] = Math.exp(-this.beta[i] * newdSq) / this.Psum[i]\n        }\n      }\n    },\n\n    pushY: function(newi) {\n      // Initialize embedding as weighted average of its neighbors (Pezzotti)\n      var Pi = this.P[newi]\n      var y0 = 0\n      var y1 = 0\n      var k, j, Pji\n      for (k = 0; k < this.numNeighbors; k++) {\n        j = this.NN.get(newi, k)\n        Pji = Pi[j]\n        y0 = Pji * this.Y.get(j, 0)\n        y1 = Pji * this.Y.get(j, 1)\n      }\n      this.Y.set(newi, 0, y0)\n      this.Y.set(newi, 1, y1)\n    },\n\n    /************************\n     * PUBLIC API STARTS HERE\n     ************************/\n\n    initData: function (data) {\n      this.X = data\n      this.n = data.length\n      this.NN = pool.zeros([this.n * 2, this.numNeighbors])\n      this.dims = 2\n      this.XToD()\n      this.DToP()\n      this.Y = initialY(this.n)\n      this.ytMinus1 = pool.clone(this.Y)\n      this.ytMinus2 = pool.clone(this.Y)\n      this.Ygains = pool.ones(this.Y.shape)\n      this.grad = pool.zeros(this.Y.shape)\n      this.iter = 0\n      this.exagEndIter = 250  // van der Maaten 2014\n    },\n\n    expandBuffers: function() {\n      console.log('expanding buffers')\n      var newlen = this.n * 2\n      var that = this\n      ;['NN', 'Y', 'ytMinus1', 'ytMinus2', 'Ygains', 'grad'].forEach(function (name) {\n        var oldMat = that[name]\n        var newMat = pool.malloc([newlen, oldMat.shape[1]])\n        ops.assign(newMat.hi(oldMat.shape[0], oldMat.shape[1]), oldMat)\n        pool.free(oldMat)\n        that[name] = newMat\n      })\n    },\n\n    /*\n     * x - array containing the new point\n     */\n    add: function (x) {\n      if (x.length != this.X[0].length) throw \"new point doesn't match input dimensions\"\n      var newi = this.n++\n      this.X.push(x)\n      if (this.n > this.Y.shape[0]) {\n        // Expand buffers and rebuild P\n        this.expandBuffers()\n        this.XToD()\n        this.DToP()\n        this.exagEndIter = this.iter + 100  // exaggerate for another 100 iterations\n      } else {\n        // Do an approximative update\n        this.updateNeighborhoods(newi)\n        this.pushD(newi)\n        this.pushP(newi)\n        this.pushY(newi)\n      }\n    },\n\n    step: function () {\n      // Compute gradient\n      var cost = this.updateGradBH()\n      // if (this.iter > 100) {\n      //   this.checkGrad()\n      // }\n\n      // Rotate buffers\n      var temp = this.ytMinus2\n      this.ytMinus2 = this.ytMinus1\n      this.ytMinus1 = this.Y\n      this.Y = temp\n\n      // Perform update\n      this.updateY()\n\n      this.iter++\n      return cost\n    }\n  }\n\n  global.TSNE = TSNE\n})(tsne)\n\n// export the library to window, or to module in nodejs\n// Webpack supports both.\n;(function (lib) {\n  'use strict'\n  if (typeof module !== 'undefined' && typeof module.exports === 'undefined') {\n    module.exports = lib // in nodejs\n  }\n  if (typeof window !== 'undefined') {\n    window.tsne = lib // in ordinary browser attach library to window\n  }\n})(tsne)\n\n//# sourceMappingURL=data:application/json;charset=utf-8;base64,eyJ2ZXJzaW9uIjozLCJzb3VyY2VzIjpbIndlYnBhY2s6Ly8vLi9zdHJlYW1pbmctdHNuZS5qcz9hY2UzIl0sIm5hbWVzIjpbXSwibWFwcGluZ3MiOiJBQUFBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTs7QUFFQSxDQUFDO0FBQ0Q7O0FBRUE7QUFDQTtBQUNBO0FBQ0EsS0FBSztBQUNMO0FBQ0E7QUFDQTs7QUFFQTtBQUNBO0FBQ0E7QUFDQTtBQUNBLG1CQUFtQixnQkFBZ0I7QUFDbkM7QUFDQTtBQUNBO0FBQ0E7QUFDQTs7QUFFQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0EsZUFBZSxPQUFPO0FBQ3RCO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTs7QUFFQTtBQUNBO0FBQ0E7QUFDQTtBQUNBOztBQUVBLHFCQUFxQjs7QUFFckI7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7O0FBRUE7QUFDQSxxQkFBcUI7QUFDckI7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBLEtBQUs7QUFDTDtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBLEtBQUs7QUFDTDtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQSxxQkFBcUIsT0FBTztBQUM1Qix1QkFBdUIsVUFBVTtBQUNqQztBQUNBO0FBQ0E7O0FBRUE7QUFDQTtBQUNBO0FBQ0E7O0FBRUE7QUFDQTtBQUNBO0FBQ0E7QUFDQTs7QUFFQTtBQUNBO0FBQ0E7QUFDQTs7QUFFQTtBQUNBLHFCQUFxQixPQUFPO0FBQzVCLHVCQUF1QixVQUFVO0FBQ2pDO0FBQ0E7QUFDQTtBQUNBLEtBQUs7QUFDTDtBQUNBO0FBQ0E7QUFDQTs7QUFFQTtBQUNBO0FBQ0E7O0FBRUE7QUFDQTtBQUNBOztBQUVBO0FBQ0E7QUFDQSxxQkFBcUIsT0FBTztBQUM1QjtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7O0FBRUE7QUFDQTtBQUNBLHFCQUFxQixPQUFPO0FBQzVCO0FBQ0EsdUJBQXVCLFVBQVU7O0FBRWpDO0FBQ0E7QUFDQSx1QkFBdUIsdUJBQXVCO0FBQzlDO0FBQ0E7O0FBRUE7QUFDQTs7QUFFQTtBQUNBO0FBQ0E7QUFDQTtBQUNBOztBQUVBO0FBQ0EsdUJBQXVCLFVBQVU7QUFDakM7QUFDQTtBQUNBOztBQUVBO0FBQ0EsS0FBSzs7QUFFTDtBQUNBLDBFQUEwRSxXQUFXO0FBQ3JGO0FBQ0E7QUFDQTtBQUNBO0FBQ0EscUJBQXFCLFlBQVk7QUFDakM7QUFDQTtBQUNBLEtBQUs7O0FBRUw7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0EscUJBQXFCLHNCQUFzQjtBQUMzQztBQUNBO0FBQ0E7O0FBRUE7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0EsS0FBSzs7QUFFTDtBQUNBOztBQUVBO0FBQ0E7QUFDQTtBQUNBLHFCQUFxQix1QkFBdUI7QUFDNUM7QUFDQTtBQUNBO0FBQ0E7QUFDQTs7QUFFQTtBQUNBO0FBQ0E7QUFDQTs7QUFFQTtBQUNBLHFCQUFxQix1QkFBdUI7QUFDNUM7QUFDQTtBQUNBO0FBQ0EseUJBQXlCO0FBQ3pCO0FBQ0E7QUFDQTs7QUFFQTtBQUNBO0FBQ0E7QUFDQSxLQUFLOztBQUVMO0FBQ0E7QUFDQTtBQUNBOztBQUVBLHFCQUFxQixZQUFZO0FBQ2pDO0FBQ0E7QUFDQSxLQUFLOztBQUVMO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTs7QUFFQTtBQUNBO0FBQ0E7QUFDQTs7QUFFQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0EsV0FBVztBQUNYO0FBQ0E7QUFDQSxTQUFTO0FBQ1Q7QUFDQTtBQUNBO0FBQ0E7QUFDQSxXQUFXO0FBQ1g7QUFDQTtBQUNBO0FBQ0EsT0FBTztBQUNQO0FBQ0EsS0FBSzs7QUFFTDtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQSxpQkFBaUIsVUFBVTtBQUMzQjtBQUNBO0FBQ0E7O0FBRUE7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7O0FBRUE7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0EsS0FBSzs7QUFFTDtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQSxpQkFBaUIsdUJBQXVCO0FBQ3hDO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0EsS0FBSzs7QUFFTDtBQUNBO0FBQ0E7O0FBRUE7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBLEtBQUs7O0FBRUw7QUFDQTtBQUNBO0FBQ0E7QUFDQSxPQUFPO0FBQ1A7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBLE9BQU87QUFDUCxLQUFLOztBQUVMO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0EsT0FBTztBQUNQO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBLEtBQUs7O0FBRUw7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBOztBQUVBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7O0FBRUE7QUFDQTs7QUFFQTtBQUNBO0FBQ0E7QUFDQTs7QUFFQTtBQUNBLENBQUM7O0FBRUQ7QUFDQTtBQUNBLENBQUM7QUFDRDtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBLENBQUMiLCJmaWxlIjoiMC5qcyIsInNvdXJjZXNDb250ZW50IjpbInZhciBnYXVzc2lhbiA9IHJlcXVpcmUoJ2dhdXNzaWFuJylcbnZhciBwb29sID0gcmVxdWlyZSgnbmRhcnJheS1zY3JhdGNoJylcbnZhciBvcHMgPSByZXF1aXJlKCduZGFycmF5LW9wcycpXG52YXIgYmh0cmVlID0gcmVxdWlyZSgnLi9pbmNsdWRlcy9iaHRyZWUuanMnKVxudmFyIHZwdHJlZSA9IHJlcXVpcmUoJy4vaW5jbHVkZXMvdnB0cmVlLmpzJylcbnZhciB0c25lID0gdHNuZSB8fCB7fVxuXG47KGZ1bmN0aW9uIChnbG9iYWwpIHtcbiAgJ3VzZSBzdHJpY3QnXG5cbiAgdmFyIGdldG9wdCA9IGZ1bmN0aW9uIChvcHQsIGtleSwgZGVmKSB7XG4gICAgaWYgKG9wdFtrZXldID09IG51bGwpIHtcbiAgICAgIHJldHVybiBkZWZcbiAgICB9IGVsc2Uge1xuICAgICAgcmV0dXJuIG9wdFtrZXldXG4gICAgfVxuICB9XG5cbiAgdmFyIGluaXRpYWxZID0gZnVuY3Rpb24gKG51bVNhbXBsZXMpIHtcbiAgICAvLyBGSVhNRTogYWxsb3cgYXJiaXRyYXJ5IGRpbWVuc2lvbnM/P1xuICAgIHZhciBkaXN0cmlidXRpb24gPSBnYXVzc2lhbigwLCAxZS00KVxuICAgIHZhciB5cyA9IHBvb2wuemVyb3MoW251bVNhbXBsZXMgKiAyLCAyXSkgIC8vIGluaXRpYWxpemUgd2l0aCB0d2ljZSBhcyBtdWNoIHJvb20gYXMgbmVjZXNzYXJ5XG4gICAgZm9yICh2YXIgaSA9IDA7IGkgPCBudW1TYW1wbGVzOyBpKyspIHtcbiAgICAgIHlzLnNldChpLCAwLCBkaXN0cmlidXRpb24ucHBmKE1hdGgucmFuZG9tKCkpKVxuICAgICAgeXMuc2V0KGksIDEsIGRpc3RyaWJ1dGlvbi5wcGYoTWF0aC5yYW5kb20oKSkpXG4gICAgfVxuICAgIHJldHVybiB5c1xuICB9XG5cbiAgdmFyIHNxdWFyZWRFdWNsaWRlYW4gPSBmdW5jdGlvbiAoeCwgeSkge1xuICAgIC8vIENvbXB1dGUgRXVjbGlkZWFuIGRpc3RhbmNlIGJldHdlZW4gdHdvIHZlY3RvcnMgYXMgQXJyYXlzXG4gICAgdmFyIG0gPSB4Lmxlbmd0aFxuICAgIHZhciBkID0gMFxuICAgIHZhciBrLCB4aywgeWtcbiAgICBmb3IgKGsgPSAwOyBrIDwgbTsgaysrKSB7XG4gICAgICB4ayA9IHhba11cbiAgICAgIHlrID0geVtrXVxuICAgICAgZCArPSAoeGsgLSB5aykgKiAoeGsgLSB5aylcbiAgICB9XG4gICAgcmV0dXJuIGRcbiAgfVxuXG4gIHZhciBldWNsaWRlYW5PZiA9IGZ1bmN0aW9uIChkYXRhKSB7XG4gICAgcmV0dXJuIGZ1bmN0aW9uICh4LCB5KSB7XG4gICAgICByZXR1cm4gTWF0aC5zcXJ0KHNxdWFyZWRFdWNsaWRlYW4oZGF0YVt4XSwgZGF0YVt5XSkpXG4gICAgfVxuICB9XG5cbiAgZnVuY3Rpb24gc2lnbiAoeCkgeyByZXR1cm4geCA+IDAgPyAxIDogeCA8IDAgPyAtMSA6IDAgfVxuXG4gIHZhciBUU05FID0gZnVuY3Rpb24gKG9wdCkge1xuICAgIHZhciBwZXJwbGV4aXR5ID0gZ2V0b3B0KG9wdCwgJ3BlcnBsZXhpdHknLCAzMCkgIC8vICh2YW4gZGVyIE1hYXRlbiAyMDE0KVxuICAgIHRoaXMuSGRlc2lyZWQgPSBNYXRoLmxvZzIocGVycGxleGl0eSlcbiAgICB0aGlzLm51bU5laWdoYm9ycyA9IGdldG9wdChvcHQsICdudW1OZWlnaGJvcnMnLCAzICogcGVycGxleGl0eSkgIC8vICh2YW4gZGVyIE1hYXRlbiAyMDE0KVxuICAgIHRoaXMudGhldGEgPSBnZXRvcHQob3B0LCAndGhldGEnLCAwLjUpICAvLyBbMCwgMV0gdHVuZXMgdGhlIGJhcm5lcy1odXQgYXBwcm94aW1hdGlvbiwgMCBpcyBleGFjdFxuICAgIHRoaXMubGVhcm5pbmdSYXRlID0gZ2V0b3B0KG9wdCwgJ2xlYXJuaW5nUmF0ZScsIDEwKSAgLy8gWzAsIDFdIHR1bmVzIHRoZSBiYXJuZXMtaHV0IGFwcHJveGltYXRpb24sIDAgaXMgZXhhY3RcbiAgfVxuXG4gIFRTTkUucHJvdG90eXBlID0ge1xuICAgIHByb2ZpbGVSZWNvcmQ6IHt9LFxuICAgIHByb2ZpbGVTdGFydDogZnVuY3Rpb24gKG5hbWUpIHtcbiAgICAgIGlmICghdGhpcy5wcm9maWxlUmVjb3JkLmhhc093blByb3BlcnR5KG5hbWUpKSB7XG4gICAgICAgIHRoaXMucHJvZmlsZVJlY29yZFtuYW1lXSA9IHtcbiAgICAgICAgICBjb3VudDogMCxcbiAgICAgICAgICB0aW1lOiAwXG4gICAgICAgIH1cbiAgICAgIH1cbiAgICAgIHRoaXMucHJvZmlsZVJlY29yZFtuYW1lXS50aWMgPSBwZXJmb3JtYW5jZS5ub3coKVxuICAgIH0sXG4gICAgcHJvZmlsZUVuZDogZnVuY3Rpb24gKG5hbWUpIHtcbiAgICAgIHZhciB0b2MgPSBwZXJmb3JtYW5jZS5ub3coKVxuICAgICAgdmFyIHJlY29yZCA9IHRoaXMucHJvZmlsZVJlY29yZFtuYW1lXVxuICAgICAgdmFyIGVsYXBzZWQgPSBNYXRoLnJvdW5kKHRvYyAtIHJlY29yZC50aWMpXG4gICAgICByZWNvcmQuY291bnQrK1xuICAgICAgcmVjb3JkLnRpbWUgKz0gKGVsYXBzZWQgLSByZWNvcmQudGltZSkgLyByZWNvcmQuY291bnRcbiAgICAgIGNvbnNvbGUubG9nKG5hbWUgKyAnOiAnICsgZWxhcHNlZCArICdtcycgKyAnLCBhdmcgJyArIE1hdGgucm91bmQocmVjb3JkLnRpbWUpICsgJ21zJylcbiAgICB9LFxuICAgIHVwZGF0ZVk6IGZ1bmN0aW9uICgpIHtcbiAgICAgIC8vIFBlcmZvcm0gZ3JhZGllbnQgdXBkYXRlIGluIHBsYWNlXG4gICAgICB2YXIgYWxwaGEgPSB0aGlzLml0ZXIgPCB0aGlzLmV4YWdFbmRJdGVyID8gMC41IDogMC44XG4gICAgICB2YXIgbiA9IHRoaXMublxuICAgICAgdmFyIGRpbXMgPSB0aGlzLmRpbXNcbiAgICAgIHZhciBZbWVhbiA9IFswLCAwXSAgLy8gRklYTUU6IG9ubHkgdHdvIGRpbWVuc2lvbmFsXG4gICAgICBmb3IgKHZhciBpID0gMDsgaSA8IG47IGkrKykge1xuICAgICAgICBmb3IgKHZhciBkID0gMDsgZCA8IGRpbXM7IGQrKykge1xuICAgICAgICAgIHZhciBncmFkaWQgPSB0aGlzLmdyYWQuZ2V0KGksIGQpXG4gICAgICAgICAgdmFyIHN0ZXBpZCA9IHRoaXMueXRNaW51czEuZ2V0KGksIGQpIC0gdGhpcy55dE1pbnVzMi5nZXQoaSwgZClcbiAgICAgICAgICB2YXIgZ2FpbmlkID0gdGhpcy5ZZ2FpbnMuZ2V0KGksIGQpXG5cbiAgICAgICAgICAvLyBVcGRhdGUgZ2FpblxuICAgICAgICAgIHZhciBuZXdnYWluID0gTWF0aC5tYXgoXG4gICAgICAgICAgICAgIHNpZ24oZ3JhZGlkKSA9PT0gc2lnbihzdGVwaWQpID8gZ2FpbmlkICogMC44IDogZ2FpbmlkICsgMC4yLCAwLjAxKVxuICAgICAgICAgIHRoaXMuWWdhaW5zLnNldChpLCBkLCBuZXdnYWluKVxuXG4gICAgICAgICAgLy8gVXBkYXRlIFlcbiAgICAgICAgICB2YXIgWWlkID0gKHRoaXMueXRNaW51czEuZ2V0KGksIGQpXG4gICAgICAgICAgICAgICAgICAgICAgIC0gdGhpcy5sZWFybmluZ1JhdGUgKiBuZXdnYWluICogZ3JhZGlkXG4gICAgICAgICAgICAgICAgICAgICAgICsgYWxwaGEgKiBzdGVwaWQpXG4gICAgICAgICAgdGhpcy5ZLnNldChpLCBkLCBZaWQpXG5cbiAgICAgICAgICAvLyBBY2N1bXVsYXRlIG1lYW4gZm9yIGNlbnRlcmluZ1xuICAgICAgICAgIFltZWFuW2RdICs9IFlpZFxuICAgICAgICB9XG4gICAgICB9XG5cbiAgICAgIC8vIFJlY2VudGVyXG4gICAgICBmb3IgKHZhciBpID0gMDsgaSA8IG47IGkrKykge1xuICAgICAgICBmb3IgKHZhciBkID0gMDsgZCA8IGRpbXM7IGQrKykge1xuICAgICAgICAgIHRoaXMuWS5zZXQoaSwgZCwgdGhpcy5ZLmdldChpLCBkKSAtIFltZWFuW2RdIC8gbilcbiAgICAgICAgfVxuICAgICAgfVxuICAgIH0sXG4gICAgdXBkYXRlR3JhZEJIOiBmdW5jdGlvbiAoKSB7XG4gICAgICAvLyBFYXJseSBleGFnZ2VyYXRpb25cbiAgICAgIHZhciBleGFnID0gTWF0aC5tYXgoOCAtIDAuNCAqIE1hdGguc3FydCh0aGlzLml0ZXIpLCAwLjIpIC8vIHNwZW50IGxvdCBvZiB0aW1lIHR1bmluZyB0aGlzXG4gICAgICAvLyB2YXIgZXhhZyA9IHRoaXMuaXRlciA8IHRoaXMuZXhhZ0VuZEl0ZXIgPyAxMiAtICgwLjAxICogdGhpcy5pdGVyKSA6IDEgLy8gdG9kbzogdGhpcyBpcyBpbXBvcnRhbnQuLi4gc2VlIGhvdyBjYW4gYmUgdHVuZWRcblxuICAgICAgLy8gSW5pdGlhbGl6ZSBxdWFkdHJlZVxuICAgICAgdmFyIGJodCA9IGJodHJlZS5CYXJuZXNIdXRUcmVlKClcbiAgICAgIGJodC5pbml0V2l0aERhdGEodGhpcy5ZLCB0aGlzLnRoZXRhLCB0aGlzLm4pXG5cbiAgICAgIC8vIENvbXB1dGUgZ3JhZGllbnQgb2YgdGhlIEtMIGRpdmVyZ2VuY2VcbiAgICAgIHZhciBuID0gdGhpcy5uXG4gICAgICB2YXIgZGltcyA9IHRoaXMuZGltc1xuXG4gICAgICAvLyBDb21wdXRlIEZyZXAgdXNpbmcgQmFybmVzLUh1dFxuICAgICAgdmFyIFogPSAwXG4gICAgICBmb3IgKHZhciBpID0gMDsgaSA8IG47IGkrKykge1xuICAgICAgICAvLyBOT1RFOiAyRCBvbmx5XG4gICAgICAgIHZhciBGcmVwID0gYmh0LmNvbXB1dGVGb3JjZXModGhpcy5ZLmdldChpLCAwKSwgdGhpcy5ZLmdldChpLCAxKSlcbiAgICAgICAgdGhpcy5ncmFkLnNldChpLCAwLCA0ICogRnJlcC54KVxuICAgICAgICB0aGlzLmdyYWQuc2V0KGksIDEsIDQgKiBGcmVwLnkpXG4gICAgICAgIFogKz0gRnJlcC5aXG4gICAgICB9XG5cbiAgICAgIC8vIENvbXB1dGUgRmF0dHIgb3ZlciBzcGFyc2UgUFxuICAgICAgdmFyIGdyYWRpID0gbmV3IEZsb2F0NjRBcnJheShkaW1zKVxuICAgICAgZm9yICh2YXIgaSA9IDA7IGkgPCBuOyBpKyspIHtcbiAgICAgICAgLy8gUmVzZXRcbiAgICAgICAgZm9yICh2YXIgZCA9IDA7IGQgPCBkaW1zOyBkKyspIGdyYWRpW2RdID0gMFxuXG4gICAgICAgIC8vIEFjY3VtdWxhdGUgRmF0dHIgb3ZlciBuZWFyZXN0IG5laWdoYm9yc1xuICAgICAgICB2YXIgcGkgPSB0aGlzLlBbaV1cbiAgICAgICAgZm9yICh2YXIgayA9IDA7IGsgPCB0aGlzLm51bU5laWdoYm9yczsgaysrKSB7XG4gICAgICAgICAgdmFyIGogPSB0aGlzLk5OLmdldChpLCBrKVxuICAgICAgICAgIHZhciBEaWogPSB0aGlzLkRbaV1bal1cblxuICAgICAgICAgIC8vIFN5bW1ldHJpemUgb24tZGVtYW5kXG4gICAgICAgICAgdmFyIFBpaiA9IChwaVtqXSArICh0aGlzLlBbal1baV0gfHwgMCkpIC8gKDIgKiB0aGlzLm4pXG5cbiAgICAgICAgICAvLyBVbmZ1cmxlZCBsb29wLCBidXQgMkQgb25seVxuICAgICAgICAgIHZhciBtdWxGYWN0b3IgPSA0ICogZXhhZyAqIFBpaiAqICgxLjAgLyAoMS4wICsgRGlqKSlcbiAgICAgICAgICBncmFkaVswXSArPSBtdWxGYWN0b3IgKiAodGhpcy5ZLmdldChpLCAwKSAtIHRoaXMuWS5nZXQoaiwgMCkpXG4gICAgICAgICAgZ3JhZGlbMV0gKz0gbXVsRmFjdG9yICogKHRoaXMuWS5nZXQoaSwgMSkgLSB0aGlzLlkuZ2V0KGosIDEpKVxuICAgICAgICB9XG5cbiAgICAgICAgLy8gTm9ybWFsaXplIEZyZXAgdGhlbiBpbmNyZW1lbnQgZ3JhZGllbnRcbiAgICAgICAgZm9yICh2YXIgZCA9IDA7IGQgPCBkaW1zOyBkKyspIHtcbiAgICAgICAgICB0aGlzLmdyYWQuc2V0KGksIGQsIHRoaXMuZ3JhZC5nZXQoaSwgZCkgLyBaICsgZ3JhZGlbZF0pXG4gICAgICAgIH1cbiAgICAgIH1cblxuICAgICAgcmV0dXJuIG51bGxcbiAgICB9LFxuXG4gICAgWFRvRDogZnVuY3Rpb24gKCkge1xuICAgICAgdmFyIGluZGljZXMgPSBBcnJheS5hcHBseShudWxsLCBBcnJheSh0aGlzLm4pKS5tYXAoZnVuY3Rpb24gKF8sIGkpIHsgcmV0dXJuIGkgfSlcbiAgICAgIHRoaXMudnB0ID0gdnB0cmVlLmJ1aWxkKGluZGljZXMsIGV1Y2xpZGVhbk9mKHRoaXMuWCkpXG4gICAgICB0aGlzLkQgPSBbXVxuICAgICAgdGhpcy5kbWF4ID0gW11cbiAgICAgIHRoaXMua21heCA9IFtdXG4gICAgICBmb3IgKHZhciBpID0gMDsgaSA8IHRoaXMubjsgaSsrKSB7XG4gICAgICAgIHRoaXMucHVzaEQoaSlcbiAgICAgIH1cbiAgICB9LFxuXG4gICAgcHVzaEQ6IGZ1bmN0aW9uKGkpIHtcbiAgICAgIHZhciBuZWlnaGJvcnMgPSB0aGlzLnZwdC5zZWFyY2goaSwgdGhpcy5udW1OZWlnaGJvcnMgKyAxKVxuICAgICAgbmVpZ2hib3JzLnNoaWZ0KCkgLy8gZmlyc3QgZWxlbWVudCBpcyBvd24gc2VsZlxuICAgICAgdmFyIGVsZW0gPSB7fVxuICAgICAgdmFyIGRtYXhpID0gMFxuICAgICAgdmFyIGttYXhpXG4gICAgICBmb3IgKHZhciBqID0gMDsgaiA8IG5laWdoYm9ycy5sZW5ndGg7IGorKykge1xuICAgICAgICB2YXIgbmVpZ2hib3IgPSBuZWlnaGJvcnNbal1cbiAgICAgICAgZWxlbVtuZWlnaGJvci5pXSA9IG5laWdoYm9yLmQgKiBuZWlnaGJvci5kXG4gICAgICAgIHRoaXMuTk4uc2V0KGksIGosIG5laWdoYm9yLmkpXG5cbiAgICAgICAgLy8gS2VlcCB0cmFjayBvZiBtYXhpbXVtIGRpc3RhbmNlXG4gICAgICAgIGlmIChuZWlnaGJvci5kID4gZG1heGkpIHtcbiAgICAgICAgICBkbWF4aSA9IG5laWdoYm9yLmRcbiAgICAgICAgICBrbWF4aSA9IG5laWdoYm9yLmlcbiAgICAgICAgfVxuICAgICAgfVxuICAgICAgdGhpcy5ELnB1c2goZWxlbSlcbiAgICAgIHRoaXMuZG1heC5wdXNoKGRtYXhpKVxuICAgICAgdGhpcy5rbWF4LnB1c2goa21heGkpXG4gICAgfSxcblxuICAgIHNldFBpQW5kR2V0SDogZnVuY3Rpb24gKGksIGJldGEpIHtcbiAgICAgIC8vIENvbXB1dGUgYSBzaW5nbGUgcm93IFBpIG9mIHRoZSBrZXJuZWwgYW5kIHRoZSBTaGFubm9uIGVudHJvcHkgSFxuXG4gICAgICB2YXIgcGkgPSB7fVxuICAgICAgdmFyIHN1bSA9IDBcbiAgICAgIHZhciBEaSA9IHRoaXMuRFtpXVxuICAgICAgZm9yICh2YXIgayA9IDA7IGsgPCB0aGlzLm51bU5laWdoYm9yczsgaysrKSB7XG4gICAgICAgIHZhciBrZXkgPSB0aGlzLk5OLmdldChpLCBrKVxuICAgICAgICB2YXIgZWxlbSA9IE1hdGguZXhwKC1iZXRhICogRGlba2V5XSlcbiAgICAgICAgcGlba2V5XSA9IGVsZW1cbiAgICAgICAgc3VtICs9IGVsZW1cbiAgICAgIH1cblxuICAgICAgLy8gRm9yIGRlYnVnZ2luZ1xuICAgICAgLy8gaWYgKHN1bSA9PT0gMCkge1xuICAgICAgLy8gIGNvbnNvbGUuY291bnQoJ3N1bSBlcXVhbHMgemVybycpXG4gICAgICAvLyB9XG5cbiAgICAgIHZhciBIID0gMFxuICAgICAgZm9yICh2YXIgayA9IDA7IGsgPCB0aGlzLm51bU5laWdoYm9yczsgaysrKSB7XG4gICAgICAgIHZhciBrZXkgPSB0aGlzLk5OLmdldChpLCBrKVxuICAgICAgICB2YXIgdmFsID0gcGlba2V5XSAvIHN1bVxuICAgICAgICBwaVtrZXldID0gdmFsXG4gICAgICAgIGlmICh2YWwgPiAxZS03KSB7IC8vIFRPRE86IGRvIHdlIG5lZWQgdGhpcz9cbiAgICAgICAgICBIIC09IHZhbCAqIE1hdGgubG9nMih2YWwpXG4gICAgICAgIH1cbiAgICAgIH1cblxuICAgICAgdGhpcy5QW2ldID0gcGlcbiAgICAgIHRoaXMuUHN1bVtpXSA9IHN1bVxuICAgICAgcmV0dXJuIEhcbiAgICB9LFxuXG4gICAgRFRvUDogZnVuY3Rpb24gKCkge1xuICAgICAgdGhpcy5QID0gW11cbiAgICAgIHRoaXMuUHN1bSA9IFtdXG4gICAgICB0aGlzLmJldGEgPSBbXVxuXG4gICAgICBmb3IgKHZhciBpID0gMDsgaSA8IHRoaXMubjsgaSsrKSB7XG4gICAgICAgIHRoaXMucHVzaFAoaSlcbiAgICAgIH1cbiAgICB9LFxuXG4gICAgcHVzaFA6IGZ1bmN0aW9uIChpKSB7XG4gICAgICAvLyBXZSBwZXJmb3JtIGJpbmFyeSBzZWFyY2ggdG8gZmluZCB0aGUgYmV0YSBzdWNoIHRoYXRcbiAgICAgIC8vIHRoZSBjb25kaXRpb25hbCBkaXN0cmlidXRpb24gUF9pIGhhcyB0aGUgZ2l2ZW4gcGVycGxleGl0eS5cbiAgICAgIC8vIFdlIGRlZmluZTpcbiAgICAgIC8vICAgYmV0YSA9IDEgLyAoMiAqIHNpZ21hX2leMilcbiAgICAgIC8vIHdoZXJlIHNpZ21hX2kgaXMgdGhlIGJhbmR3aXRoIG9mIHRoZSBHYXVzc2lhbiBrZXJuZWxcbiAgICAgIC8vIGZvciB0aGUgY29uZGl0aW9uYWwgZGlzdHJpYnV0aW9uIFBfaVxuICAgICAgdmFyIGJldGEgPSAxXG4gICAgICB2YXIgYmV0YW1pbiA9IC1JbmZpbml0eVxuICAgICAgdmFyIGJldGFtYXggPSBJbmZpbml0eVxuICAgICAgdmFyIEhkaWZmXG4gICAgICB2YXIgbnVtVHJpZXMgPSAwXG5cbiAgICAgIGRvIHtcbiAgICAgICAgbnVtVHJpZXMrK1xuICAgICAgICB2YXIgSCA9IHRoaXMuc2V0UGlBbmRHZXRIKGksIGJldGEpXG4gICAgICAgIEhkaWZmID0gSCAtIHRoaXMuSGRlc2lyZWRcblxuICAgICAgICBpZiAoSGRpZmYgPiAwKSB7XG4gICAgICAgICAgLy8gRW50cm9weSB0b28gaGlnaCwgYmV0YSBpcyB0b28gc21hbGxcbiAgICAgICAgICBiZXRhbWluID0gYmV0YVxuICAgICAgICAgIGlmIChiZXRhbWF4ID09PSBJbmZpbml0eSkge1xuICAgICAgICAgICAgYmV0YSA9IGJldGEgKiAyXG4gICAgICAgICAgfSBlbHNlIHtcbiAgICAgICAgICAgIGJldGEgPSAoYmV0YSArIGJldGFtYXgpIC8gMlxuICAgICAgICAgIH1cbiAgICAgICAgfSBlbHNlIHtcbiAgICAgICAgICAvLyBFbnRyb3B5IGlzIHRvbyBsb3csIGJldGEgaXMgdG9vIGJpZ1xuICAgICAgICAgIGJldGFtYXggPSBiZXRhXG4gICAgICAgICAgaWYgKGJldGFtaW4gPT09IC1JbmZpbml0eSkge1xuICAgICAgICAgICAgYmV0YSA9IGJldGEgLyAyXG4gICAgICAgICAgfSBlbHNlIHtcbiAgICAgICAgICAgIGJldGEgPSAoYmV0YSArIGJldGFtaW4pIC8gMlxuICAgICAgICAgIH1cbiAgICAgICAgfVxuICAgICAgfSB3aGlsZSAoTWF0aC5hYnMoSGRpZmYpID4gMWUtMDUgJiYgbnVtVHJpZXMgPCA1MClcbiAgICAgIHRoaXMuYmV0YS5wdXNoKGJldGEpXG4gICAgfSxcblxuICAgIC8qIFVwZGF0ZSBuZWlnaGJvcmhvb2RzIG9mIG90aGVyIHBvaW50c1xuICAgICAqXG4gICAgICogbmV3aiAtIGluZGV4IG9mIHRoZSBuZXcgcG9pbnRcbiAgICAgKi9cbiAgICB1cGRhdGVOZWlnaGJvcmhvb2RzOiBmdW5jdGlvbiAobmV3aikge1xuICAgICAgdmFyIGksIG5ld2QsIGttYXgsIGRtYXgsIGptYXgsIG5ld2RTcVxuICAgICAgZm9yIChpID0gMDsgaSA8IG5ld2o7IGkrKykge1xuICAgICAgICBkbWF4ID0gdGhpcy5kbWF4W2ldXG4gICAgICAgIG5ld2RTcSA9IHNxdWFyZWRFdWNsaWRlYW4odGhpcy5YW25ld2pdLCB0aGlzLlhbaV0pXG4gICAgICAgIG5ld2QgPSBNYXRoLnNxcnQobmV3ZFNxKVxuXG4gICAgICAgIGlmIChuZXdkIDwgZG1heCkge1xuICAgICAgICAgIC8vIFhuZXdqIGlzIGluIHRoZSBuZWlnaGJvcmhvb2Qgb2YgWGkhXG4gICAgICAgICAgLy8gUmVwbGFjZSB0aGUgcG9pbnQgZmFydGhlc3QgYXdheSBmcm9tIFhpIGluIG5laWdoYm9yaG9vZFxuICAgICAgICAgIGttYXggPSB0aGlzLmttYXhbaV1cbiAgICAgICAgICBqbWF4ID0gdGhpcy5OTltrbWF4XVxuICAgICAgICAgIHRoaXMuTk5ba21heF0gPSBuZXdqXG4gICAgICAgICAgZGVsZXRlIHRoaXMuUFtpXVtqbWF4XSAgLy8gb3IgdGhpcy5QW2ldW2ptYXhdID0gMD9cblxuICAgICAgICAgIC8vIENvbXB1dGUgYXBwcm94aW1hdGUgdXBkYXRlIHdpdGggb2xkIGJldGEgYW5kIFBzdW1cbiAgICAgICAgICAvLyAoTm90ZSB0aGF0IHRvIGNvbXB1dGUgYW4gZXhhY3QgdXBkYXRlLCB3ZSBoYXZlIHRvIHJlZG8gdGhlXG4gICAgICAgICAgLy8gc2VhcmNoIGZvciBiZXRhLCBvciBhdCBsZWFzdCByZW5vcm1hbGl6ZSBQaSlcbiAgICAgICAgICB0aGlzLlBbaV1bbmV3al0gPSBNYXRoLmV4cCgtdGhpcy5iZXRhW2ldICogbmV3ZFNxKSAvIHRoaXMuUHN1bVtpXVxuICAgICAgICB9XG4gICAgICB9XG4gICAgfSxcblxuICAgIHB1c2hZOiBmdW5jdGlvbihuZXdpKSB7XG4gICAgICAvLyBJbml0aWFsaXplIGVtYmVkZGluZyBhcyB3ZWlnaHRlZCBhdmVyYWdlIG9mIGl0cyBuZWlnaGJvcnMgKFBlenpvdHRpKVxuICAgICAgdmFyIFBpID0gdGhpcy5QW25ld2ldXG4gICAgICB2YXIgeTAgPSAwXG4gICAgICB2YXIgeTEgPSAwXG4gICAgICB2YXIgaywgaiwgUGppXG4gICAgICBmb3IgKGsgPSAwOyBrIDwgdGhpcy5udW1OZWlnaGJvcnM7IGsrKykge1xuICAgICAgICBqID0gdGhpcy5OTi5nZXQobmV3aSwgaylcbiAgICAgICAgUGppID0gUGlbal1cbiAgICAgICAgeTAgPSBQamkgKiB0aGlzLlkuZ2V0KGosIDApXG4gICAgICAgIHkxID0gUGppICogdGhpcy5ZLmdldChqLCAxKVxuICAgICAgfVxuICAgICAgdGhpcy5ZLnNldChuZXdpLCAwLCB5MClcbiAgICAgIHRoaXMuWS5zZXQobmV3aSwgMSwgeTEpXG4gICAgfSxcblxuICAgIC8qKioqKioqKioqKioqKioqKioqKioqKipcbiAgICAgKiBQVUJMSUMgQVBJIFNUQVJUUyBIRVJFXG4gICAgICoqKioqKioqKioqKioqKioqKioqKioqKi9cblxuICAgIGluaXREYXRhOiBmdW5jdGlvbiAoZGF0YSkge1xuICAgICAgdGhpcy5YID0gZGF0YVxuICAgICAgdGhpcy5uID0gZGF0YS5sZW5ndGhcbiAgICAgIHRoaXMuTk4gPSBwb29sLnplcm9zKFt0aGlzLm4gKiAyLCB0aGlzLm51bU5laWdoYm9yc10pXG4gICAgICB0aGlzLmRpbXMgPSAyXG4gICAgICB0aGlzLlhUb0QoKVxuICAgICAgdGhpcy5EVG9QKClcbiAgICAgIHRoaXMuWSA9IGluaXRpYWxZKHRoaXMubilcbiAgICAgIHRoaXMueXRNaW51czEgPSBwb29sLmNsb25lKHRoaXMuWSlcbiAgICAgIHRoaXMueXRNaW51czIgPSBwb29sLmNsb25lKHRoaXMuWSlcbiAgICAgIHRoaXMuWWdhaW5zID0gcG9vbC5vbmVzKHRoaXMuWS5zaGFwZSlcbiAgICAgIHRoaXMuZ3JhZCA9IHBvb2wuemVyb3ModGhpcy5ZLnNoYXBlKVxuICAgICAgdGhpcy5pdGVyID0gMFxuICAgICAgdGhpcy5leGFnRW5kSXRlciA9IDI1MCAgLy8gdmFuIGRlciBNYWF0ZW4gMjAxNFxuICAgIH0sXG5cbiAgICBleHBhbmRCdWZmZXJzOiBmdW5jdGlvbigpIHtcbiAgICAgIGNvbnNvbGUubG9nKCdleHBhbmRpbmcgYnVmZmVycycpXG4gICAgICB2YXIgbmV3bGVuID0gdGhpcy5uICogMlxuICAgICAgdmFyIHRoYXQgPSB0aGlzXG4gICAgICA7WydOTicsICdZJywgJ3l0TWludXMxJywgJ3l0TWludXMyJywgJ1lnYWlucycsICdncmFkJ10uZm9yRWFjaChmdW5jdGlvbiAobmFtZSkge1xuICAgICAgICB2YXIgb2xkTWF0ID0gdGhhdFtuYW1lXVxuICAgICAgICB2YXIgbmV3TWF0ID0gcG9vbC5tYWxsb2MoW25ld2xlbiwgb2xkTWF0LnNoYXBlWzFdXSlcbiAgICAgICAgb3BzLmFzc2lnbihuZXdNYXQuaGkob2xkTWF0LnNoYXBlWzBdLCBvbGRNYXQuc2hhcGVbMV0pLCBvbGRNYXQpXG4gICAgICAgIHBvb2wuZnJlZShvbGRNYXQpXG4gICAgICAgIHRoYXRbbmFtZV0gPSBuZXdNYXRcbiAgICAgIH0pXG4gICAgfSxcblxuICAgIC8qXG4gICAgICogeCAtIGFycmF5IGNvbnRhaW5pbmcgdGhlIG5ldyBwb2ludFxuICAgICAqL1xuICAgIGFkZDogZnVuY3Rpb24gKHgpIHtcbiAgICAgIGlmICh4Lmxlbmd0aCAhPSB0aGlzLlhbMF0ubGVuZ3RoKSB0aHJvdyBcIm5ldyBwb2ludCBkb2Vzbid0IG1hdGNoIGlucHV0IGRpbWVuc2lvbnNcIlxuICAgICAgdmFyIG5ld2kgPSB0aGlzLm4rK1xuICAgICAgdGhpcy5YLnB1c2goeClcbiAgICAgIGlmICh0aGlzLm4gPiB0aGlzLlkuc2hhcGVbMF0pIHtcbiAgICAgICAgLy8gRXhwYW5kIGJ1ZmZlcnMgYW5kIHJlYnVpbGQgUFxuICAgICAgICB0aGlzLmV4cGFuZEJ1ZmZlcnMoKVxuICAgICAgICB0aGlzLlhUb0QoKVxuICAgICAgICB0aGlzLkRUb1AoKVxuICAgICAgICB0aGlzLmV4YWdFbmRJdGVyID0gdGhpcy5pdGVyICsgMTAwICAvLyBleGFnZ2VyYXRlIGZvciBhbm90aGVyIDEwMCBpdGVyYXRpb25zXG4gICAgICB9IGVsc2Uge1xuICAgICAgICAvLyBEbyBhbiBhcHByb3hpbWF0aXZlIHVwZGF0ZVxuICAgICAgICB0aGlzLnVwZGF0ZU5laWdoYm9yaG9vZHMobmV3aSlcbiAgICAgICAgdGhpcy5wdXNoRChuZXdpKVxuICAgICAgICB0aGlzLnB1c2hQKG5ld2kpXG4gICAgICAgIHRoaXMucHVzaFkobmV3aSlcbiAgICAgIH1cbiAgICB9LFxuXG4gICAgc3RlcDogZnVuY3Rpb24gKCkge1xuICAgICAgLy8gQ29tcHV0ZSBncmFkaWVudFxuICAgICAgdmFyIGNvc3QgPSB0aGlzLnVwZGF0ZUdyYWRCSCgpXG4gICAgICAvLyBpZiAodGhpcy5pdGVyID4gMTAwKSB7XG4gICAgICAvLyAgIHRoaXMuY2hlY2tHcmFkKClcbiAgICAgIC8vIH1cblxuICAgICAgLy8gUm90YXRlIGJ1ZmZlcnNcbiAgICAgIHZhciB0ZW1wID0gdGhpcy55dE1pbnVzMlxuICAgICAgdGhpcy55dE1pbnVzMiA9IHRoaXMueXRNaW51czFcbiAgICAgIHRoaXMueXRNaW51czEgPSB0aGlzLllcbiAgICAgIHRoaXMuWSA9IHRlbXBcblxuICAgICAgLy8gUGVyZm9ybSB1cGRhdGVcbiAgICAgIHRoaXMudXBkYXRlWSgpXG5cbiAgICAgIHRoaXMuaXRlcisrXG4gICAgICByZXR1cm4gY29zdFxuICAgIH1cbiAgfVxuXG4gIGdsb2JhbC5UU05FID0gVFNORVxufSkodHNuZSlcblxuLy8gZXhwb3J0IHRoZSBsaWJyYXJ5IHRvIHdpbmRvdywgb3IgdG8gbW9kdWxlIGluIG5vZGVqc1xuLy8gV2VicGFjayBzdXBwb3J0cyBib3RoLlxuOyhmdW5jdGlvbiAobGliKSB7XG4gICd1c2Ugc3RyaWN0J1xuICBpZiAodHlwZW9mIG1vZHVsZSAhPT0gJ3VuZGVmaW5lZCcgJiYgdHlwZW9mIG1vZHVsZS5leHBvcnRzID09PSAndW5kZWZpbmVkJykge1xuICAgIG1vZHVsZS5leHBvcnRzID0gbGliIC8vIGluIG5vZGVqc1xuICB9XG4gIGlmICh0eXBlb2Ygd2luZG93ICE9PSAndW5kZWZpbmVkJykge1xuICAgIHdpbmRvdy50c25lID0gbGliIC8vIGluIG9yZGluYXJ5IGJyb3dzZXIgYXR0YWNoIGxpYnJhcnkgdG8gd2luZG93XG4gIH1cbn0pKHRzbmUpXG5cblxuXG5cbi8vLy8vLy8vLy8vLy8vLy8vL1xuLy8gV0VCUEFDSyBGT09URVJcbi8vIC4vc3RyZWFtaW5nLXRzbmUuanNcbi8vIG1vZHVsZSBpZCA9IDBcbi8vIG1vZHVsZSBjaHVua3MgPSAwIl0sInNvdXJjZVJvb3QiOiIifQ==");
+	var gaussian = __webpack_require__(1)
+	var pool = __webpack_require__(2)
+	var ops = __webpack_require__(6)
+	var bhtree = __webpack_require__(18)
+	var vptree = __webpack_require__(19)
+	var tsne = tsne || {}
+	
+	;(function (global) {
+	  'use strict'
+	
+	  var getopt = function (opt, key, def) {
+	    if (opt[key] == null) {
+	      return def
+	    } else {
+	      return opt[key]
+	    }
+	  }
+	
+	  var initialY = function (numSamples) {
+	    // FIXME: allow arbitrary dimensions??
+	    var distribution = gaussian(0, 1e-4)
+	    var ys = pool.zeros([numSamples * 2, 2])  // initialize with twice as much room as necessary
+	    for (var i = 0; i < numSamples; i++) {
+	      ys.set(i, 0, distribution.ppf(Math.random()))
+	      ys.set(i, 1, distribution.ppf(Math.random()))
+	    }
+	    return ys
+	  }
+	
+	  var squaredEuclidean = function (x, y) {
+	    // Compute Euclidean distance between two vectors as Arrays
+	    var m = x.length
+	    var d = 0
+	    var k, xk, yk
+	    for (k = 0; k < m; k++) {
+	      xk = x[k]
+	      yk = y[k]
+	      d += (xk - yk) * (xk - yk)
+	    }
+	    return d
+	  }
+	
+	  var euclideanOf = function (data) {
+	    return function (x, y) {
+	      return Math.sqrt(squaredEuclidean(data[x], data[y]))
+	    }
+	  }
+	
+	  function sign (x) { return x > 0 ? 1 : x < 0 ? -1 : 0 }
+	
+	  var TSNE = function (opt) {
+	    var perplexity = getopt(opt, 'perplexity', 30)  // (van der Maaten 2014)
+	    this.Hdesired = Math.log2(perplexity)
+	    this.numNeighbors = getopt(opt, 'numNeighbors', 3 * perplexity)  // (van der Maaten 2014)
+	    this.theta = getopt(opt, 'theta', 0.5)  // [0, 1] tunes the barnes-hut approximation, 0 is exact
+	    this.learningRate = getopt(opt, 'learningRate', 10)  // [0, 1] tunes the barnes-hut approximation, 0 is exact
+	  }
+	
+	  TSNE.prototype = {
+	    profileRecord: {},
+	    profileStart: function (name) {
+	      if (!this.profileRecord.hasOwnProperty(name)) {
+	        this.profileRecord[name] = {
+	          count: 0,
+	          time: 0
+	        }
+	      }
+	      this.profileRecord[name].tic = performance.now()
+	    },
+	    profileEnd: function (name) {
+	      var toc = performance.now()
+	      var record = this.profileRecord[name]
+	      var elapsed = Math.round(toc - record.tic)
+	      record.count++
+	      record.time += (elapsed - record.time) / record.count
+	      console.log(name + ': ' + elapsed + 'ms' + ', avg ' + Math.round(record.time) + 'ms')
+	    },
+	    updateY: function () {
+	      // Perform gradient update in place
+	      var alpha = this.iter < this.exagEndIter ? 0.5 : 0.8
+	      var n = this.n
+	      var dims = this.dims
+	      var Ymean = [0, 0]  // FIXME: only two dimensional
+	      for (var i = 0; i < n; i++) {
+	        for (var d = 0; d < dims; d++) {
+	          var gradid = this.grad.get(i, d)
+	          var stepid = this.ytMinus1.get(i, d) - this.ytMinus2.get(i, d)
+	          var gainid = this.Ygains.get(i, d)
+	
+	          // Update gain
+	          var newgain = Math.max(
+	              sign(gradid) === sign(stepid) ? gainid * 0.8 : gainid + 0.2, 0.01)
+	          this.Ygains.set(i, d, newgain)
+	
+	          // Update Y
+	          var Yid = (this.ytMinus1.get(i, d)
+	                       - this.learningRate * newgain * gradid
+	                       + alpha * stepid)
+	          this.Y.set(i, d, Yid)
+	
+	          // Accumulate mean for centering
+	          Ymean[d] += Yid
+	        }
+	      }
+	
+	      // Recenter
+	      for (var i = 0; i < n; i++) {
+	        for (var d = 0; d < dims; d++) {
+	          this.Y.set(i, d, this.Y.get(i, d) - Ymean[d] / n)
+	        }
+	      }
+	    },
+	    updateGradBH: function () {
+	      // Early exaggeration
+	      var exag = Math.max(8 - 0.4 * Math.sqrt(this.iter), 0.2) // spent lot of time tuning this
+	      // var exag = this.iter < this.exagEndIter ? 12 - (0.01 * this.iter) : 1 // todo: this is important... see how can be tuned
+	
+	      // Initialize quadtree
+	      var bht = bhtree.BarnesHutTree()
+	      bht.initWithData(this.Y, this.theta, this.n)
+	
+	      // Compute gradient of the KL divergence
+	      var n = this.n
+	      var dims = this.dims
+	
+	      // Compute Frep using Barnes-Hut
+	      var Z = 0
+	      for (var i = 0; i < n; i++) {
+	        // NOTE: 2D only
+	        var Frep = bht.computeForces(this.Y.get(i, 0), this.Y.get(i, 1))
+	        this.grad.set(i, 0, 4 * Frep.x)
+	        this.grad.set(i, 1, 4 * Frep.y)
+	        Z += Frep.Z
+	      }
+	
+	      // Compute Fattr over sparse P
+	      var gradi = new Float64Array(dims)
+	      for (var i = 0; i < n; i++) {
+	        // Reset
+	        for (var d = 0; d < dims; d++) gradi[d] = 0
+	
+	        // Accumulate Fattr over nearest neighbors
+	        var pi = this.P[i]
+	        for (var k = 0; k < this.numNeighbors; k++) {
+	          var j = this.NN.get(i, k)
+	          var Dij = this.D[i][j]
+	
+	          // Symmetrize on-demand
+	          var Pij = (pi[j] + (this.P[j][i] || 0)) / (2 * this.n)
+	
+	          // Unfurled loop, but 2D only
+	          var mulFactor = 4 * exag * Pij * (1.0 / (1.0 + Dij))
+	          gradi[0] += mulFactor * (this.Y.get(i, 0) - this.Y.get(j, 0))
+	          gradi[1] += mulFactor * (this.Y.get(i, 1) - this.Y.get(j, 1))
+	        }
+	
+	        // Normalize Frep then increment gradient
+	        for (var d = 0; d < dims; d++) {
+	          this.grad.set(i, d, this.grad.get(i, d) / Z + gradi[d])
+	        }
+	      }
+	
+	      return null
+	    },
+	
+	    XToD: function () {
+	      var indices = Array.apply(null, Array(this.n)).map(function (_, i) { return i })
+	      this.vpt = vptree.build(indices, euclideanOf(this.X))
+	      this.D = []
+	      this.dmax = []
+	      this.kmax = []
+	      for (var i = 0; i < this.n; i++) {
+	        this.pushD(i)
+	      }
+	    },
+	
+	    pushD: function(i) {
+	      var neighbors = this.vpt.search(i, this.numNeighbors + 1)
+	      neighbors.shift() // first element is own self
+	      var elem = {}
+	      var dmaxi = 0
+	      var kmaxi
+	      for (var j = 0; j < neighbors.length; j++) {
+	        var neighbor = neighbors[j]
+	        elem[neighbor.i] = neighbor.d * neighbor.d
+	        this.NN.set(i, j, neighbor.i)
+	
+	        // Keep track of maximum distance
+	        if (neighbor.d > dmaxi) {
+	          dmaxi = neighbor.d
+	          kmaxi = neighbor.i
+	        }
+	      }
+	      this.D.push(elem)
+	      this.dmax.push(dmaxi)
+	      this.kmax.push(kmaxi)
+	    },
+	
+	    setPiAndGetH: function (i, beta) {
+	      // Compute a single row Pi of the kernel and the Shannon entropy H
+	
+	      var pi = {}
+	      var sum = 0
+	      var Di = this.D[i]
+	      for (var k = 0; k < this.numNeighbors; k++) {
+	        var key = this.NN.get(i, k)
+	        var elem = Math.exp(-beta * Di[key])
+	        pi[key] = elem
+	        sum += elem
+	      }
+	
+	      // For debugging
+	      // if (sum === 0) {
+	      //  console.count('sum equals zero')
+	      // }
+	
+	      var H = 0
+	      for (var k = 0; k < this.numNeighbors; k++) {
+	        var key = this.NN.get(i, k)
+	        var val = pi[key] / sum
+	        pi[key] = val
+	        if (val > 1e-7) { // TODO: do we need this?
+	          H -= val * Math.log2(val)
+	        }
+	      }
+	
+	      this.P[i] = pi
+	      this.Psum[i] = sum
+	      return H
+	    },
+	
+	    DToP: function () {
+	      this.P = []
+	      this.Psum = []
+	      this.beta = []
+	
+	      for (var i = 0; i < this.n; i++) {
+	        this.pushP(i)
+	      }
+	    },
+	
+	    pushP: function (i) {
+	      // We perform binary search to find the beta such that
+	      // the conditional distribution P_i has the given perplexity.
+	      // We define:
+	      //   beta = 1 / (2 * sigma_i^2)
+	      // where sigma_i is the bandwith of the Gaussian kernel
+	      // for the conditional distribution P_i
+	      var beta = 1
+	      var betamin = -Infinity
+	      var betamax = Infinity
+	      var Hdiff
+	      var numTries = 0
+	
+	      do {
+	        numTries++
+	        var H = this.setPiAndGetH(i, beta)
+	        Hdiff = H - this.Hdesired
+	
+	        if (Hdiff > 0) {
+	          // Entropy too high, beta is too small
+	          betamin = beta
+	          if (betamax === Infinity) {
+	            beta = beta * 2
+	          } else {
+	            beta = (beta + betamax) / 2
+	          }
+	        } else {
+	          // Entropy is too low, beta is too big
+	          betamax = beta
+	          if (betamin === -Infinity) {
+	            beta = beta / 2
+	          } else {
+	            beta = (beta + betamin) / 2
+	          }
+	        }
+	      } while (Math.abs(Hdiff) > 1e-05 && numTries < 50)
+	      this.beta.push(beta)
+	    },
+	
+	    /* Update neighborhoods of other points
+	     *
+	     * newj - index of the new point
+	     */
+	    updateNeighborhoods: function (newj) {
+	      var i, newd, kmax, dmax, jmax, newdSq
+	      for (i = 0; i < newj; i++) {
+	        dmax = this.dmax[i]
+	        newdSq = squaredEuclidean(this.X[newj], this.X[i])
+	        newd = Math.sqrt(newdSq)
+	
+	        if (newd < dmax) {
+	          // Xnewj is in the neighborhood of Xi!
+	          // Replace the point farthest away from Xi in neighborhood
+	          kmax = this.kmax[i]
+	          jmax = this.NN[kmax]
+	          this.NN[kmax] = newj
+	          delete this.P[i][jmax]  // or this.P[i][jmax] = 0?
+	
+	          // Compute approximate update with old beta and Psum
+	          // (Note that to compute an exact update, we have to redo the
+	          // search for beta, or at least renormalize Pi)
+	          this.P[i][newj] = Math.exp(-this.beta[i] * newdSq) / this.Psum[i]
+	        }
+	      }
+	    },
+	
+	    pushY: function(newi) {
+	      // Initialize embedding as weighted average of its neighbors (Pezzotti)
+	      var Pi = this.P[newi]
+	      var y0 = 0
+	      var y1 = 0
+	      var k, j, Pji
+	      for (k = 0; k < this.numNeighbors; k++) {
+	        j = this.NN.get(newi, k)
+	        Pji = Pi[j]
+	        y0 = Pji * this.Y.get(j, 0)
+	        y1 = Pji * this.Y.get(j, 1)
+	      }
+	      this.Y.set(newi, 0, y0)
+	      this.Y.set(newi, 1, y1)
+	    },
+	
+	    /************************
+	     * PUBLIC API STARTS HERE
+	     ************************/
+	
+	    initData: function (data) {
+	      this.X = data
+	      this.n = data.length
+	      this.NN = pool.zeros([this.n * 2, this.numNeighbors])
+	      this.dims = 2
+	      this.XToD()
+	      this.DToP()
+	      this.Y = initialY(this.n)
+	      this.ytMinus1 = pool.clone(this.Y)
+	      this.ytMinus2 = pool.clone(this.Y)
+	      this.Ygains = pool.ones(this.Y.shape)
+	      this.grad = pool.zeros(this.Y.shape)
+	      this.iter = 0
+	      this.exagEndIter = 250  // van der Maaten 2014
+	    },
+	
+	    expandBuffers: function() {
+	      console.log('expanding buffers')
+	      var newlen = this.n * 2
+	      var that = this
+	      ;['NN', 'Y', 'ytMinus1', 'ytMinus2', 'Ygains', 'grad'].forEach(function (name) {
+	        var oldMat = that[name]
+	        var newMat = pool.malloc([newlen, oldMat.shape[1]])
+	        ops.assign(newMat.hi(oldMat.shape[0], oldMat.shape[1]), oldMat)
+	        pool.free(oldMat)
+	        that[name] = newMat
+	      })
+	    },
+	
+	    /*
+	     * x - array containing the new point
+	     */
+	    add: function (x) {
+	      if (x.length != this.X[0].length) throw "new point doesn't match input dimensions"
+	      var newi = this.n++
+	      this.X.push(x)
+	      if (this.n > this.Y.shape[0]) {
+	        // Expand buffers and rebuild P
+	        this.expandBuffers()
+	        this.XToD()
+	        this.DToP()
+	        this.exagEndIter = this.iter + 100  // exaggerate for another 100 iterations
+	      } else {
+	        // Do an approximative update
+	        this.updateNeighborhoods(newi)
+	        this.pushD(newi)
+	        this.pushP(newi)
+	        this.pushY(newi)
+	      }
+	    },
+	
+	    step: function () {
+	      // Compute gradient
+	      var cost = this.updateGradBH()
+	      // if (this.iter > 100) {
+	      //   this.checkGrad()
+	      // }
+	
+	      // Rotate buffers
+	      var temp = this.ytMinus2
+	      this.ytMinus2 = this.ytMinus1
+	      this.ytMinus1 = this.Y
+	      this.Y = temp
+	
+	      // Perform update
+	      this.updateY()
+	
+	      this.iter++
+	      return cost
+	    }
+	  }
+	
+	  global.TSNE = TSNE
+	})(tsne)
+	
+	// export the library to window, or to module in nodejs
+	// Webpack supports both.
+	;(function (lib) {
+	  'use strict'
+	  if (typeof module !== 'undefined' && typeof module.exports === 'undefined') {
+	    module.exports = lib // in nodejs
+	  }
+	  if (typeof window !== 'undefined') {
+	    window.tsne = lib // in ordinary browser attach library to window
+	  }
+	})(tsne)
+	
+
 
 /***/ },
 /* 1 */
 /***/ function(module, exports, __webpack_require__) {
 
-	eval("(function(exports) {\n\n  // Complementary error function\n  // From Numerical Recipes in C 2e p221\n  var erfc = function(x) {\n    var z = Math.abs(x);\n    var t = 1 / (1 + z / 2);\n    var r = t * Math.exp(-z * z - 1.26551223 + t * (1.00002368 +\n            t * (0.37409196 + t * (0.09678418 + t * (-0.18628806 +\n            t * (0.27886807 + t * (-1.13520398 + t * (1.48851587 +\n            t * (-0.82215223 + t * 0.17087277)))))))))\n    return x >= 0 ? r : 2 - r;\n  };\n\n  // Inverse complementary error function\n  // From Numerical Recipes 3e p265\n  var ierfc = function(x) {\n    if (x >= 2) { return -100; }\n    if (x <= 0) { return 100; }\n\n    var xx = (x < 1) ? x : 2 - x;\n    var t = Math.sqrt(-2 * Math.log(xx / 2));\n\n    var r = -0.70711 * ((2.30753 + t * 0.27061) /\n            (1 + t * (0.99229 + t * 0.04481)) - t);\n\n    for (var j = 0; j < 2; j++) {\n      var err = erfc(r) - xx;\n      r += err / (1.12837916709551257 * Math.exp(-(r * r)) - r * err);\n    }\n\n    return (x < 1) ? r : -r;\n  };\n\n  // Models the normal distribution\n  var Gaussian = function(mean, variance) {\n    if (variance <= 0) {\n      throw new Error('Variance must be > 0 (but was ' + variance + ')');\n    }\n    this.mean = mean;\n    this.variance = variance;\n    this.standardDeviation = Math.sqrt(variance);\n  }\n\n  // Probability density function\n  Gaussian.prototype.pdf = function(x) {\n    var m = this.standardDeviation * Math.sqrt(2 * Math.PI);\n    var e = Math.exp(-Math.pow(x - this.mean, 2) / (2 * this.variance));\n    return e / m;\n  };\n\n  // Cumulative density function\n  Gaussian.prototype.cdf = function(x) {\n    return 0.5 * erfc(-(x - this.mean) / (this.standardDeviation * Math.sqrt(2)));\n  };\n\n  // Percent point function\n  Gaussian.prototype.ppf = function(x) {\n    return this.mean - this.standardDeviation * Math.sqrt(2) * ierfc(2 * x);\n  };\n\n  // Product distribution of this and d (scale for constant)\n  Gaussian.prototype.mul = function(d) {\n    if (typeof(d) === \"number\") {\n      return this.scale(d);\n    }\n    var precision = 1 / this.variance;\n    var dprecision = 1 / d.variance;\n    return fromPrecisionMean(\n        precision + dprecision, \n        precision * this.mean + dprecision * d.mean);\n  };\n\n  // Quotient distribution of this and d (scale for constant)\n  Gaussian.prototype.div = function(d) {\n    if (typeof(d) === \"number\") {\n      return this.scale(1 / d);\n    }\n    var precision = 1 / this.variance;\n    var dprecision = 1 / d.variance;\n    return fromPrecisionMean(\n        precision - dprecision, \n        precision * this.mean - dprecision * d.mean);\n  };\n\n  // Addition of this and d\n  Gaussian.prototype.add = function(d) {\n    return gaussian(this.mean + d.mean, this.variance + d.variance);\n  };\n\n  // Subtraction of this and d\n  Gaussian.prototype.sub = function(d) {\n    return gaussian(this.mean - d.mean, this.variance + d.variance);\n  };\n\n  // Scale this by constant c\n  Gaussian.prototype.scale = function(c) {\n    return gaussian(this.mean * c, this.variance * c * c);\n  };\n\n  var gaussian = function(mean, variance) {\n    return new Gaussian(mean, variance);\n  };\n\n  var fromPrecisionMean = function(precision, precisionmean) {\n    return gaussian(precisionmean / precision, 1 / precision);\n  };\n\n  exports(gaussian);\n})\n( true\n    ? function(e) { module.exports = e; }\n    : function(e) { this[\"gaussian\"] = e; });\n//# sourceMappingURL=data:application/json;charset=utf-8;base64,eyJ2ZXJzaW9uIjozLCJzb3VyY2VzIjpbIndlYnBhY2s6Ly8vLi4vfi9nYXVzc2lhbi9saWIvZ2F1c3NpYW4uanM/OWYxOCJdLCJuYW1lcyI6W10sIm1hcHBpbmdzIjoiQUFBQTs7QUFFQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBOztBQUVBO0FBQ0E7QUFDQTtBQUNBLGlCQUFpQixhQUFhO0FBQzlCLGlCQUFpQixZQUFZOztBQUU3QjtBQUNBOztBQUVBO0FBQ0E7O0FBRUEsbUJBQW1CLE9BQU87QUFDMUI7QUFDQTtBQUNBOztBQUVBO0FBQ0E7O0FBRUE7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBOztBQUVBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTs7QUFFQTtBQUNBO0FBQ0E7QUFDQTs7QUFFQTtBQUNBO0FBQ0E7QUFDQTs7QUFFQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBOztBQUVBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7O0FBRUE7QUFDQTtBQUNBO0FBQ0E7O0FBRUE7QUFDQTtBQUNBO0FBQ0E7O0FBRUE7QUFDQTtBQUNBO0FBQ0E7O0FBRUE7QUFDQTtBQUNBOztBQUVBO0FBQ0E7QUFDQTs7QUFFQTtBQUNBLENBQUM7QUFDRDtBQUNBLG1CQUFtQixvQkFBb0I7QUFDdkMsbUJBQW1CLHNCQUFzQixFQUFFIiwiZmlsZSI6IjEuanMiLCJzb3VyY2VzQ29udGVudCI6WyIoZnVuY3Rpb24oZXhwb3J0cykge1xuXG4gIC8vIENvbXBsZW1lbnRhcnkgZXJyb3IgZnVuY3Rpb25cbiAgLy8gRnJvbSBOdW1lcmljYWwgUmVjaXBlcyBpbiBDIDJlIHAyMjFcbiAgdmFyIGVyZmMgPSBmdW5jdGlvbih4KSB7XG4gICAgdmFyIHogPSBNYXRoLmFicyh4KTtcbiAgICB2YXIgdCA9IDEgLyAoMSArIHogLyAyKTtcbiAgICB2YXIgciA9IHQgKiBNYXRoLmV4cCgteiAqIHogLSAxLjI2NTUxMjIzICsgdCAqICgxLjAwMDAyMzY4ICtcbiAgICAgICAgICAgIHQgKiAoMC4zNzQwOTE5NiArIHQgKiAoMC4wOTY3ODQxOCArIHQgKiAoLTAuMTg2Mjg4MDYgK1xuICAgICAgICAgICAgdCAqICgwLjI3ODg2ODA3ICsgdCAqICgtMS4xMzUyMDM5OCArIHQgKiAoMS40ODg1MTU4NyArXG4gICAgICAgICAgICB0ICogKC0wLjgyMjE1MjIzICsgdCAqIDAuMTcwODcyNzcpKSkpKSkpKSlcbiAgICByZXR1cm4geCA+PSAwID8gciA6IDIgLSByO1xuICB9O1xuXG4gIC8vIEludmVyc2UgY29tcGxlbWVudGFyeSBlcnJvciBmdW5jdGlvblxuICAvLyBGcm9tIE51bWVyaWNhbCBSZWNpcGVzIDNlIHAyNjVcbiAgdmFyIGllcmZjID0gZnVuY3Rpb24oeCkge1xuICAgIGlmICh4ID49IDIpIHsgcmV0dXJuIC0xMDA7IH1cbiAgICBpZiAoeCA8PSAwKSB7IHJldHVybiAxMDA7IH1cblxuICAgIHZhciB4eCA9ICh4IDwgMSkgPyB4IDogMiAtIHg7XG4gICAgdmFyIHQgPSBNYXRoLnNxcnQoLTIgKiBNYXRoLmxvZyh4eCAvIDIpKTtcblxuICAgIHZhciByID0gLTAuNzA3MTEgKiAoKDIuMzA3NTMgKyB0ICogMC4yNzA2MSkgL1xuICAgICAgICAgICAgKDEgKyB0ICogKDAuOTkyMjkgKyB0ICogMC4wNDQ4MSkpIC0gdCk7XG5cbiAgICBmb3IgKHZhciBqID0gMDsgaiA8IDI7IGorKykge1xuICAgICAgdmFyIGVyciA9IGVyZmMocikgLSB4eDtcbiAgICAgIHIgKz0gZXJyIC8gKDEuMTI4Mzc5MTY3MDk1NTEyNTcgKiBNYXRoLmV4cCgtKHIgKiByKSkgLSByICogZXJyKTtcbiAgICB9XG5cbiAgICByZXR1cm4gKHggPCAxKSA/IHIgOiAtcjtcbiAgfTtcblxuICAvLyBNb2RlbHMgdGhlIG5vcm1hbCBkaXN0cmlidXRpb25cbiAgdmFyIEdhdXNzaWFuID0gZnVuY3Rpb24obWVhbiwgdmFyaWFuY2UpIHtcbiAgICBpZiAodmFyaWFuY2UgPD0gMCkge1xuICAgICAgdGhyb3cgbmV3IEVycm9yKCdWYXJpYW5jZSBtdXN0IGJlID4gMCAoYnV0IHdhcyAnICsgdmFyaWFuY2UgKyAnKScpO1xuICAgIH1cbiAgICB0aGlzLm1lYW4gPSBtZWFuO1xuICAgIHRoaXMudmFyaWFuY2UgPSB2YXJpYW5jZTtcbiAgICB0aGlzLnN0YW5kYXJkRGV2aWF0aW9uID0gTWF0aC5zcXJ0KHZhcmlhbmNlKTtcbiAgfVxuXG4gIC8vIFByb2JhYmlsaXR5IGRlbnNpdHkgZnVuY3Rpb25cbiAgR2F1c3NpYW4ucHJvdG90eXBlLnBkZiA9IGZ1bmN0aW9uKHgpIHtcbiAgICB2YXIgbSA9IHRoaXMuc3RhbmRhcmREZXZpYXRpb24gKiBNYXRoLnNxcnQoMiAqIE1hdGguUEkpO1xuICAgIHZhciBlID0gTWF0aC5leHAoLU1hdGgucG93KHggLSB0aGlzLm1lYW4sIDIpIC8gKDIgKiB0aGlzLnZhcmlhbmNlKSk7XG4gICAgcmV0dXJuIGUgLyBtO1xuICB9O1xuXG4gIC8vIEN1bXVsYXRpdmUgZGVuc2l0eSBmdW5jdGlvblxuICBHYXVzc2lhbi5wcm90b3R5cGUuY2RmID0gZnVuY3Rpb24oeCkge1xuICAgIHJldHVybiAwLjUgKiBlcmZjKC0oeCAtIHRoaXMubWVhbikgLyAodGhpcy5zdGFuZGFyZERldmlhdGlvbiAqIE1hdGguc3FydCgyKSkpO1xuICB9O1xuXG4gIC8vIFBlcmNlbnQgcG9pbnQgZnVuY3Rpb25cbiAgR2F1c3NpYW4ucHJvdG90eXBlLnBwZiA9IGZ1bmN0aW9uKHgpIHtcbiAgICByZXR1cm4gdGhpcy5tZWFuIC0gdGhpcy5zdGFuZGFyZERldmlhdGlvbiAqIE1hdGguc3FydCgyKSAqIGllcmZjKDIgKiB4KTtcbiAgfTtcblxuICAvLyBQcm9kdWN0IGRpc3RyaWJ1dGlvbiBvZiB0aGlzIGFuZCBkIChzY2FsZSBmb3IgY29uc3RhbnQpXG4gIEdhdXNzaWFuLnByb3RvdHlwZS5tdWwgPSBmdW5jdGlvbihkKSB7XG4gICAgaWYgKHR5cGVvZihkKSA9PT0gXCJudW1iZXJcIikge1xuICAgICAgcmV0dXJuIHRoaXMuc2NhbGUoZCk7XG4gICAgfVxuICAgIHZhciBwcmVjaXNpb24gPSAxIC8gdGhpcy52YXJpYW5jZTtcbiAgICB2YXIgZHByZWNpc2lvbiA9IDEgLyBkLnZhcmlhbmNlO1xuICAgIHJldHVybiBmcm9tUHJlY2lzaW9uTWVhbihcbiAgICAgICAgcHJlY2lzaW9uICsgZHByZWNpc2lvbiwgXG4gICAgICAgIHByZWNpc2lvbiAqIHRoaXMubWVhbiArIGRwcmVjaXNpb24gKiBkLm1lYW4pO1xuICB9O1xuXG4gIC8vIFF1b3RpZW50IGRpc3RyaWJ1dGlvbiBvZiB0aGlzIGFuZCBkIChzY2FsZSBmb3IgY29uc3RhbnQpXG4gIEdhdXNzaWFuLnByb3RvdHlwZS5kaXYgPSBmdW5jdGlvbihkKSB7XG4gICAgaWYgKHR5cGVvZihkKSA9PT0gXCJudW1iZXJcIikge1xuICAgICAgcmV0dXJuIHRoaXMuc2NhbGUoMSAvIGQpO1xuICAgIH1cbiAgICB2YXIgcHJlY2lzaW9uID0gMSAvIHRoaXMudmFyaWFuY2U7XG4gICAgdmFyIGRwcmVjaXNpb24gPSAxIC8gZC52YXJpYW5jZTtcbiAgICByZXR1cm4gZnJvbVByZWNpc2lvbk1lYW4oXG4gICAgICAgIHByZWNpc2lvbiAtIGRwcmVjaXNpb24sIFxuICAgICAgICBwcmVjaXNpb24gKiB0aGlzLm1lYW4gLSBkcHJlY2lzaW9uICogZC5tZWFuKTtcbiAgfTtcblxuICAvLyBBZGRpdGlvbiBvZiB0aGlzIGFuZCBkXG4gIEdhdXNzaWFuLnByb3RvdHlwZS5hZGQgPSBmdW5jdGlvbihkKSB7XG4gICAgcmV0dXJuIGdhdXNzaWFuKHRoaXMubWVhbiArIGQubWVhbiwgdGhpcy52YXJpYW5jZSArIGQudmFyaWFuY2UpO1xuICB9O1xuXG4gIC8vIFN1YnRyYWN0aW9uIG9mIHRoaXMgYW5kIGRcbiAgR2F1c3NpYW4ucHJvdG90eXBlLnN1YiA9IGZ1bmN0aW9uKGQpIHtcbiAgICByZXR1cm4gZ2F1c3NpYW4odGhpcy5tZWFuIC0gZC5tZWFuLCB0aGlzLnZhcmlhbmNlICsgZC52YXJpYW5jZSk7XG4gIH07XG5cbiAgLy8gU2NhbGUgdGhpcyBieSBjb25zdGFudCBjXG4gIEdhdXNzaWFuLnByb3RvdHlwZS5zY2FsZSA9IGZ1bmN0aW9uKGMpIHtcbiAgICByZXR1cm4gZ2F1c3NpYW4odGhpcy5tZWFuICogYywgdGhpcy52YXJpYW5jZSAqIGMgKiBjKTtcbiAgfTtcblxuICB2YXIgZ2F1c3NpYW4gPSBmdW5jdGlvbihtZWFuLCB2YXJpYW5jZSkge1xuICAgIHJldHVybiBuZXcgR2F1c3NpYW4obWVhbiwgdmFyaWFuY2UpO1xuICB9O1xuXG4gIHZhciBmcm9tUHJlY2lzaW9uTWVhbiA9IGZ1bmN0aW9uKHByZWNpc2lvbiwgcHJlY2lzaW9ubWVhbikge1xuICAgIHJldHVybiBnYXVzc2lhbihwcmVjaXNpb25tZWFuIC8gcHJlY2lzaW9uLCAxIC8gcHJlY2lzaW9uKTtcbiAgfTtcblxuICBleHBvcnRzKGdhdXNzaWFuKTtcbn0pXG4odHlwZW9mKGV4cG9ydHMpICE9PSBcInVuZGVmaW5lZFwiXG4gICAgPyBmdW5jdGlvbihlKSB7IG1vZHVsZS5leHBvcnRzID0gZTsgfVxuICAgIDogZnVuY3Rpb24oZSkgeyB0aGlzW1wiZ2F1c3NpYW5cIl0gPSBlOyB9KTtcblxuXG5cbi8vLy8vLy8vLy8vLy8vLy8vL1xuLy8gV0VCUEFDSyBGT09URVJcbi8vIC4uL34vZ2F1c3NpYW4vbGliL2dhdXNzaWFuLmpzXG4vLyBtb2R1bGUgaWQgPSAxXG4vLyBtb2R1bGUgY2h1bmtzID0gMCJdLCJzb3VyY2VSb290IjoiIn0=");
+	(function(exports) {
+	
+	  // Complementary error function
+	  // From Numerical Recipes in C 2e p221
+	  var erfc = function(x) {
+	    var z = Math.abs(x);
+	    var t = 1 / (1 + z / 2);
+	    var r = t * Math.exp(-z * z - 1.26551223 + t * (1.00002368 +
+	            t * (0.37409196 + t * (0.09678418 + t * (-0.18628806 +
+	            t * (0.27886807 + t * (-1.13520398 + t * (1.48851587 +
+	            t * (-0.82215223 + t * 0.17087277)))))))))
+	    return x >= 0 ? r : 2 - r;
+	  };
+	
+	  // Inverse complementary error function
+	  // From Numerical Recipes 3e p265
+	  var ierfc = function(x) {
+	    if (x >= 2) { return -100; }
+	    if (x <= 0) { return 100; }
+	
+	    var xx = (x < 1) ? x : 2 - x;
+	    var t = Math.sqrt(-2 * Math.log(xx / 2));
+	
+	    var r = -0.70711 * ((2.30753 + t * 0.27061) /
+	            (1 + t * (0.99229 + t * 0.04481)) - t);
+	
+	    for (var j = 0; j < 2; j++) {
+	      var err = erfc(r) - xx;
+	      r += err / (1.12837916709551257 * Math.exp(-(r * r)) - r * err);
+	    }
+	
+	    return (x < 1) ? r : -r;
+	  };
+	
+	  // Models the normal distribution
+	  var Gaussian = function(mean, variance) {
+	    if (variance <= 0) {
+	      throw new Error('Variance must be > 0 (but was ' + variance + ')');
+	    }
+	    this.mean = mean;
+	    this.variance = variance;
+	    this.standardDeviation = Math.sqrt(variance);
+	  }
+	
+	  // Probability density function
+	  Gaussian.prototype.pdf = function(x) {
+	    var m = this.standardDeviation * Math.sqrt(2 * Math.PI);
+	    var e = Math.exp(-Math.pow(x - this.mean, 2) / (2 * this.variance));
+	    return e / m;
+	  };
+	
+	  // Cumulative density function
+	  Gaussian.prototype.cdf = function(x) {
+	    return 0.5 * erfc(-(x - this.mean) / (this.standardDeviation * Math.sqrt(2)));
+	  };
+	
+	  // Percent point function
+	  Gaussian.prototype.ppf = function(x) {
+	    return this.mean - this.standardDeviation * Math.sqrt(2) * ierfc(2 * x);
+	  };
+	
+	  // Product distribution of this and d (scale for constant)
+	  Gaussian.prototype.mul = function(d) {
+	    if (typeof(d) === "number") {
+	      return this.scale(d);
+	    }
+	    var precision = 1 / this.variance;
+	    var dprecision = 1 / d.variance;
+	    return fromPrecisionMean(
+	        precision + dprecision, 
+	        precision * this.mean + dprecision * d.mean);
+	  };
+	
+	  // Quotient distribution of this and d (scale for constant)
+	  Gaussian.prototype.div = function(d) {
+	    if (typeof(d) === "number") {
+	      return this.scale(1 / d);
+	    }
+	    var precision = 1 / this.variance;
+	    var dprecision = 1 / d.variance;
+	    return fromPrecisionMean(
+	        precision - dprecision, 
+	        precision * this.mean - dprecision * d.mean);
+	  };
+	
+	  // Addition of this and d
+	  Gaussian.prototype.add = function(d) {
+	    return gaussian(this.mean + d.mean, this.variance + d.variance);
+	  };
+	
+	  // Subtraction of this and d
+	  Gaussian.prototype.sub = function(d) {
+	    return gaussian(this.mean - d.mean, this.variance + d.variance);
+	  };
+	
+	  // Scale this by constant c
+	  Gaussian.prototype.scale = function(c) {
+	    return gaussian(this.mean * c, this.variance * c * c);
+	  };
+	
+	  var gaussian = function(mean, variance) {
+	    return new Gaussian(mean, variance);
+	  };
+	
+	  var fromPrecisionMean = function(precision, precisionmean) {
+	    return gaussian(precisionmean / precision, 1 / precision);
+	  };
+	
+	  exports(gaussian);
+	})
+	( true
+	    ? function(e) { module.exports = e; }
+	    : function(e) { this["gaussian"] = e; });
+
 
 /***/ },
 /* 2 */
 /***/ function(module, exports, __webpack_require__) {
 
-	eval("\"use strict\"\n\nvar ndarray = __webpack_require__(3)\nvar ops = __webpack_require__(6)\nvar pool = __webpack_require__(11)\n\nfunction clone(array) {\n  var dtype = array.dtype\n  if(dtype === \"generic\" || dtype === \"array\") {\n    dtype = \"double\"\n  }\n  var data = pool.malloc(array.size, dtype)\n  var result = ndarray(data, array.shape)\n  ops.assign(result, array)\n  return result\n}\nexports.clone = clone\n\nfunction malloc(shape, dtype) {\n  if(!dtype) {\n    dtype = \"double\"\n  }\n  var sz = 1\n  var stride = new Array(shape.length)\n  for(var i=shape.length-1; i>=0; --i) {\n    stride[i] = sz\n    sz *= shape[i]\n  }\n  return ndarray(pool.malloc(sz, dtype), shape, stride, 0)\n}\nexports.malloc = malloc\n\nfunction free(array) {\n  if(array.dtype === \"generic\" || array.dtype === \"array\") {\n    return\n  }\n  pool.free(array.data)\n}\nexports.free = free\n\nfunction zeros(shape, dtype) {\n  if(!dtype) {\n    dtype = \"double\"\n  }\n\n  var sz = 1\n  var stride = new Array(shape.length)\n  for(var i=shape.length-1; i>=0; --i) {\n    stride[i] = sz\n    sz *= shape[i]\n  }\n  var buf = pool.malloc(sz, dtype)\n  for(var i=0; i<sz; ++i) {\n    buf[i] = 0\n  }\n  return ndarray(buf, shape, stride, 0)\n}\nexports.zeros = zeros\n\nfunction ones(shape, dtype) {\n  if(!dtype) {\n    dtype = \"double\"\n  }\n\n  var sz = 1\n  var stride = new Array(shape.length)\n  for(var i=shape.length-1; i>=0; --i) {\n    stride[i] = sz\n    sz *= shape[i]\n  }\n  var buf = pool.malloc(sz, dtype)\n  for(var i=0; i<sz; ++i) {\n    buf[i] = 1\n  }\n  return ndarray(buf, shape, stride, 0)\n}\nexports.ones = ones\n\nfunction eye(shape, dtype) {\n  var i, offset\n  if(!dtype) {\n    dtype = \"double\"\n  }\n\n  var sz = 1\n  var stride = new Array(shape.length)\n  for(i=shape.length-1; i>=0; --i) {\n    stride[i] = sz\n    sz *= shape[i]\n  }\n  var buf = pool.malloc(sz, dtype)\n  for(i=0; i<sz; ++i) {\n    buf[i] = 0\n  }\n  var mindim = Infinity\n  var offsum = 0\n  for( i=shape.length-1; i>=0; i--) {\n    offsum += stride[i]\n    mindim = Math.min(mindim,shape[i])\n  }\n  for(i=0,offset=0; i<mindim; i++,offset+=offsum) {\n    buf[offset] = 1\n  }\n  return ndarray(buf, shape, stride, 0)\n}\nexports.eye = eye\n//# sourceMappingURL=data:application/json;charset=utf-8;base64,eyJ2ZXJzaW9uIjozLCJzb3VyY2VzIjpbIndlYnBhY2s6Ly8vLi4vfi9uZGFycmF5LXNjcmF0Y2gvc2NyYXRjaC5qcz9lNWI1Il0sIm5hbWVzIjpbXSwibWFwcGluZ3MiOiJBQUFBOztBQUVBO0FBQ0E7QUFDQTs7QUFFQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBOztBQUVBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBLDJCQUEyQixNQUFNO0FBQ2pDO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTs7QUFFQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTs7QUFFQTtBQUNBO0FBQ0E7QUFDQTs7QUFFQTtBQUNBO0FBQ0EsMkJBQTJCLE1BQU07QUFDakM7QUFDQTtBQUNBO0FBQ0E7QUFDQSxjQUFjLE1BQU07QUFDcEI7QUFDQTtBQUNBO0FBQ0E7QUFDQTs7QUFFQTtBQUNBO0FBQ0E7QUFDQTs7QUFFQTtBQUNBO0FBQ0EsMkJBQTJCLE1BQU07QUFDakM7QUFDQTtBQUNBO0FBQ0E7QUFDQSxjQUFjLE1BQU07QUFDcEI7QUFDQTtBQUNBO0FBQ0E7QUFDQTs7QUFFQTtBQUNBO0FBQ0E7QUFDQTtBQUNBOztBQUVBO0FBQ0E7QUFDQSx1QkFBdUIsTUFBTTtBQUM3QjtBQUNBO0FBQ0E7QUFDQTtBQUNBLFVBQVUsTUFBTTtBQUNoQjtBQUNBO0FBQ0E7QUFDQTtBQUNBLHdCQUF3QixNQUFNO0FBQzlCO0FBQ0E7QUFDQTtBQUNBLG1CQUFtQixVQUFVO0FBQzdCO0FBQ0E7QUFDQTtBQUNBO0FBQ0EiLCJmaWxlIjoiMi5qcyIsInNvdXJjZXNDb250ZW50IjpbIlwidXNlIHN0cmljdFwiXG5cbnZhciBuZGFycmF5ID0gcmVxdWlyZShcIm5kYXJyYXlcIilcbnZhciBvcHMgPSByZXF1aXJlKFwibmRhcnJheS1vcHNcIilcbnZhciBwb29sID0gcmVxdWlyZShcInR5cGVkYXJyYXktcG9vbFwiKVxuXG5mdW5jdGlvbiBjbG9uZShhcnJheSkge1xuICB2YXIgZHR5cGUgPSBhcnJheS5kdHlwZVxuICBpZihkdHlwZSA9PT0gXCJnZW5lcmljXCIgfHwgZHR5cGUgPT09IFwiYXJyYXlcIikge1xuICAgIGR0eXBlID0gXCJkb3VibGVcIlxuICB9XG4gIHZhciBkYXRhID0gcG9vbC5tYWxsb2MoYXJyYXkuc2l6ZSwgZHR5cGUpXG4gIHZhciByZXN1bHQgPSBuZGFycmF5KGRhdGEsIGFycmF5LnNoYXBlKVxuICBvcHMuYXNzaWduKHJlc3VsdCwgYXJyYXkpXG4gIHJldHVybiByZXN1bHRcbn1cbmV4cG9ydHMuY2xvbmUgPSBjbG9uZVxuXG5mdW5jdGlvbiBtYWxsb2Moc2hhcGUsIGR0eXBlKSB7XG4gIGlmKCFkdHlwZSkge1xuICAgIGR0eXBlID0gXCJkb3VibGVcIlxuICB9XG4gIHZhciBzeiA9IDFcbiAgdmFyIHN0cmlkZSA9IG5ldyBBcnJheShzaGFwZS5sZW5ndGgpXG4gIGZvcih2YXIgaT1zaGFwZS5sZW5ndGgtMTsgaT49MDsgLS1pKSB7XG4gICAgc3RyaWRlW2ldID0gc3pcbiAgICBzeiAqPSBzaGFwZVtpXVxuICB9XG4gIHJldHVybiBuZGFycmF5KHBvb2wubWFsbG9jKHN6LCBkdHlwZSksIHNoYXBlLCBzdHJpZGUsIDApXG59XG5leHBvcnRzLm1hbGxvYyA9IG1hbGxvY1xuXG5mdW5jdGlvbiBmcmVlKGFycmF5KSB7XG4gIGlmKGFycmF5LmR0eXBlID09PSBcImdlbmVyaWNcIiB8fCBhcnJheS5kdHlwZSA9PT0gXCJhcnJheVwiKSB7XG4gICAgcmV0dXJuXG4gIH1cbiAgcG9vbC5mcmVlKGFycmF5LmRhdGEpXG59XG5leHBvcnRzLmZyZWUgPSBmcmVlXG5cbmZ1bmN0aW9uIHplcm9zKHNoYXBlLCBkdHlwZSkge1xuICBpZighZHR5cGUpIHtcbiAgICBkdHlwZSA9IFwiZG91YmxlXCJcbiAgfVxuXG4gIHZhciBzeiA9IDFcbiAgdmFyIHN0cmlkZSA9IG5ldyBBcnJheShzaGFwZS5sZW5ndGgpXG4gIGZvcih2YXIgaT1zaGFwZS5sZW5ndGgtMTsgaT49MDsgLS1pKSB7XG4gICAgc3RyaWRlW2ldID0gc3pcbiAgICBzeiAqPSBzaGFwZVtpXVxuICB9XG4gIHZhciBidWYgPSBwb29sLm1hbGxvYyhzeiwgZHR5cGUpXG4gIGZvcih2YXIgaT0wOyBpPHN6OyArK2kpIHtcbiAgICBidWZbaV0gPSAwXG4gIH1cbiAgcmV0dXJuIG5kYXJyYXkoYnVmLCBzaGFwZSwgc3RyaWRlLCAwKVxufVxuZXhwb3J0cy56ZXJvcyA9IHplcm9zXG5cbmZ1bmN0aW9uIG9uZXMoc2hhcGUsIGR0eXBlKSB7XG4gIGlmKCFkdHlwZSkge1xuICAgIGR0eXBlID0gXCJkb3VibGVcIlxuICB9XG5cbiAgdmFyIHN6ID0gMVxuICB2YXIgc3RyaWRlID0gbmV3IEFycmF5KHNoYXBlLmxlbmd0aClcbiAgZm9yKHZhciBpPXNoYXBlLmxlbmd0aC0xOyBpPj0wOyAtLWkpIHtcbiAgICBzdHJpZGVbaV0gPSBzelxuICAgIHN6ICo9IHNoYXBlW2ldXG4gIH1cbiAgdmFyIGJ1ZiA9IHBvb2wubWFsbG9jKHN6LCBkdHlwZSlcbiAgZm9yKHZhciBpPTA7IGk8c3o7ICsraSkge1xuICAgIGJ1ZltpXSA9IDFcbiAgfVxuICByZXR1cm4gbmRhcnJheShidWYsIHNoYXBlLCBzdHJpZGUsIDApXG59XG5leHBvcnRzLm9uZXMgPSBvbmVzXG5cbmZ1bmN0aW9uIGV5ZShzaGFwZSwgZHR5cGUpIHtcbiAgdmFyIGksIG9mZnNldFxuICBpZighZHR5cGUpIHtcbiAgICBkdHlwZSA9IFwiZG91YmxlXCJcbiAgfVxuXG4gIHZhciBzeiA9IDFcbiAgdmFyIHN0cmlkZSA9IG5ldyBBcnJheShzaGFwZS5sZW5ndGgpXG4gIGZvcihpPXNoYXBlLmxlbmd0aC0xOyBpPj0wOyAtLWkpIHtcbiAgICBzdHJpZGVbaV0gPSBzelxuICAgIHN6ICo9IHNoYXBlW2ldXG4gIH1cbiAgdmFyIGJ1ZiA9IHBvb2wubWFsbG9jKHN6LCBkdHlwZSlcbiAgZm9yKGk9MDsgaTxzejsgKytpKSB7XG4gICAgYnVmW2ldID0gMFxuICB9XG4gIHZhciBtaW5kaW0gPSBJbmZpbml0eVxuICB2YXIgb2Zmc3VtID0gMFxuICBmb3IoIGk9c2hhcGUubGVuZ3RoLTE7IGk+PTA7IGktLSkge1xuICAgIG9mZnN1bSArPSBzdHJpZGVbaV1cbiAgICBtaW5kaW0gPSBNYXRoLm1pbihtaW5kaW0sc2hhcGVbaV0pXG4gIH1cbiAgZm9yKGk9MCxvZmZzZXQ9MDsgaTxtaW5kaW07IGkrKyxvZmZzZXQrPW9mZnN1bSkge1xuICAgIGJ1ZltvZmZzZXRdID0gMVxuICB9XG4gIHJldHVybiBuZGFycmF5KGJ1Ziwgc2hhcGUsIHN0cmlkZSwgMClcbn1cbmV4cG9ydHMuZXllID0gZXllXG5cblxuXG4vLy8vLy8vLy8vLy8vLy8vLy9cbi8vIFdFQlBBQ0sgRk9PVEVSXG4vLyAuLi9+L25kYXJyYXktc2NyYXRjaC9zY3JhdGNoLmpzXG4vLyBtb2R1bGUgaWQgPSAyXG4vLyBtb2R1bGUgY2h1bmtzID0gMCJdLCJzb3VyY2VSb290IjoiIn0=");
+	"use strict"
+	
+	var ndarray = __webpack_require__(3)
+	var ops = __webpack_require__(6)
+	var pool = __webpack_require__(11)
+	
+	function clone(array) {
+	  var dtype = array.dtype
+	  if(dtype === "generic" || dtype === "array") {
+	    dtype = "double"
+	  }
+	  var data = pool.malloc(array.size, dtype)
+	  var result = ndarray(data, array.shape)
+	  ops.assign(result, array)
+	  return result
+	}
+	exports.clone = clone
+	
+	function malloc(shape, dtype) {
+	  if(!dtype) {
+	    dtype = "double"
+	  }
+	  var sz = 1
+	  var stride = new Array(shape.length)
+	  for(var i=shape.length-1; i>=0; --i) {
+	    stride[i] = sz
+	    sz *= shape[i]
+	  }
+	  return ndarray(pool.malloc(sz, dtype), shape, stride, 0)
+	}
+	exports.malloc = malloc
+	
+	function free(array) {
+	  if(array.dtype === "generic" || array.dtype === "array") {
+	    return
+	  }
+	  pool.free(array.data)
+	}
+	exports.free = free
+	
+	function zeros(shape, dtype) {
+	  if(!dtype) {
+	    dtype = "double"
+	  }
+	
+	  var sz = 1
+	  var stride = new Array(shape.length)
+	  for(var i=shape.length-1; i>=0; --i) {
+	    stride[i] = sz
+	    sz *= shape[i]
+	  }
+	  var buf = pool.malloc(sz, dtype)
+	  for(var i=0; i<sz; ++i) {
+	    buf[i] = 0
+	  }
+	  return ndarray(buf, shape, stride, 0)
+	}
+	exports.zeros = zeros
+	
+	function ones(shape, dtype) {
+	  if(!dtype) {
+	    dtype = "double"
+	  }
+	
+	  var sz = 1
+	  var stride = new Array(shape.length)
+	  for(var i=shape.length-1; i>=0; --i) {
+	    stride[i] = sz
+	    sz *= shape[i]
+	  }
+	  var buf = pool.malloc(sz, dtype)
+	  for(var i=0; i<sz; ++i) {
+	    buf[i] = 1
+	  }
+	  return ndarray(buf, shape, stride, 0)
+	}
+	exports.ones = ones
+	
+	function eye(shape, dtype) {
+	  var i, offset
+	  if(!dtype) {
+	    dtype = "double"
+	  }
+	
+	  var sz = 1
+	  var stride = new Array(shape.length)
+	  for(i=shape.length-1; i>=0; --i) {
+	    stride[i] = sz
+	    sz *= shape[i]
+	  }
+	  var buf = pool.malloc(sz, dtype)
+	  for(i=0; i<sz; ++i) {
+	    buf[i] = 0
+	  }
+	  var mindim = Infinity
+	  var offsum = 0
+	  for( i=shape.length-1; i>=0; i--) {
+	    offsum += stride[i]
+	    mindim = Math.min(mindim,shape[i])
+	  }
+	  for(i=0,offset=0; i<mindim; i++,offset+=offsum) {
+	    buf[offset] = 1
+	  }
+	  return ndarray(buf, shape, stride, 0)
+	}
+	exports.eye = eye
+
 
 /***/ },
 /* 3 */
 /***/ function(module, exports, __webpack_require__) {
 
-	eval("var iota = __webpack_require__(4)\nvar isBuffer = __webpack_require__(5)\n\nvar hasTypedArrays  = ((typeof Float64Array) !== \"undefined\")\n\nfunction compare1st(a, b) {\n  return a[0] - b[0]\n}\n\nfunction order() {\n  var stride = this.stride\n  var terms = new Array(stride.length)\n  var i\n  for(i=0; i<terms.length; ++i) {\n    terms[i] = [Math.abs(stride[i]), i]\n  }\n  terms.sort(compare1st)\n  var result = new Array(terms.length)\n  for(i=0; i<result.length; ++i) {\n    result[i] = terms[i][1]\n  }\n  return result\n}\n\nfunction compileConstructor(dtype, dimension) {\n  var className = [\"View\", dimension, \"d\", dtype].join(\"\")\n  if(dimension < 0) {\n    className = \"View_Nil\" + dtype\n  }\n  var useGetters = (dtype === \"generic\")\n\n  if(dimension === -1) {\n    //Special case for trivial arrays\n    var code =\n      \"function \"+className+\"(a){this.data=a;};\\\nvar proto=\"+className+\".prototype;\\\nproto.dtype='\"+dtype+\"';\\\nproto.index=function(){return -1};\\\nproto.size=0;\\\nproto.dimension=-1;\\\nproto.shape=proto.stride=proto.order=[];\\\nproto.lo=proto.hi=proto.transpose=proto.step=\\\nfunction(){return new \"+className+\"(this.data);};\\\nproto.get=proto.set=function(){};\\\nproto.pick=function(){return null};\\\nreturn function construct_\"+className+\"(a){return new \"+className+\"(a);}\"\n    var procedure = new Function(code)\n    return procedure()\n  } else if(dimension === 0) {\n    //Special case for 0d arrays\n    var code =\n      \"function \"+className+\"(a,d) {\\\nthis.data = a;\\\nthis.offset = d\\\n};\\\nvar proto=\"+className+\".prototype;\\\nproto.dtype='\"+dtype+\"';\\\nproto.index=function(){return this.offset};\\\nproto.dimension=0;\\\nproto.size=1;\\\nproto.shape=\\\nproto.stride=\\\nproto.order=[];\\\nproto.lo=\\\nproto.hi=\\\nproto.transpose=\\\nproto.step=function \"+className+\"_copy() {\\\nreturn new \"+className+\"(this.data,this.offset)\\\n};\\\nproto.pick=function \"+className+\"_pick(){\\\nreturn TrivialArray(this.data);\\\n};\\\nproto.valueOf=proto.get=function \"+className+\"_get(){\\\nreturn \"+(useGetters ? \"this.data.get(this.offset)\" : \"this.data[this.offset]\")+\n\"};\\\nproto.set=function \"+className+\"_set(v){\\\nreturn \"+(useGetters ? \"this.data.set(this.offset,v)\" : \"this.data[this.offset]=v\")+\"\\\n};\\\nreturn function construct_\"+className+\"(a,b,c,d){return new \"+className+\"(a,d)}\"\n    var procedure = new Function(\"TrivialArray\", code)\n    return procedure(CACHED_CONSTRUCTORS[dtype][0])\n  }\n\n  var code = [\"'use strict'\"]\n\n  //Create constructor for view\n  var indices = iota(dimension)\n  var args = indices.map(function(i) { return \"i\"+i })\n  var index_str = \"this.offset+\" + indices.map(function(i) {\n        return \"this.stride[\" + i + \"]*i\" + i\n      }).join(\"+\")\n  var shapeArg = indices.map(function(i) {\n      return \"b\"+i\n    }).join(\",\")\n  var strideArg = indices.map(function(i) {\n      return \"c\"+i\n    }).join(\",\")\n  code.push(\n    \"function \"+className+\"(a,\" + shapeArg + \",\" + strideArg + \",d){this.data=a\",\n      \"this.shape=[\" + shapeArg + \"]\",\n      \"this.stride=[\" + strideArg + \"]\",\n      \"this.offset=d|0}\",\n    \"var proto=\"+className+\".prototype\",\n    \"proto.dtype='\"+dtype+\"'\",\n    \"proto.dimension=\"+dimension)\n\n  //view.size:\n  code.push(\"Object.defineProperty(proto,'size',{get:function \"+className+\"_size(){\\\nreturn \"+indices.map(function(i) { return \"this.shape[\"+i+\"]\" }).join(\"*\"),\n\"}})\")\n\n  //view.order:\n  if(dimension === 1) {\n    code.push(\"proto.order=[0]\")\n  } else {\n    code.push(\"Object.defineProperty(proto,'order',{get:\")\n    if(dimension < 4) {\n      code.push(\"function \"+className+\"_order(){\")\n      if(dimension === 2) {\n        code.push(\"return (Math.abs(this.stride[0])>Math.abs(this.stride[1]))?[1,0]:[0,1]}})\")\n      } else if(dimension === 3) {\n        code.push(\n\"var s0=Math.abs(this.stride[0]),s1=Math.abs(this.stride[1]),s2=Math.abs(this.stride[2]);\\\nif(s0>s1){\\\nif(s1>s2){\\\nreturn [2,1,0];\\\n}else if(s0>s2){\\\nreturn [1,2,0];\\\n}else{\\\nreturn [1,0,2];\\\n}\\\n}else if(s0>s2){\\\nreturn [2,0,1];\\\n}else if(s2>s1){\\\nreturn [0,1,2];\\\n}else{\\\nreturn [0,2,1];\\\n}}})\")\n      }\n    } else {\n      code.push(\"ORDER})\")\n    }\n  }\n\n  //view.set(i0, ..., v):\n  code.push(\n\"proto.set=function \"+className+\"_set(\"+args.join(\",\")+\",v){\")\n  if(useGetters) {\n    code.push(\"return this.data.set(\"+index_str+\",v)}\")\n  } else {\n    code.push(\"return this.data[\"+index_str+\"]=v}\")\n  }\n\n  //view.get(i0, ...):\n  code.push(\"proto.get=function \"+className+\"_get(\"+args.join(\",\")+\"){\")\n  if(useGetters) {\n    code.push(\"return this.data.get(\"+index_str+\")}\")\n  } else {\n    code.push(\"return this.data[\"+index_str+\"]}\")\n  }\n\n  //view.index:\n  code.push(\n    \"proto.index=function \"+className+\"_index(\", args.join(), \"){return \"+index_str+\"}\")\n\n  //view.hi():\n  code.push(\"proto.hi=function \"+className+\"_hi(\"+args.join(\",\")+\"){return new \"+className+\"(this.data,\"+\n    indices.map(function(i) {\n      return [\"(typeof i\",i,\"!=='number'||i\",i,\"<0)?this.shape[\", i, \"]:i\", i,\"|0\"].join(\"\")\n    }).join(\",\")+\",\"+\n    indices.map(function(i) {\n      return \"this.stride[\"+i + \"]\"\n    }).join(\",\")+\",this.offset)}\")\n\n  //view.lo():\n  var a_vars = indices.map(function(i) { return \"a\"+i+\"=this.shape[\"+i+\"]\" })\n  var c_vars = indices.map(function(i) { return \"c\"+i+\"=this.stride[\"+i+\"]\" })\n  code.push(\"proto.lo=function \"+className+\"_lo(\"+args.join(\",\")+\"){var b=this.offset,d=0,\"+a_vars.join(\",\")+\",\"+c_vars.join(\",\"))\n  for(var i=0; i<dimension; ++i) {\n    code.push(\n\"if(typeof i\"+i+\"==='number'&&i\"+i+\">=0){\\\nd=i\"+i+\"|0;\\\nb+=c\"+i+\"*d;\\\na\"+i+\"-=d}\")\n  }\n  code.push(\"return new \"+className+\"(this.data,\"+\n    indices.map(function(i) {\n      return \"a\"+i\n    }).join(\",\")+\",\"+\n    indices.map(function(i) {\n      return \"c\"+i\n    }).join(\",\")+\",b)}\")\n\n  //view.step():\n  code.push(\"proto.step=function \"+className+\"_step(\"+args.join(\",\")+\"){var \"+\n    indices.map(function(i) {\n      return \"a\"+i+\"=this.shape[\"+i+\"]\"\n    }).join(\",\")+\",\"+\n    indices.map(function(i) {\n      return \"b\"+i+\"=this.stride[\"+i+\"]\"\n    }).join(\",\")+\",c=this.offset,d=0,ceil=Math.ceil\")\n  for(var i=0; i<dimension; ++i) {\n    code.push(\n\"if(typeof i\"+i+\"==='number'){\\\nd=i\"+i+\"|0;\\\nif(d<0){\\\nc+=b\"+i+\"*(a\"+i+\"-1);\\\na\"+i+\"=ceil(-a\"+i+\"/d)\\\n}else{\\\na\"+i+\"=ceil(a\"+i+\"/d)\\\n}\\\nb\"+i+\"*=d\\\n}\")\n  }\n  code.push(\"return new \"+className+\"(this.data,\"+\n    indices.map(function(i) {\n      return \"a\" + i\n    }).join(\",\")+\",\"+\n    indices.map(function(i) {\n      return \"b\" + i\n    }).join(\",\")+\",c)}\")\n\n  //view.transpose():\n  var tShape = new Array(dimension)\n  var tStride = new Array(dimension)\n  for(var i=0; i<dimension; ++i) {\n    tShape[i] = \"a[i\"+i+\"]\"\n    tStride[i] = \"b[i\"+i+\"]\"\n  }\n  code.push(\"proto.transpose=function \"+className+\"_transpose(\"+args+\"){\"+\n    args.map(function(n,idx) { return n + \"=(\" + n + \"===undefined?\" + idx + \":\" + n + \"|0)\"}).join(\";\"),\n    \"var a=this.shape,b=this.stride;return new \"+className+\"(this.data,\"+tShape.join(\",\")+\",\"+tStride.join(\",\")+\",this.offset)}\")\n\n  //view.pick():\n  code.push(\"proto.pick=function \"+className+\"_pick(\"+args+\"){var a=[],b=[],c=this.offset\")\n  for(var i=0; i<dimension; ++i) {\n    code.push(\"if(typeof i\"+i+\"==='number'&&i\"+i+\">=0){c=(c+this.stride[\"+i+\"]*i\"+i+\")|0}else{a.push(this.shape[\"+i+\"]);b.push(this.stride[\"+i+\"])}\")\n  }\n  code.push(\"var ctor=CTOR_LIST[a.length+1];return ctor(this.data,a,b,c)}\")\n\n  //Add return statement\n  code.push(\"return function construct_\"+className+\"(data,shape,stride,offset){return new \"+className+\"(data,\"+\n    indices.map(function(i) {\n      return \"shape[\"+i+\"]\"\n    }).join(\",\")+\",\"+\n    indices.map(function(i) {\n      return \"stride[\"+i+\"]\"\n    }).join(\",\")+\",offset)}\")\n\n  //Compile procedure\n  var procedure = new Function(\"CTOR_LIST\", \"ORDER\", code.join(\"\\n\"))\n  return procedure(CACHED_CONSTRUCTORS[dtype], order)\n}\n\nfunction arrayDType(data) {\n  if(isBuffer(data)) {\n    return \"buffer\"\n  }\n  if(hasTypedArrays) {\n    switch(Object.prototype.toString.call(data)) {\n      case \"[object Float64Array]\":\n        return \"float64\"\n      case \"[object Float32Array]\":\n        return \"float32\"\n      case \"[object Int8Array]\":\n        return \"int8\"\n      case \"[object Int16Array]\":\n        return \"int16\"\n      case \"[object Int32Array]\":\n        return \"int32\"\n      case \"[object Uint8Array]\":\n        return \"uint8\"\n      case \"[object Uint16Array]\":\n        return \"uint16\"\n      case \"[object Uint32Array]\":\n        return \"uint32\"\n      case \"[object Uint8ClampedArray]\":\n        return \"uint8_clamped\"\n    }\n  }\n  if(Array.isArray(data)) {\n    return \"array\"\n  }\n  return \"generic\"\n}\n\nvar CACHED_CONSTRUCTORS = {\n  \"float32\":[],\n  \"float64\":[],\n  \"int8\":[],\n  \"int16\":[],\n  \"int32\":[],\n  \"uint8\":[],\n  \"uint16\":[],\n  \"uint32\":[],\n  \"array\":[],\n  \"uint8_clamped\":[],\n  \"buffer\":[],\n  \"generic\":[]\n}\n\n;(function() {\n  for(var id in CACHED_CONSTRUCTORS) {\n    CACHED_CONSTRUCTORS[id].push(compileConstructor(id, -1))\n  }\n});\n\nfunction wrappedNDArrayCtor(data, shape, stride, offset) {\n  if(data === undefined) {\n    var ctor = CACHED_CONSTRUCTORS.array[0]\n    return ctor([])\n  } else if(typeof data === \"number\") {\n    data = [data]\n  }\n  if(shape === undefined) {\n    shape = [ data.length ]\n  }\n  var d = shape.length\n  if(stride === undefined) {\n    stride = new Array(d)\n    for(var i=d-1, sz=1; i>=0; --i) {\n      stride[i] = sz\n      sz *= shape[i]\n    }\n  }\n  if(offset === undefined) {\n    offset = 0\n    for(var i=0; i<d; ++i) {\n      if(stride[i] < 0) {\n        offset -= (shape[i]-1)*stride[i]\n      }\n    }\n  }\n  var dtype = arrayDType(data)\n  var ctor_list = CACHED_CONSTRUCTORS[dtype]\n  while(ctor_list.length <= d+1) {\n    ctor_list.push(compileConstructor(dtype, ctor_list.length-1))\n  }\n  var ctor = ctor_list[d+1]\n  return ctor(data, shape, stride, offset)\n}\n\nmodule.exports = wrappedNDArrayCtor\n//# sourceMappingURL=data:application/json;charset=utf-8;base64,eyJ2ZXJzaW9uIjozLCJzb3VyY2VzIjpbIndlYnBhY2s6Ly8vLi4vfi9uZGFycmF5L25kYXJyYXkuanM/MGQ3YiJdLCJuYW1lcyI6W10sIm1hcHBpbmdzIjoiQUFBQTtBQUNBOztBQUVBOztBQUVBO0FBQ0E7QUFDQTs7QUFFQTtBQUNBO0FBQ0E7QUFDQTtBQUNBLFVBQVUsZ0JBQWdCO0FBQzFCO0FBQ0E7QUFDQTtBQUNBO0FBQ0EsVUFBVSxpQkFBaUI7QUFDM0I7QUFDQTtBQUNBO0FBQ0E7O0FBRUE7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBOztBQUVBO0FBQ0E7QUFDQTtBQUNBLGlDQUFpQyxjQUFjO0FBQy9DLGtDQUFrQztBQUNsQyx3QkFBd0I7QUFDeEIsdUJBQXVCLFdBQVc7QUFDbEMsYUFBYTtBQUNiLG1CQUFtQjtBQUNuQix3Q0FBd0M7QUFDeEM7QUFDQSxXQUFXLHNDQUFzQztBQUNqRCxpQ0FBaUM7QUFDakMsc0JBQXNCLGFBQWE7QUFDbkMsMkNBQTJDLDZCQUE2QjtBQUN4RTtBQUNBO0FBQ0EsR0FBRztBQUNIO0FBQ0E7QUFDQSxvQ0FBb0M7QUFDcEMsY0FBYztBQUNkO0FBQ0EsRUFBRTtBQUNGLGtDQUFrQztBQUNsQyx3QkFBd0I7QUFDeEIsdUJBQXVCLG9CQUFvQjtBQUMzQyxrQkFBa0I7QUFDbEIsYUFBYTtBQUNiO0FBQ0E7QUFDQSxlQUFlO0FBQ2Y7QUFDQTtBQUNBO0FBQ0EsMENBQTBDO0FBQzFDO0FBQ0EsRUFBRTtBQUNGLHlDQUF5QztBQUN6QywrQkFBK0I7QUFDL0IsRUFBRTtBQUNGLHFEQUFxRDtBQUNyRDtBQUNBLEdBQUc7QUFDSCx3Q0FBd0M7QUFDeEM7QUFDQSxFQUFFO0FBQ0YsaURBQWlELDhCQUE4QjtBQUMvRTtBQUNBO0FBQ0E7O0FBRUE7O0FBRUE7QUFDQTtBQUNBLHNDQUFzQyxlQUFlO0FBQ3JEO0FBQ0E7QUFDQSxPQUFPO0FBQ1A7QUFDQTtBQUNBLEtBQUs7QUFDTDtBQUNBO0FBQ0EsS0FBSztBQUNMO0FBQ0Esb0VBQW9FO0FBQ3BFO0FBQ0E7QUFDQSx1QkFBdUI7QUFDdkI7QUFDQTtBQUNBOztBQUVBO0FBQ0EsaURBQWlELGtDQUFrQztBQUNuRixrQ0FBa0MsNkJBQTZCO0FBQy9ELEdBQUc7O0FBRUg7QUFDQTtBQUNBO0FBQ0EsR0FBRztBQUNILG9EQUFvRDtBQUNwRDtBQUNBLGdEQUFnRDtBQUNoRDtBQUNBLDJGQUEyRjtBQUMzRixPQUFPO0FBQ1A7QUFDQSx5RkFBeUY7QUFDekYsVUFBVTtBQUNWLFVBQVU7QUFDVixlQUFlO0FBQ2YsQ0FBQyxlQUFlO0FBQ2hCLGVBQWU7QUFDZixDQUFDLEtBQUs7QUFDTixlQUFlO0FBQ2YsQ0FBQztBQUNELENBQUMsZUFBZTtBQUNoQixlQUFlO0FBQ2YsQ0FBQyxlQUFlO0FBQ2hCLGVBQWU7QUFDZixDQUFDLEtBQUs7QUFDTixlQUFlO0FBQ2YsR0FBRztBQUNIO0FBQ0EsS0FBSztBQUNMLHVCQUF1QjtBQUN2QjtBQUNBOztBQUVBO0FBQ0E7QUFDQSw0REFBNEQ7QUFDNUQ7QUFDQSxxREFBcUQ7QUFDckQsR0FBRztBQUNILGlEQUFpRDtBQUNqRDs7QUFFQTtBQUNBLHNFQUFzRTtBQUN0RTtBQUNBLG1EQUFtRDtBQUNuRCxHQUFHO0FBQ0gsK0NBQStDO0FBQy9DOztBQUVBO0FBQ0E7QUFDQSxpRUFBaUUscUJBQXFCOztBQUV0RjtBQUNBLG9FQUFvRTtBQUNwRTtBQUNBO0FBQ0EsS0FBSztBQUNMO0FBQ0E7QUFDQSxLQUFLLDJCQUEyQjs7QUFFaEM7QUFDQSx3Q0FBd0Msb0NBQW9DO0FBQzVFLHdDQUF3QyxxQ0FBcUM7QUFDN0Usb0VBQW9FO0FBQ3BFLGNBQWMsYUFBYTtBQUMzQjtBQUNBLHlDQUF5QztBQUN6QyxXQUFXO0FBQ1gsWUFBWTtBQUNaLFVBQVU7QUFDVjtBQUNBO0FBQ0E7QUFDQTtBQUNBLEtBQUs7QUFDTDtBQUNBO0FBQ0EsS0FBSyxpQkFBaUI7O0FBRXRCO0FBQ0Esd0VBQXdFO0FBQ3hFO0FBQ0E7QUFDQSxLQUFLO0FBQ0w7QUFDQTtBQUNBLEtBQUs7QUFDTCxjQUFjLGFBQWE7QUFDM0I7QUFDQSw4QkFBOEI7QUFDOUIsV0FBVztBQUNYLFFBQVE7QUFDUixxQkFBcUI7QUFDckI7QUFDQSxDQUFDLEtBQUs7QUFDTjtBQUNBLENBQUM7QUFDRDtBQUNBLENBQUM7QUFDRDtBQUNBO0FBQ0E7QUFDQTtBQUNBLEtBQUs7QUFDTDtBQUNBO0FBQ0EsS0FBSyxpQkFBaUI7O0FBRXRCO0FBQ0E7QUFDQTtBQUNBLGNBQWMsYUFBYTtBQUMzQjtBQUNBO0FBQ0E7QUFDQSx3RUFBd0U7QUFDeEUsOEJBQThCLCtEQUErRCxTQUFTO0FBQ3RHLG9DQUFvQywyRkFBMkY7O0FBRS9IO0FBQ0EsOERBQThEO0FBQzlELGNBQWMsYUFBYTtBQUMzQix1REFBdUQsa0NBQWtDLEtBQUssMEJBQTBCLDJCQUEyQjtBQUNuSjtBQUNBLDRDQUE0Qyw2QkFBNkI7O0FBRXpFO0FBQ0EsK0VBQStFO0FBQy9FO0FBQ0E7QUFDQSxLQUFLO0FBQ0w7QUFDQTtBQUNBLEtBQUssc0JBQXNCOztBQUUzQjtBQUNBO0FBQ0E7QUFDQTs7QUFFQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTs7QUFFQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBOztBQUVBLENBQUM7QUFDRDtBQUNBO0FBQ0E7QUFDQSxDQUFDOztBQUVEO0FBQ0E7QUFDQTtBQUNBO0FBQ0EsR0FBRztBQUNIO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQSx3QkFBd0IsTUFBTTtBQUM5QjtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQSxnQkFBZ0IsS0FBSztBQUNyQjtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTs7QUFFQSIsImZpbGUiOiIzLmpzIiwic291cmNlc0NvbnRlbnQiOlsidmFyIGlvdGEgPSByZXF1aXJlKFwiaW90YS1hcnJheVwiKVxudmFyIGlzQnVmZmVyID0gcmVxdWlyZShcImlzLWJ1ZmZlclwiKVxuXG52YXIgaGFzVHlwZWRBcnJheXMgID0gKCh0eXBlb2YgRmxvYXQ2NEFycmF5KSAhPT0gXCJ1bmRlZmluZWRcIilcblxuZnVuY3Rpb24gY29tcGFyZTFzdChhLCBiKSB7XG4gIHJldHVybiBhWzBdIC0gYlswXVxufVxuXG5mdW5jdGlvbiBvcmRlcigpIHtcbiAgdmFyIHN0cmlkZSA9IHRoaXMuc3RyaWRlXG4gIHZhciB0ZXJtcyA9IG5ldyBBcnJheShzdHJpZGUubGVuZ3RoKVxuICB2YXIgaVxuICBmb3IoaT0wOyBpPHRlcm1zLmxlbmd0aDsgKytpKSB7XG4gICAgdGVybXNbaV0gPSBbTWF0aC5hYnMoc3RyaWRlW2ldKSwgaV1cbiAgfVxuICB0ZXJtcy5zb3J0KGNvbXBhcmUxc3QpXG4gIHZhciByZXN1bHQgPSBuZXcgQXJyYXkodGVybXMubGVuZ3RoKVxuICBmb3IoaT0wOyBpPHJlc3VsdC5sZW5ndGg7ICsraSkge1xuICAgIHJlc3VsdFtpXSA9IHRlcm1zW2ldWzFdXG4gIH1cbiAgcmV0dXJuIHJlc3VsdFxufVxuXG5mdW5jdGlvbiBjb21waWxlQ29uc3RydWN0b3IoZHR5cGUsIGRpbWVuc2lvbikge1xuICB2YXIgY2xhc3NOYW1lID0gW1wiVmlld1wiLCBkaW1lbnNpb24sIFwiZFwiLCBkdHlwZV0uam9pbihcIlwiKVxuICBpZihkaW1lbnNpb24gPCAwKSB7XG4gICAgY2xhc3NOYW1lID0gXCJWaWV3X05pbFwiICsgZHR5cGVcbiAgfVxuICB2YXIgdXNlR2V0dGVycyA9IChkdHlwZSA9PT0gXCJnZW5lcmljXCIpXG5cbiAgaWYoZGltZW5zaW9uID09PSAtMSkge1xuICAgIC8vU3BlY2lhbCBjYXNlIGZvciB0cml2aWFsIGFycmF5c1xuICAgIHZhciBjb2RlID1cbiAgICAgIFwiZnVuY3Rpb24gXCIrY2xhc3NOYW1lK1wiKGEpe3RoaXMuZGF0YT1hO307XFxcbnZhciBwcm90bz1cIitjbGFzc05hbWUrXCIucHJvdG90eXBlO1xcXG5wcm90by5kdHlwZT0nXCIrZHR5cGUrXCInO1xcXG5wcm90by5pbmRleD1mdW5jdGlvbigpe3JldHVybiAtMX07XFxcbnByb3RvLnNpemU9MDtcXFxucHJvdG8uZGltZW5zaW9uPS0xO1xcXG5wcm90by5zaGFwZT1wcm90by5zdHJpZGU9cHJvdG8ub3JkZXI9W107XFxcbnByb3RvLmxvPXByb3RvLmhpPXByb3RvLnRyYW5zcG9zZT1wcm90by5zdGVwPVxcXG5mdW5jdGlvbigpe3JldHVybiBuZXcgXCIrY2xhc3NOYW1lK1wiKHRoaXMuZGF0YSk7fTtcXFxucHJvdG8uZ2V0PXByb3RvLnNldD1mdW5jdGlvbigpe307XFxcbnByb3RvLnBpY2s9ZnVuY3Rpb24oKXtyZXR1cm4gbnVsbH07XFxcbnJldHVybiBmdW5jdGlvbiBjb25zdHJ1Y3RfXCIrY2xhc3NOYW1lK1wiKGEpe3JldHVybiBuZXcgXCIrY2xhc3NOYW1lK1wiKGEpO31cIlxuICAgIHZhciBwcm9jZWR1cmUgPSBuZXcgRnVuY3Rpb24oY29kZSlcbiAgICByZXR1cm4gcHJvY2VkdXJlKClcbiAgfSBlbHNlIGlmKGRpbWVuc2lvbiA9PT0gMCkge1xuICAgIC8vU3BlY2lhbCBjYXNlIGZvciAwZCBhcnJheXNcbiAgICB2YXIgY29kZSA9XG4gICAgICBcImZ1bmN0aW9uIFwiK2NsYXNzTmFtZStcIihhLGQpIHtcXFxudGhpcy5kYXRhID0gYTtcXFxudGhpcy5vZmZzZXQgPSBkXFxcbn07XFxcbnZhciBwcm90bz1cIitjbGFzc05hbWUrXCIucHJvdG90eXBlO1xcXG5wcm90by5kdHlwZT0nXCIrZHR5cGUrXCInO1xcXG5wcm90by5pbmRleD1mdW5jdGlvbigpe3JldHVybiB0aGlzLm9mZnNldH07XFxcbnByb3RvLmRpbWVuc2lvbj0wO1xcXG5wcm90by5zaXplPTE7XFxcbnByb3RvLnNoYXBlPVxcXG5wcm90by5zdHJpZGU9XFxcbnByb3RvLm9yZGVyPVtdO1xcXG5wcm90by5sbz1cXFxucHJvdG8uaGk9XFxcbnByb3RvLnRyYW5zcG9zZT1cXFxucHJvdG8uc3RlcD1mdW5jdGlvbiBcIitjbGFzc05hbWUrXCJfY29weSgpIHtcXFxucmV0dXJuIG5ldyBcIitjbGFzc05hbWUrXCIodGhpcy5kYXRhLHRoaXMub2Zmc2V0KVxcXG59O1xcXG5wcm90by5waWNrPWZ1bmN0aW9uIFwiK2NsYXNzTmFtZStcIl9waWNrKCl7XFxcbnJldHVybiBUcml2aWFsQXJyYXkodGhpcy5kYXRhKTtcXFxufTtcXFxucHJvdG8udmFsdWVPZj1wcm90by5nZXQ9ZnVuY3Rpb24gXCIrY2xhc3NOYW1lK1wiX2dldCgpe1xcXG5yZXR1cm4gXCIrKHVzZUdldHRlcnMgPyBcInRoaXMuZGF0YS5nZXQodGhpcy5vZmZzZXQpXCIgOiBcInRoaXMuZGF0YVt0aGlzLm9mZnNldF1cIikrXG5cIn07XFxcbnByb3RvLnNldD1mdW5jdGlvbiBcIitjbGFzc05hbWUrXCJfc2V0KHYpe1xcXG5yZXR1cm4gXCIrKHVzZUdldHRlcnMgPyBcInRoaXMuZGF0YS5zZXQodGhpcy5vZmZzZXQsdilcIiA6IFwidGhpcy5kYXRhW3RoaXMub2Zmc2V0XT12XCIpK1wiXFxcbn07XFxcbnJldHVybiBmdW5jdGlvbiBjb25zdHJ1Y3RfXCIrY2xhc3NOYW1lK1wiKGEsYixjLGQpe3JldHVybiBuZXcgXCIrY2xhc3NOYW1lK1wiKGEsZCl9XCJcbiAgICB2YXIgcHJvY2VkdXJlID0gbmV3IEZ1bmN0aW9uKFwiVHJpdmlhbEFycmF5XCIsIGNvZGUpXG4gICAgcmV0dXJuIHByb2NlZHVyZShDQUNIRURfQ09OU1RSVUNUT1JTW2R0eXBlXVswXSlcbiAgfVxuXG4gIHZhciBjb2RlID0gW1wiJ3VzZSBzdHJpY3QnXCJdXG5cbiAgLy9DcmVhdGUgY29uc3RydWN0b3IgZm9yIHZpZXdcbiAgdmFyIGluZGljZXMgPSBpb3RhKGRpbWVuc2lvbilcbiAgdmFyIGFyZ3MgPSBpbmRpY2VzLm1hcChmdW5jdGlvbihpKSB7IHJldHVybiBcImlcIitpIH0pXG4gIHZhciBpbmRleF9zdHIgPSBcInRoaXMub2Zmc2V0K1wiICsgaW5kaWNlcy5tYXAoZnVuY3Rpb24oaSkge1xuICAgICAgICByZXR1cm4gXCJ0aGlzLnN0cmlkZVtcIiArIGkgKyBcIl0qaVwiICsgaVxuICAgICAgfSkuam9pbihcIitcIilcbiAgdmFyIHNoYXBlQXJnID0gaW5kaWNlcy5tYXAoZnVuY3Rpb24oaSkge1xuICAgICAgcmV0dXJuIFwiYlwiK2lcbiAgICB9KS5qb2luKFwiLFwiKVxuICB2YXIgc3RyaWRlQXJnID0gaW5kaWNlcy5tYXAoZnVuY3Rpb24oaSkge1xuICAgICAgcmV0dXJuIFwiY1wiK2lcbiAgICB9KS5qb2luKFwiLFwiKVxuICBjb2RlLnB1c2goXG4gICAgXCJmdW5jdGlvbiBcIitjbGFzc05hbWUrXCIoYSxcIiArIHNoYXBlQXJnICsgXCIsXCIgKyBzdHJpZGVBcmcgKyBcIixkKXt0aGlzLmRhdGE9YVwiLFxuICAgICAgXCJ0aGlzLnNoYXBlPVtcIiArIHNoYXBlQXJnICsgXCJdXCIsXG4gICAgICBcInRoaXMuc3RyaWRlPVtcIiArIHN0cmlkZUFyZyArIFwiXVwiLFxuICAgICAgXCJ0aGlzLm9mZnNldD1kfDB9XCIsXG4gICAgXCJ2YXIgcHJvdG89XCIrY2xhc3NOYW1lK1wiLnByb3RvdHlwZVwiLFxuICAgIFwicHJvdG8uZHR5cGU9J1wiK2R0eXBlK1wiJ1wiLFxuICAgIFwicHJvdG8uZGltZW5zaW9uPVwiK2RpbWVuc2lvbilcblxuICAvL3ZpZXcuc2l6ZTpcbiAgY29kZS5wdXNoKFwiT2JqZWN0LmRlZmluZVByb3BlcnR5KHByb3RvLCdzaXplJyx7Z2V0OmZ1bmN0aW9uIFwiK2NsYXNzTmFtZStcIl9zaXplKCl7XFxcbnJldHVybiBcIitpbmRpY2VzLm1hcChmdW5jdGlvbihpKSB7IHJldHVybiBcInRoaXMuc2hhcGVbXCIraStcIl1cIiB9KS5qb2luKFwiKlwiKSxcblwifX0pXCIpXG5cbiAgLy92aWV3Lm9yZGVyOlxuICBpZihkaW1lbnNpb24gPT09IDEpIHtcbiAgICBjb2RlLnB1c2goXCJwcm90by5vcmRlcj1bMF1cIilcbiAgfSBlbHNlIHtcbiAgICBjb2RlLnB1c2goXCJPYmplY3QuZGVmaW5lUHJvcGVydHkocHJvdG8sJ29yZGVyJyx7Z2V0OlwiKVxuICAgIGlmKGRpbWVuc2lvbiA8IDQpIHtcbiAgICAgIGNvZGUucHVzaChcImZ1bmN0aW9uIFwiK2NsYXNzTmFtZStcIl9vcmRlcigpe1wiKVxuICAgICAgaWYoZGltZW5zaW9uID09PSAyKSB7XG4gICAgICAgIGNvZGUucHVzaChcInJldHVybiAoTWF0aC5hYnModGhpcy5zdHJpZGVbMF0pPk1hdGguYWJzKHRoaXMuc3RyaWRlWzFdKSk/WzEsMF06WzAsMV19fSlcIilcbiAgICAgIH0gZWxzZSBpZihkaW1lbnNpb24gPT09IDMpIHtcbiAgICAgICAgY29kZS5wdXNoKFxuXCJ2YXIgczA9TWF0aC5hYnModGhpcy5zdHJpZGVbMF0pLHMxPU1hdGguYWJzKHRoaXMuc3RyaWRlWzFdKSxzMj1NYXRoLmFicyh0aGlzLnN0cmlkZVsyXSk7XFxcbmlmKHMwPnMxKXtcXFxuaWYoczE+czIpe1xcXG5yZXR1cm4gWzIsMSwwXTtcXFxufWVsc2UgaWYoczA+czIpe1xcXG5yZXR1cm4gWzEsMiwwXTtcXFxufWVsc2V7XFxcbnJldHVybiBbMSwwLDJdO1xcXG59XFxcbn1lbHNlIGlmKHMwPnMyKXtcXFxucmV0dXJuIFsyLDAsMV07XFxcbn1lbHNlIGlmKHMyPnMxKXtcXFxucmV0dXJuIFswLDEsMl07XFxcbn1lbHNle1xcXG5yZXR1cm4gWzAsMiwxXTtcXFxufX19KVwiKVxuICAgICAgfVxuICAgIH0gZWxzZSB7XG4gICAgICBjb2RlLnB1c2goXCJPUkRFUn0pXCIpXG4gICAgfVxuICB9XG5cbiAgLy92aWV3LnNldChpMCwgLi4uLCB2KTpcbiAgY29kZS5wdXNoKFxuXCJwcm90by5zZXQ9ZnVuY3Rpb24gXCIrY2xhc3NOYW1lK1wiX3NldChcIithcmdzLmpvaW4oXCIsXCIpK1wiLHYpe1wiKVxuICBpZih1c2VHZXR0ZXJzKSB7XG4gICAgY29kZS5wdXNoKFwicmV0dXJuIHRoaXMuZGF0YS5zZXQoXCIraW5kZXhfc3RyK1wiLHYpfVwiKVxuICB9IGVsc2Uge1xuICAgIGNvZGUucHVzaChcInJldHVybiB0aGlzLmRhdGFbXCIraW5kZXhfc3RyK1wiXT12fVwiKVxuICB9XG5cbiAgLy92aWV3LmdldChpMCwgLi4uKTpcbiAgY29kZS5wdXNoKFwicHJvdG8uZ2V0PWZ1bmN0aW9uIFwiK2NsYXNzTmFtZStcIl9nZXQoXCIrYXJncy5qb2luKFwiLFwiKStcIil7XCIpXG4gIGlmKHVzZUdldHRlcnMpIHtcbiAgICBjb2RlLnB1c2goXCJyZXR1cm4gdGhpcy5kYXRhLmdldChcIitpbmRleF9zdHIrXCIpfVwiKVxuICB9IGVsc2Uge1xuICAgIGNvZGUucHVzaChcInJldHVybiB0aGlzLmRhdGFbXCIraW5kZXhfc3RyK1wiXX1cIilcbiAgfVxuXG4gIC8vdmlldy5pbmRleDpcbiAgY29kZS5wdXNoKFxuICAgIFwicHJvdG8uaW5kZXg9ZnVuY3Rpb24gXCIrY2xhc3NOYW1lK1wiX2luZGV4KFwiLCBhcmdzLmpvaW4oKSwgXCIpe3JldHVybiBcIitpbmRleF9zdHIrXCJ9XCIpXG5cbiAgLy92aWV3LmhpKCk6XG4gIGNvZGUucHVzaChcInByb3RvLmhpPWZ1bmN0aW9uIFwiK2NsYXNzTmFtZStcIl9oaShcIithcmdzLmpvaW4oXCIsXCIpK1wiKXtyZXR1cm4gbmV3IFwiK2NsYXNzTmFtZStcIih0aGlzLmRhdGEsXCIrXG4gICAgaW5kaWNlcy5tYXAoZnVuY3Rpb24oaSkge1xuICAgICAgcmV0dXJuIFtcIih0eXBlb2YgaVwiLGksXCIhPT0nbnVtYmVyJ3x8aVwiLGksXCI8MCk/dGhpcy5zaGFwZVtcIiwgaSwgXCJdOmlcIiwgaSxcInwwXCJdLmpvaW4oXCJcIilcbiAgICB9KS5qb2luKFwiLFwiKStcIixcIitcbiAgICBpbmRpY2VzLm1hcChmdW5jdGlvbihpKSB7XG4gICAgICByZXR1cm4gXCJ0aGlzLnN0cmlkZVtcIitpICsgXCJdXCJcbiAgICB9KS5qb2luKFwiLFwiKStcIix0aGlzLm9mZnNldCl9XCIpXG5cbiAgLy92aWV3LmxvKCk6XG4gIHZhciBhX3ZhcnMgPSBpbmRpY2VzLm1hcChmdW5jdGlvbihpKSB7IHJldHVybiBcImFcIitpK1wiPXRoaXMuc2hhcGVbXCIraStcIl1cIiB9KVxuICB2YXIgY192YXJzID0gaW5kaWNlcy5tYXAoZnVuY3Rpb24oaSkgeyByZXR1cm4gXCJjXCIraStcIj10aGlzLnN0cmlkZVtcIitpK1wiXVwiIH0pXG4gIGNvZGUucHVzaChcInByb3RvLmxvPWZ1bmN0aW9uIFwiK2NsYXNzTmFtZStcIl9sbyhcIithcmdzLmpvaW4oXCIsXCIpK1wiKXt2YXIgYj10aGlzLm9mZnNldCxkPTAsXCIrYV92YXJzLmpvaW4oXCIsXCIpK1wiLFwiK2NfdmFycy5qb2luKFwiLFwiKSlcbiAgZm9yKHZhciBpPTA7IGk8ZGltZW5zaW9uOyArK2kpIHtcbiAgICBjb2RlLnB1c2goXG5cImlmKHR5cGVvZiBpXCIraStcIj09PSdudW1iZXInJiZpXCIraStcIj49MCl7XFxcbmQ9aVwiK2krXCJ8MDtcXFxuYis9Y1wiK2krXCIqZDtcXFxuYVwiK2krXCItPWR9XCIpXG4gIH1cbiAgY29kZS5wdXNoKFwicmV0dXJuIG5ldyBcIitjbGFzc05hbWUrXCIodGhpcy5kYXRhLFwiK1xuICAgIGluZGljZXMubWFwKGZ1bmN0aW9uKGkpIHtcbiAgICAgIHJldHVybiBcImFcIitpXG4gICAgfSkuam9pbihcIixcIikrXCIsXCIrXG4gICAgaW5kaWNlcy5tYXAoZnVuY3Rpb24oaSkge1xuICAgICAgcmV0dXJuIFwiY1wiK2lcbiAgICB9KS5qb2luKFwiLFwiKStcIixiKX1cIilcblxuICAvL3ZpZXcuc3RlcCgpOlxuICBjb2RlLnB1c2goXCJwcm90by5zdGVwPWZ1bmN0aW9uIFwiK2NsYXNzTmFtZStcIl9zdGVwKFwiK2FyZ3Muam9pbihcIixcIikrXCIpe3ZhciBcIitcbiAgICBpbmRpY2VzLm1hcChmdW5jdGlvbihpKSB7XG4gICAgICByZXR1cm4gXCJhXCIraStcIj10aGlzLnNoYXBlW1wiK2krXCJdXCJcbiAgICB9KS5qb2luKFwiLFwiKStcIixcIitcbiAgICBpbmRpY2VzLm1hcChmdW5jdGlvbihpKSB7XG4gICAgICByZXR1cm4gXCJiXCIraStcIj10aGlzLnN0cmlkZVtcIitpK1wiXVwiXG4gICAgfSkuam9pbihcIixcIikrXCIsYz10aGlzLm9mZnNldCxkPTAsY2VpbD1NYXRoLmNlaWxcIilcbiAgZm9yKHZhciBpPTA7IGk8ZGltZW5zaW9uOyArK2kpIHtcbiAgICBjb2RlLnB1c2goXG5cImlmKHR5cGVvZiBpXCIraStcIj09PSdudW1iZXInKXtcXFxuZD1pXCIraStcInwwO1xcXG5pZihkPDApe1xcXG5jKz1iXCIraStcIiooYVwiK2krXCItMSk7XFxcbmFcIitpK1wiPWNlaWwoLWFcIitpK1wiL2QpXFxcbn1lbHNle1xcXG5hXCIraStcIj1jZWlsKGFcIitpK1wiL2QpXFxcbn1cXFxuYlwiK2krXCIqPWRcXFxufVwiKVxuICB9XG4gIGNvZGUucHVzaChcInJldHVybiBuZXcgXCIrY2xhc3NOYW1lK1wiKHRoaXMuZGF0YSxcIitcbiAgICBpbmRpY2VzLm1hcChmdW5jdGlvbihpKSB7XG4gICAgICByZXR1cm4gXCJhXCIgKyBpXG4gICAgfSkuam9pbihcIixcIikrXCIsXCIrXG4gICAgaW5kaWNlcy5tYXAoZnVuY3Rpb24oaSkge1xuICAgICAgcmV0dXJuIFwiYlwiICsgaVxuICAgIH0pLmpvaW4oXCIsXCIpK1wiLGMpfVwiKVxuXG4gIC8vdmlldy50cmFuc3Bvc2UoKTpcbiAgdmFyIHRTaGFwZSA9IG5ldyBBcnJheShkaW1lbnNpb24pXG4gIHZhciB0U3RyaWRlID0gbmV3IEFycmF5KGRpbWVuc2lvbilcbiAgZm9yKHZhciBpPTA7IGk8ZGltZW5zaW9uOyArK2kpIHtcbiAgICB0U2hhcGVbaV0gPSBcImFbaVwiK2krXCJdXCJcbiAgICB0U3RyaWRlW2ldID0gXCJiW2lcIitpK1wiXVwiXG4gIH1cbiAgY29kZS5wdXNoKFwicHJvdG8udHJhbnNwb3NlPWZ1bmN0aW9uIFwiK2NsYXNzTmFtZStcIl90cmFuc3Bvc2UoXCIrYXJncytcIil7XCIrXG4gICAgYXJncy5tYXAoZnVuY3Rpb24obixpZHgpIHsgcmV0dXJuIG4gKyBcIj0oXCIgKyBuICsgXCI9PT11bmRlZmluZWQ/XCIgKyBpZHggKyBcIjpcIiArIG4gKyBcInwwKVwifSkuam9pbihcIjtcIiksXG4gICAgXCJ2YXIgYT10aGlzLnNoYXBlLGI9dGhpcy5zdHJpZGU7cmV0dXJuIG5ldyBcIitjbGFzc05hbWUrXCIodGhpcy5kYXRhLFwiK3RTaGFwZS5qb2luKFwiLFwiKStcIixcIit0U3RyaWRlLmpvaW4oXCIsXCIpK1wiLHRoaXMub2Zmc2V0KX1cIilcblxuICAvL3ZpZXcucGljaygpOlxuICBjb2RlLnB1c2goXCJwcm90by5waWNrPWZ1bmN0aW9uIFwiK2NsYXNzTmFtZStcIl9waWNrKFwiK2FyZ3MrXCIpe3ZhciBhPVtdLGI9W10sYz10aGlzLm9mZnNldFwiKVxuICBmb3IodmFyIGk9MDsgaTxkaW1lbnNpb247ICsraSkge1xuICAgIGNvZGUucHVzaChcImlmKHR5cGVvZiBpXCIraStcIj09PSdudW1iZXInJiZpXCIraStcIj49MCl7Yz0oYyt0aGlzLnN0cmlkZVtcIitpK1wiXSppXCIraStcIil8MH1lbHNle2EucHVzaCh0aGlzLnNoYXBlW1wiK2krXCJdKTtiLnB1c2godGhpcy5zdHJpZGVbXCIraStcIl0pfVwiKVxuICB9XG4gIGNvZGUucHVzaChcInZhciBjdG9yPUNUT1JfTElTVFthLmxlbmd0aCsxXTtyZXR1cm4gY3Rvcih0aGlzLmRhdGEsYSxiLGMpfVwiKVxuXG4gIC8vQWRkIHJldHVybiBzdGF0ZW1lbnRcbiAgY29kZS5wdXNoKFwicmV0dXJuIGZ1bmN0aW9uIGNvbnN0cnVjdF9cIitjbGFzc05hbWUrXCIoZGF0YSxzaGFwZSxzdHJpZGUsb2Zmc2V0KXtyZXR1cm4gbmV3IFwiK2NsYXNzTmFtZStcIihkYXRhLFwiK1xuICAgIGluZGljZXMubWFwKGZ1bmN0aW9uKGkpIHtcbiAgICAgIHJldHVybiBcInNoYXBlW1wiK2krXCJdXCJcbiAgICB9KS5qb2luKFwiLFwiKStcIixcIitcbiAgICBpbmRpY2VzLm1hcChmdW5jdGlvbihpKSB7XG4gICAgICByZXR1cm4gXCJzdHJpZGVbXCIraStcIl1cIlxuICAgIH0pLmpvaW4oXCIsXCIpK1wiLG9mZnNldCl9XCIpXG5cbiAgLy9Db21waWxlIHByb2NlZHVyZVxuICB2YXIgcHJvY2VkdXJlID0gbmV3IEZ1bmN0aW9uKFwiQ1RPUl9MSVNUXCIsIFwiT1JERVJcIiwgY29kZS5qb2luKFwiXFxuXCIpKVxuICByZXR1cm4gcHJvY2VkdXJlKENBQ0hFRF9DT05TVFJVQ1RPUlNbZHR5cGVdLCBvcmRlcilcbn1cblxuZnVuY3Rpb24gYXJyYXlEVHlwZShkYXRhKSB7XG4gIGlmKGlzQnVmZmVyKGRhdGEpKSB7XG4gICAgcmV0dXJuIFwiYnVmZmVyXCJcbiAgfVxuICBpZihoYXNUeXBlZEFycmF5cykge1xuICAgIHN3aXRjaChPYmplY3QucHJvdG90eXBlLnRvU3RyaW5nLmNhbGwoZGF0YSkpIHtcbiAgICAgIGNhc2UgXCJbb2JqZWN0IEZsb2F0NjRBcnJheV1cIjpcbiAgICAgICAgcmV0dXJuIFwiZmxvYXQ2NFwiXG4gICAgICBjYXNlIFwiW29iamVjdCBGbG9hdDMyQXJyYXldXCI6XG4gICAgICAgIHJldHVybiBcImZsb2F0MzJcIlxuICAgICAgY2FzZSBcIltvYmplY3QgSW50OEFycmF5XVwiOlxuICAgICAgICByZXR1cm4gXCJpbnQ4XCJcbiAgICAgIGNhc2UgXCJbb2JqZWN0IEludDE2QXJyYXldXCI6XG4gICAgICAgIHJldHVybiBcImludDE2XCJcbiAgICAgIGNhc2UgXCJbb2JqZWN0IEludDMyQXJyYXldXCI6XG4gICAgICAgIHJldHVybiBcImludDMyXCJcbiAgICAgIGNhc2UgXCJbb2JqZWN0IFVpbnQ4QXJyYXldXCI6XG4gICAgICAgIHJldHVybiBcInVpbnQ4XCJcbiAgICAgIGNhc2UgXCJbb2JqZWN0IFVpbnQxNkFycmF5XVwiOlxuICAgICAgICByZXR1cm4gXCJ1aW50MTZcIlxuICAgICAgY2FzZSBcIltvYmplY3QgVWludDMyQXJyYXldXCI6XG4gICAgICAgIHJldHVybiBcInVpbnQzMlwiXG4gICAgICBjYXNlIFwiW29iamVjdCBVaW50OENsYW1wZWRBcnJheV1cIjpcbiAgICAgICAgcmV0dXJuIFwidWludDhfY2xhbXBlZFwiXG4gICAgfVxuICB9XG4gIGlmKEFycmF5LmlzQXJyYXkoZGF0YSkpIHtcbiAgICByZXR1cm4gXCJhcnJheVwiXG4gIH1cbiAgcmV0dXJuIFwiZ2VuZXJpY1wiXG59XG5cbnZhciBDQUNIRURfQ09OU1RSVUNUT1JTID0ge1xuICBcImZsb2F0MzJcIjpbXSxcbiAgXCJmbG9hdDY0XCI6W10sXG4gIFwiaW50OFwiOltdLFxuICBcImludDE2XCI6W10sXG4gIFwiaW50MzJcIjpbXSxcbiAgXCJ1aW50OFwiOltdLFxuICBcInVpbnQxNlwiOltdLFxuICBcInVpbnQzMlwiOltdLFxuICBcImFycmF5XCI6W10sXG4gIFwidWludDhfY2xhbXBlZFwiOltdLFxuICBcImJ1ZmZlclwiOltdLFxuICBcImdlbmVyaWNcIjpbXVxufVxuXG47KGZ1bmN0aW9uKCkge1xuICBmb3IodmFyIGlkIGluIENBQ0hFRF9DT05TVFJVQ1RPUlMpIHtcbiAgICBDQUNIRURfQ09OU1RSVUNUT1JTW2lkXS5wdXNoKGNvbXBpbGVDb25zdHJ1Y3RvcihpZCwgLTEpKVxuICB9XG59KTtcblxuZnVuY3Rpb24gd3JhcHBlZE5EQXJyYXlDdG9yKGRhdGEsIHNoYXBlLCBzdHJpZGUsIG9mZnNldCkge1xuICBpZihkYXRhID09PSB1bmRlZmluZWQpIHtcbiAgICB2YXIgY3RvciA9IENBQ0hFRF9DT05TVFJVQ1RPUlMuYXJyYXlbMF1cbiAgICByZXR1cm4gY3RvcihbXSlcbiAgfSBlbHNlIGlmKHR5cGVvZiBkYXRhID09PSBcIm51bWJlclwiKSB7XG4gICAgZGF0YSA9IFtkYXRhXVxuICB9XG4gIGlmKHNoYXBlID09PSB1bmRlZmluZWQpIHtcbiAgICBzaGFwZSA9IFsgZGF0YS5sZW5ndGggXVxuICB9XG4gIHZhciBkID0gc2hhcGUubGVuZ3RoXG4gIGlmKHN0cmlkZSA9PT0gdW5kZWZpbmVkKSB7XG4gICAgc3RyaWRlID0gbmV3IEFycmF5KGQpXG4gICAgZm9yKHZhciBpPWQtMSwgc3o9MTsgaT49MDsgLS1pKSB7XG4gICAgICBzdHJpZGVbaV0gPSBzelxuICAgICAgc3ogKj0gc2hhcGVbaV1cbiAgICB9XG4gIH1cbiAgaWYob2Zmc2V0ID09PSB1bmRlZmluZWQpIHtcbiAgICBvZmZzZXQgPSAwXG4gICAgZm9yKHZhciBpPTA7IGk8ZDsgKytpKSB7XG4gICAgICBpZihzdHJpZGVbaV0gPCAwKSB7XG4gICAgICAgIG9mZnNldCAtPSAoc2hhcGVbaV0tMSkqc3RyaWRlW2ldXG4gICAgICB9XG4gICAgfVxuICB9XG4gIHZhciBkdHlwZSA9IGFycmF5RFR5cGUoZGF0YSlcbiAgdmFyIGN0b3JfbGlzdCA9IENBQ0hFRF9DT05TVFJVQ1RPUlNbZHR5cGVdXG4gIHdoaWxlKGN0b3JfbGlzdC5sZW5ndGggPD0gZCsxKSB7XG4gICAgY3Rvcl9saXN0LnB1c2goY29tcGlsZUNvbnN0cnVjdG9yKGR0eXBlLCBjdG9yX2xpc3QubGVuZ3RoLTEpKVxuICB9XG4gIHZhciBjdG9yID0gY3Rvcl9saXN0W2QrMV1cbiAgcmV0dXJuIGN0b3IoZGF0YSwgc2hhcGUsIHN0cmlkZSwgb2Zmc2V0KVxufVxuXG5tb2R1bGUuZXhwb3J0cyA9IHdyYXBwZWROREFycmF5Q3RvclxuXG5cblxuLy8vLy8vLy8vLy8vLy8vLy8vXG4vLyBXRUJQQUNLIEZPT1RFUlxuLy8gLi4vfi9uZGFycmF5L25kYXJyYXkuanNcbi8vIG1vZHVsZSBpZCA9IDNcbi8vIG1vZHVsZSBjaHVua3MgPSAwIl0sInNvdXJjZVJvb3QiOiIifQ==");
+	var iota = __webpack_require__(4)
+	var isBuffer = __webpack_require__(5)
+	
+	var hasTypedArrays  = ((typeof Float64Array) !== "undefined")
+	
+	function compare1st(a, b) {
+	  return a[0] - b[0]
+	}
+	
+	function order() {
+	  var stride = this.stride
+	  var terms = new Array(stride.length)
+	  var i
+	  for(i=0; i<terms.length; ++i) {
+	    terms[i] = [Math.abs(stride[i]), i]
+	  }
+	  terms.sort(compare1st)
+	  var result = new Array(terms.length)
+	  for(i=0; i<result.length; ++i) {
+	    result[i] = terms[i][1]
+	  }
+	  return result
+	}
+	
+	function compileConstructor(dtype, dimension) {
+	  var className = ["View", dimension, "d", dtype].join("")
+	  if(dimension < 0) {
+	    className = "View_Nil" + dtype
+	  }
+	  var useGetters = (dtype === "generic")
+	
+	  if(dimension === -1) {
+	    //Special case for trivial arrays
+	    var code =
+	      "function "+className+"(a){this.data=a;};\
+	var proto="+className+".prototype;\
+	proto.dtype='"+dtype+"';\
+	proto.index=function(){return -1};\
+	proto.size=0;\
+	proto.dimension=-1;\
+	proto.shape=proto.stride=proto.order=[];\
+	proto.lo=proto.hi=proto.transpose=proto.step=\
+	function(){return new "+className+"(this.data);};\
+	proto.get=proto.set=function(){};\
+	proto.pick=function(){return null};\
+	return function construct_"+className+"(a){return new "+className+"(a);}"
+	    var procedure = new Function(code)
+	    return procedure()
+	  } else if(dimension === 0) {
+	    //Special case for 0d arrays
+	    var code =
+	      "function "+className+"(a,d) {\
+	this.data = a;\
+	this.offset = d\
+	};\
+	var proto="+className+".prototype;\
+	proto.dtype='"+dtype+"';\
+	proto.index=function(){return this.offset};\
+	proto.dimension=0;\
+	proto.size=1;\
+	proto.shape=\
+	proto.stride=\
+	proto.order=[];\
+	proto.lo=\
+	proto.hi=\
+	proto.transpose=\
+	proto.step=function "+className+"_copy() {\
+	return new "+className+"(this.data,this.offset)\
+	};\
+	proto.pick=function "+className+"_pick(){\
+	return TrivialArray(this.data);\
+	};\
+	proto.valueOf=proto.get=function "+className+"_get(){\
+	return "+(useGetters ? "this.data.get(this.offset)" : "this.data[this.offset]")+
+	"};\
+	proto.set=function "+className+"_set(v){\
+	return "+(useGetters ? "this.data.set(this.offset,v)" : "this.data[this.offset]=v")+"\
+	};\
+	return function construct_"+className+"(a,b,c,d){return new "+className+"(a,d)}"
+	    var procedure = new Function("TrivialArray", code)
+	    return procedure(CACHED_CONSTRUCTORS[dtype][0])
+	  }
+	
+	  var code = ["'use strict'"]
+	
+	  //Create constructor for view
+	  var indices = iota(dimension)
+	  var args = indices.map(function(i) { return "i"+i })
+	  var index_str = "this.offset+" + indices.map(function(i) {
+	        return "this.stride[" + i + "]*i" + i
+	      }).join("+")
+	  var shapeArg = indices.map(function(i) {
+	      return "b"+i
+	    }).join(",")
+	  var strideArg = indices.map(function(i) {
+	      return "c"+i
+	    }).join(",")
+	  code.push(
+	    "function "+className+"(a," + shapeArg + "," + strideArg + ",d){this.data=a",
+	      "this.shape=[" + shapeArg + "]",
+	      "this.stride=[" + strideArg + "]",
+	      "this.offset=d|0}",
+	    "var proto="+className+".prototype",
+	    "proto.dtype='"+dtype+"'",
+	    "proto.dimension="+dimension)
+	
+	  //view.size:
+	  code.push("Object.defineProperty(proto,'size',{get:function "+className+"_size(){\
+	return "+indices.map(function(i) { return "this.shape["+i+"]" }).join("*"),
+	"}})")
+	
+	  //view.order:
+	  if(dimension === 1) {
+	    code.push("proto.order=[0]")
+	  } else {
+	    code.push("Object.defineProperty(proto,'order',{get:")
+	    if(dimension < 4) {
+	      code.push("function "+className+"_order(){")
+	      if(dimension === 2) {
+	        code.push("return (Math.abs(this.stride[0])>Math.abs(this.stride[1]))?[1,0]:[0,1]}})")
+	      } else if(dimension === 3) {
+	        code.push(
+	"var s0=Math.abs(this.stride[0]),s1=Math.abs(this.stride[1]),s2=Math.abs(this.stride[2]);\
+	if(s0>s1){\
+	if(s1>s2){\
+	return [2,1,0];\
+	}else if(s0>s2){\
+	return [1,2,0];\
+	}else{\
+	return [1,0,2];\
+	}\
+	}else if(s0>s2){\
+	return [2,0,1];\
+	}else if(s2>s1){\
+	return [0,1,2];\
+	}else{\
+	return [0,2,1];\
+	}}})")
+	      }
+	    } else {
+	      code.push("ORDER})")
+	    }
+	  }
+	
+	  //view.set(i0, ..., v):
+	  code.push(
+	"proto.set=function "+className+"_set("+args.join(",")+",v){")
+	  if(useGetters) {
+	    code.push("return this.data.set("+index_str+",v)}")
+	  } else {
+	    code.push("return this.data["+index_str+"]=v}")
+	  }
+	
+	  //view.get(i0, ...):
+	  code.push("proto.get=function "+className+"_get("+args.join(",")+"){")
+	  if(useGetters) {
+	    code.push("return this.data.get("+index_str+")}")
+	  } else {
+	    code.push("return this.data["+index_str+"]}")
+	  }
+	
+	  //view.index:
+	  code.push(
+	    "proto.index=function "+className+"_index(", args.join(), "){return "+index_str+"}")
+	
+	  //view.hi():
+	  code.push("proto.hi=function "+className+"_hi("+args.join(",")+"){return new "+className+"(this.data,"+
+	    indices.map(function(i) {
+	      return ["(typeof i",i,"!=='number'||i",i,"<0)?this.shape[", i, "]:i", i,"|0"].join("")
+	    }).join(",")+","+
+	    indices.map(function(i) {
+	      return "this.stride["+i + "]"
+	    }).join(",")+",this.offset)}")
+	
+	  //view.lo():
+	  var a_vars = indices.map(function(i) { return "a"+i+"=this.shape["+i+"]" })
+	  var c_vars = indices.map(function(i) { return "c"+i+"=this.stride["+i+"]" })
+	  code.push("proto.lo=function "+className+"_lo("+args.join(",")+"){var b=this.offset,d=0,"+a_vars.join(",")+","+c_vars.join(","))
+	  for(var i=0; i<dimension; ++i) {
+	    code.push(
+	"if(typeof i"+i+"==='number'&&i"+i+">=0){\
+	d=i"+i+"|0;\
+	b+=c"+i+"*d;\
+	a"+i+"-=d}")
+	  }
+	  code.push("return new "+className+"(this.data,"+
+	    indices.map(function(i) {
+	      return "a"+i
+	    }).join(",")+","+
+	    indices.map(function(i) {
+	      return "c"+i
+	    }).join(",")+",b)}")
+	
+	  //view.step():
+	  code.push("proto.step=function "+className+"_step("+args.join(",")+"){var "+
+	    indices.map(function(i) {
+	      return "a"+i+"=this.shape["+i+"]"
+	    }).join(",")+","+
+	    indices.map(function(i) {
+	      return "b"+i+"=this.stride["+i+"]"
+	    }).join(",")+",c=this.offset,d=0,ceil=Math.ceil")
+	  for(var i=0; i<dimension; ++i) {
+	    code.push(
+	"if(typeof i"+i+"==='number'){\
+	d=i"+i+"|0;\
+	if(d<0){\
+	c+=b"+i+"*(a"+i+"-1);\
+	a"+i+"=ceil(-a"+i+"/d)\
+	}else{\
+	a"+i+"=ceil(a"+i+"/d)\
+	}\
+	b"+i+"*=d\
+	}")
+	  }
+	  code.push("return new "+className+"(this.data,"+
+	    indices.map(function(i) {
+	      return "a" + i
+	    }).join(",")+","+
+	    indices.map(function(i) {
+	      return "b" + i
+	    }).join(",")+",c)}")
+	
+	  //view.transpose():
+	  var tShape = new Array(dimension)
+	  var tStride = new Array(dimension)
+	  for(var i=0; i<dimension; ++i) {
+	    tShape[i] = "a[i"+i+"]"
+	    tStride[i] = "b[i"+i+"]"
+	  }
+	  code.push("proto.transpose=function "+className+"_transpose("+args+"){"+
+	    args.map(function(n,idx) { return n + "=(" + n + "===undefined?" + idx + ":" + n + "|0)"}).join(";"),
+	    "var a=this.shape,b=this.stride;return new "+className+"(this.data,"+tShape.join(",")+","+tStride.join(",")+",this.offset)}")
+	
+	  //view.pick():
+	  code.push("proto.pick=function "+className+"_pick("+args+"){var a=[],b=[],c=this.offset")
+	  for(var i=0; i<dimension; ++i) {
+	    code.push("if(typeof i"+i+"==='number'&&i"+i+">=0){c=(c+this.stride["+i+"]*i"+i+")|0}else{a.push(this.shape["+i+"]);b.push(this.stride["+i+"])}")
+	  }
+	  code.push("var ctor=CTOR_LIST[a.length+1];return ctor(this.data,a,b,c)}")
+	
+	  //Add return statement
+	  code.push("return function construct_"+className+"(data,shape,stride,offset){return new "+className+"(data,"+
+	    indices.map(function(i) {
+	      return "shape["+i+"]"
+	    }).join(",")+","+
+	    indices.map(function(i) {
+	      return "stride["+i+"]"
+	    }).join(",")+",offset)}")
+	
+	  //Compile procedure
+	  var procedure = new Function("CTOR_LIST", "ORDER", code.join("\n"))
+	  return procedure(CACHED_CONSTRUCTORS[dtype], order)
+	}
+	
+	function arrayDType(data) {
+	  if(isBuffer(data)) {
+	    return "buffer"
+	  }
+	  if(hasTypedArrays) {
+	    switch(Object.prototype.toString.call(data)) {
+	      case "[object Float64Array]":
+	        return "float64"
+	      case "[object Float32Array]":
+	        return "float32"
+	      case "[object Int8Array]":
+	        return "int8"
+	      case "[object Int16Array]":
+	        return "int16"
+	      case "[object Int32Array]":
+	        return "int32"
+	      case "[object Uint8Array]":
+	        return "uint8"
+	      case "[object Uint16Array]":
+	        return "uint16"
+	      case "[object Uint32Array]":
+	        return "uint32"
+	      case "[object Uint8ClampedArray]":
+	        return "uint8_clamped"
+	    }
+	  }
+	  if(Array.isArray(data)) {
+	    return "array"
+	  }
+	  return "generic"
+	}
+	
+	var CACHED_CONSTRUCTORS = {
+	  "float32":[],
+	  "float64":[],
+	  "int8":[],
+	  "int16":[],
+	  "int32":[],
+	  "uint8":[],
+	  "uint16":[],
+	  "uint32":[],
+	  "array":[],
+	  "uint8_clamped":[],
+	  "buffer":[],
+	  "generic":[]
+	}
+	
+	;(function() {
+	  for(var id in CACHED_CONSTRUCTORS) {
+	    CACHED_CONSTRUCTORS[id].push(compileConstructor(id, -1))
+	  }
+	});
+	
+	function wrappedNDArrayCtor(data, shape, stride, offset) {
+	  if(data === undefined) {
+	    var ctor = CACHED_CONSTRUCTORS.array[0]
+	    return ctor([])
+	  } else if(typeof data === "number") {
+	    data = [data]
+	  }
+	  if(shape === undefined) {
+	    shape = [ data.length ]
+	  }
+	  var d = shape.length
+	  if(stride === undefined) {
+	    stride = new Array(d)
+	    for(var i=d-1, sz=1; i>=0; --i) {
+	      stride[i] = sz
+	      sz *= shape[i]
+	    }
+	  }
+	  if(offset === undefined) {
+	    offset = 0
+	    for(var i=0; i<d; ++i) {
+	      if(stride[i] < 0) {
+	        offset -= (shape[i]-1)*stride[i]
+	      }
+	    }
+	  }
+	  var dtype = arrayDType(data)
+	  var ctor_list = CACHED_CONSTRUCTORS[dtype]
+	  while(ctor_list.length <= d+1) {
+	    ctor_list.push(compileConstructor(dtype, ctor_list.length-1))
+	  }
+	  var ctor = ctor_list[d+1]
+	  return ctor(data, shape, stride, offset)
+	}
+	
+	module.exports = wrappedNDArrayCtor
+
 
 /***/ },
 /* 4 */
 /***/ function(module, exports) {
 
-	eval("\"use strict\"\n\nfunction iota(n) {\n  var result = new Array(n)\n  for(var i=0; i<n; ++i) {\n    result[i] = i\n  }\n  return result\n}\n\nmodule.exports = iota//# sourceMappingURL=data:application/json;charset=utf-8;base64,eyJ2ZXJzaW9uIjozLCJzb3VyY2VzIjpbIndlYnBhY2s6Ly8vLi4vfi9pb3RhLWFycmF5L2lvdGEuanM/ZDFmZiJdLCJuYW1lcyI6W10sIm1hcHBpbmdzIjoiQUFBQTs7QUFFQTtBQUNBO0FBQ0EsY0FBYyxLQUFLO0FBQ25CO0FBQ0E7QUFDQTtBQUNBOztBQUVBIiwiZmlsZSI6IjQuanMiLCJzb3VyY2VzQ29udGVudCI6WyJcInVzZSBzdHJpY3RcIlxuXG5mdW5jdGlvbiBpb3RhKG4pIHtcbiAgdmFyIHJlc3VsdCA9IG5ldyBBcnJheShuKVxuICBmb3IodmFyIGk9MDsgaTxuOyArK2kpIHtcbiAgICByZXN1bHRbaV0gPSBpXG4gIH1cbiAgcmV0dXJuIHJlc3VsdFxufVxuXG5tb2R1bGUuZXhwb3J0cyA9IGlvdGFcblxuXG4vLy8vLy8vLy8vLy8vLy8vLy9cbi8vIFdFQlBBQ0sgRk9PVEVSXG4vLyAuLi9+L2lvdGEtYXJyYXkvaW90YS5qc1xuLy8gbW9kdWxlIGlkID0gNFxuLy8gbW9kdWxlIGNodW5rcyA9IDAiXSwic291cmNlUm9vdCI6IiJ9");
+	"use strict"
+	
+	function iota(n) {
+	  var result = new Array(n)
+	  for(var i=0; i<n; ++i) {
+	    result[i] = i
+	  }
+	  return result
+	}
+	
+	module.exports = iota
 
 /***/ },
 /* 5 */
 /***/ function(module, exports) {
 
-	eval("/*!\n * Determine if an object is a Buffer\n *\n * @author   Feross Aboukhadijeh <feross@feross.org> <http://feross.org>\n * @license  MIT\n */\n\n// The _isBuffer check is for Safari 5-7 support, because it's missing\n// Object.prototype.constructor. Remove this eventually\nmodule.exports = function (obj) {\n  return obj != null && (isBuffer(obj) || isSlowBuffer(obj) || !!obj._isBuffer)\n}\n\nfunction isBuffer (obj) {\n  return !!obj.constructor && typeof obj.constructor.isBuffer === 'function' && obj.constructor.isBuffer(obj)\n}\n\n// For Node v0.10 support. Remove this eventually.\nfunction isSlowBuffer (obj) {\n  return typeof obj.readFloatLE === 'function' && typeof obj.slice === 'function' && isBuffer(obj.slice(0, 0))\n}\n//# sourceMappingURL=data:application/json;charset=utf-8;base64,eyJ2ZXJzaW9uIjozLCJzb3VyY2VzIjpbIndlYnBhY2s6Ly8vLi4vfi9pcy1idWZmZXIvaW5kZXguanM/NzQ1MCJdLCJuYW1lcyI6W10sIm1hcHBpbmdzIjoiQUFBQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7O0FBRUE7QUFDQTtBQUNBO0FBQ0E7QUFDQTs7QUFFQTtBQUNBO0FBQ0E7O0FBRUE7QUFDQTtBQUNBO0FBQ0EiLCJmaWxlIjoiNS5qcyIsInNvdXJjZXNDb250ZW50IjpbIi8qIVxuICogRGV0ZXJtaW5lIGlmIGFuIG9iamVjdCBpcyBhIEJ1ZmZlclxuICpcbiAqIEBhdXRob3IgICBGZXJvc3MgQWJvdWtoYWRpamVoIDxmZXJvc3NAZmVyb3NzLm9yZz4gPGh0dHA6Ly9mZXJvc3Mub3JnPlxuICogQGxpY2Vuc2UgIE1JVFxuICovXG5cbi8vIFRoZSBfaXNCdWZmZXIgY2hlY2sgaXMgZm9yIFNhZmFyaSA1LTcgc3VwcG9ydCwgYmVjYXVzZSBpdCdzIG1pc3Npbmdcbi8vIE9iamVjdC5wcm90b3R5cGUuY29uc3RydWN0b3IuIFJlbW92ZSB0aGlzIGV2ZW50dWFsbHlcbm1vZHVsZS5leHBvcnRzID0gZnVuY3Rpb24gKG9iaikge1xuICByZXR1cm4gb2JqICE9IG51bGwgJiYgKGlzQnVmZmVyKG9iaikgfHwgaXNTbG93QnVmZmVyKG9iaikgfHwgISFvYmouX2lzQnVmZmVyKVxufVxuXG5mdW5jdGlvbiBpc0J1ZmZlciAob2JqKSB7XG4gIHJldHVybiAhIW9iai5jb25zdHJ1Y3RvciAmJiB0eXBlb2Ygb2JqLmNvbnN0cnVjdG9yLmlzQnVmZmVyID09PSAnZnVuY3Rpb24nICYmIG9iai5jb25zdHJ1Y3Rvci5pc0J1ZmZlcihvYmopXG59XG5cbi8vIEZvciBOb2RlIHYwLjEwIHN1cHBvcnQuIFJlbW92ZSB0aGlzIGV2ZW50dWFsbHkuXG5mdW5jdGlvbiBpc1Nsb3dCdWZmZXIgKG9iaikge1xuICByZXR1cm4gdHlwZW9mIG9iai5yZWFkRmxvYXRMRSA9PT0gJ2Z1bmN0aW9uJyAmJiB0eXBlb2Ygb2JqLnNsaWNlID09PSAnZnVuY3Rpb24nICYmIGlzQnVmZmVyKG9iai5zbGljZSgwLCAwKSlcbn1cblxuXG5cbi8vLy8vLy8vLy8vLy8vLy8vL1xuLy8gV0VCUEFDSyBGT09URVJcbi8vIC4uL34vaXMtYnVmZmVyL2luZGV4LmpzXG4vLyBtb2R1bGUgaWQgPSA1XG4vLyBtb2R1bGUgY2h1bmtzID0gMCJdLCJzb3VyY2VSb290IjoiIn0=");
+	/*!
+	 * Determine if an object is a Buffer
+	 *
+	 * @author   Feross Aboukhadijeh <feross@feross.org> <http://feross.org>
+	 * @license  MIT
+	 */
+	
+	// The _isBuffer check is for Safari 5-7 support, because it's missing
+	// Object.prototype.constructor. Remove this eventually
+	module.exports = function (obj) {
+	  return obj != null && (isBuffer(obj) || isSlowBuffer(obj) || !!obj._isBuffer)
+	}
+	
+	function isBuffer (obj) {
+	  return !!obj.constructor && typeof obj.constructor.isBuffer === 'function' && obj.constructor.isBuffer(obj)
+	}
+	
+	// For Node v0.10 support. Remove this eventually.
+	function isSlowBuffer (obj) {
+	  return typeof obj.readFloatLE === 'function' && typeof obj.slice === 'function' && isBuffer(obj.slice(0, 0))
+	}
+
 
 /***/ },
 /* 6 */
 /***/ function(module, exports, __webpack_require__) {
 
-	eval("\"use strict\"\n\nvar compile = __webpack_require__(7)\n\nvar EmptyProc = {\n  body: \"\",\n  args: [],\n  thisVars: [],\n  localVars: []\n}\n\nfunction fixup(x) {\n  if(!x) {\n    return EmptyProc\n  }\n  for(var i=0; i<x.args.length; ++i) {\n    var a = x.args[i]\n    if(i === 0) {\n      x.args[i] = {name: a, lvalue:true, rvalue: !!x.rvalue, count:x.count||1 }\n    } else {\n      x.args[i] = {name: a, lvalue:false, rvalue:true, count: 1}\n    }\n  }\n  if(!x.thisVars) {\n    x.thisVars = []\n  }\n  if(!x.localVars) {\n    x.localVars = []\n  }\n  return x\n}\n\nfunction pcompile(user_args) {\n  return compile({\n    args:     user_args.args,\n    pre:      fixup(user_args.pre),\n    body:     fixup(user_args.body),\n    post:     fixup(user_args.proc),\n    funcName: user_args.funcName\n  })\n}\n\nfunction makeOp(user_args) {\n  var args = []\n  for(var i=0; i<user_args.args.length; ++i) {\n    args.push(\"a\"+i)\n  }\n  var wrapper = new Function(\"P\", [\n    \"return function \", user_args.funcName, \"_ndarrayops(\", args.join(\",\"), \") {P(\", args.join(\",\"), \");return a0}\"\n  ].join(\"\"))\n  return wrapper(pcompile(user_args))\n}\n\nvar assign_ops = {\n  add:  \"+\",\n  sub:  \"-\",\n  mul:  \"*\",\n  div:  \"/\",\n  mod:  \"%\",\n  band: \"&\",\n  bor:  \"|\",\n  bxor: \"^\",\n  lshift: \"<<\",\n  rshift: \">>\",\n  rrshift: \">>>\"\n}\n;(function(){\n  for(var id in assign_ops) {\n    var op = assign_ops[id]\n    exports[id] = makeOp({\n      args: [\"array\",\"array\",\"array\"],\n      body: {args:[\"a\",\"b\",\"c\"],\n             body: \"a=b\"+op+\"c\"},\n      funcName: id\n    })\n    exports[id+\"eq\"] = makeOp({\n      args: [\"array\",\"array\"],\n      body: {args:[\"a\",\"b\"],\n             body:\"a\"+op+\"=b\"},\n      rvalue: true,\n      funcName: id+\"eq\"\n    })\n    exports[id+\"s\"] = makeOp({\n      args: [\"array\", \"array\", \"scalar\"],\n      body: {args:[\"a\",\"b\",\"s\"],\n             body:\"a=b\"+op+\"s\"},\n      funcName: id+\"s\"\n    })\n    exports[id+\"seq\"] = makeOp({\n      args: [\"array\",\"scalar\"],\n      body: {args:[\"a\",\"s\"],\n             body:\"a\"+op+\"=s\"},\n      rvalue: true,\n      funcName: id+\"seq\"\n    })\n  }\n})();\n\nvar unary_ops = {\n  not: \"!\",\n  bnot: \"~\",\n  neg: \"-\",\n  recip: \"1.0/\"\n}\n;(function(){\n  for(var id in unary_ops) {\n    var op = unary_ops[id]\n    exports[id] = makeOp({\n      args: [\"array\", \"array\"],\n      body: {args:[\"a\",\"b\"],\n             body:\"a=\"+op+\"b\"},\n      funcName: id\n    })\n    exports[id+\"eq\"] = makeOp({\n      args: [\"array\"],\n      body: {args:[\"a\"],\n             body:\"a=\"+op+\"a\"},\n      rvalue: true,\n      count: 2,\n      funcName: id+\"eq\"\n    })\n  }\n})();\n\nvar binary_ops = {\n  and: \"&&\",\n  or: \"||\",\n  eq: \"===\",\n  neq: \"!==\",\n  lt: \"<\",\n  gt: \">\",\n  leq: \"<=\",\n  geq: \">=\"\n}\n;(function() {\n  for(var id in binary_ops) {\n    var op = binary_ops[id]\n    exports[id] = makeOp({\n      args: [\"array\",\"array\",\"array\"],\n      body: {args:[\"a\", \"b\", \"c\"],\n             body:\"a=b\"+op+\"c\"},\n      funcName: id\n    })\n    exports[id+\"s\"] = makeOp({\n      args: [\"array\",\"array\",\"scalar\"],\n      body: {args:[\"a\", \"b\", \"s\"],\n             body:\"a=b\"+op+\"s\"},\n      funcName: id+\"s\"\n    })\n    exports[id+\"eq\"] = makeOp({\n      args: [\"array\", \"array\"],\n      body: {args:[\"a\", \"b\"],\n             body:\"a=a\"+op+\"b\"},\n      rvalue:true,\n      count:2,\n      funcName: id+\"eq\"\n    })\n    exports[id+\"seq\"] = makeOp({\n      args: [\"array\", \"scalar\"],\n      body: {args:[\"a\",\"s\"],\n             body:\"a=a\"+op+\"s\"},\n      rvalue:true,\n      count:2,\n      funcName: id+\"seq\"\n    })\n  }\n})();\n\nvar math_unary = [\n  \"abs\",\n  \"acos\",\n  \"asin\",\n  \"atan\",\n  \"ceil\",\n  \"cos\",\n  \"exp\",\n  \"floor\",\n  \"log\",\n  \"round\",\n  \"sin\",\n  \"sqrt\",\n  \"tan\"\n]\n;(function() {\n  for(var i=0; i<math_unary.length; ++i) {\n    var f = math_unary[i]\n    exports[f] = makeOp({\n                    args: [\"array\", \"array\"],\n                    pre: {args:[], body:\"this_f=Math.\"+f, thisVars:[\"this_f\"]},\n                    body: {args:[\"a\",\"b\"], body:\"a=this_f(b)\", thisVars:[\"this_f\"]},\n                    funcName: f\n                  })\n    exports[f+\"eq\"] = makeOp({\n                      args: [\"array\"],\n                      pre: {args:[], body:\"this_f=Math.\"+f, thisVars:[\"this_f\"]},\n                      body: {args: [\"a\"], body:\"a=this_f(a)\", thisVars:[\"this_f\"]},\n                      rvalue: true,\n                      count: 2,\n                      funcName: f+\"eq\"\n                    })\n  }\n})();\n\nvar math_comm = [\n  \"max\",\n  \"min\",\n  \"atan2\",\n  \"pow\"\n]\n;(function(){\n  for(var i=0; i<math_comm.length; ++i) {\n    var f= math_comm[i]\n    exports[f] = makeOp({\n                  args:[\"array\", \"array\", \"array\"],\n                  pre: {args:[], body:\"this_f=Math.\"+f, thisVars:[\"this_f\"]},\n                  body: {args:[\"a\",\"b\",\"c\"], body:\"a=this_f(b,c)\", thisVars:[\"this_f\"]},\n                  funcName: f\n                })\n    exports[f+\"s\"] = makeOp({\n                  args:[\"array\", \"array\", \"scalar\"],\n                  pre: {args:[], body:\"this_f=Math.\"+f, thisVars:[\"this_f\"]},\n                  body: {args:[\"a\",\"b\",\"c\"], body:\"a=this_f(b,c)\", thisVars:[\"this_f\"]},\n                  funcName: f+\"s\"\n                  })\n    exports[f+\"eq\"] = makeOp({ args:[\"array\", \"array\"],\n                  pre: {args:[], body:\"this_f=Math.\"+f, thisVars:[\"this_f\"]},\n                  body: {args:[\"a\",\"b\"], body:\"a=this_f(a,b)\", thisVars:[\"this_f\"]},\n                  rvalue: true,\n                  count: 2,\n                  funcName: f+\"eq\"\n                  })\n    exports[f+\"seq\"] = makeOp({ args:[\"array\", \"scalar\"],\n                  pre: {args:[], body:\"this_f=Math.\"+f, thisVars:[\"this_f\"]},\n                  body: {args:[\"a\",\"b\"], body:\"a=this_f(a,b)\", thisVars:[\"this_f\"]},\n                  rvalue:true,\n                  count:2,\n                  funcName: f+\"seq\"\n                  })\n  }\n})();\n\nvar math_noncomm = [\n  \"atan2\",\n  \"pow\"\n]\n;(function(){\n  for(var i=0; i<math_noncomm.length; ++i) {\n    var f= math_noncomm[i]\n    exports[f+\"op\"] = makeOp({\n                  args:[\"array\", \"array\", \"array\"],\n                  pre: {args:[], body:\"this_f=Math.\"+f, thisVars:[\"this_f\"]},\n                  body: {args:[\"a\",\"b\",\"c\"], body:\"a=this_f(c,b)\", thisVars:[\"this_f\"]},\n                  funcName: f+\"op\"\n                })\n    exports[f+\"ops\"] = makeOp({\n                  args:[\"array\", \"array\", \"scalar\"],\n                  pre: {args:[], body:\"this_f=Math.\"+f, thisVars:[\"this_f\"]},\n                  body: {args:[\"a\",\"b\",\"c\"], body:\"a=this_f(c,b)\", thisVars:[\"this_f\"]},\n                  funcName: f+\"ops\"\n                  })\n    exports[f+\"opeq\"] = makeOp({ args:[\"array\", \"array\"],\n                  pre: {args:[], body:\"this_f=Math.\"+f, thisVars:[\"this_f\"]},\n                  body: {args:[\"a\",\"b\"], body:\"a=this_f(b,a)\", thisVars:[\"this_f\"]},\n                  rvalue: true,\n                  count: 2,\n                  funcName: f+\"opeq\"\n                  })\n    exports[f+\"opseq\"] = makeOp({ args:[\"array\", \"scalar\"],\n                  pre: {args:[], body:\"this_f=Math.\"+f, thisVars:[\"this_f\"]},\n                  body: {args:[\"a\",\"b\"], body:\"a=this_f(b,a)\", thisVars:[\"this_f\"]},\n                  rvalue:true,\n                  count:2,\n                  funcName: f+\"opseq\"\n                  })\n  }\n})();\n\nexports.any = compile({\n  args:[\"array\"],\n  pre: EmptyProc,\n  body: {args:[{name:\"a\", lvalue:false, rvalue:true, count:1}], body: \"if(a){return true}\", localVars: [], thisVars: []},\n  post: {args:[], localVars:[], thisVars:[], body:\"return false\"},\n  funcName: \"any\"\n})\n\nexports.all = compile({\n  args:[\"array\"],\n  pre: EmptyProc,\n  body: {args:[{name:\"x\", lvalue:false, rvalue:true, count:1}], body: \"if(!x){return false}\", localVars: [], thisVars: []},\n  post: {args:[], localVars:[], thisVars:[], body:\"return true\"},\n  funcName: \"all\"\n})\n\nexports.sum = compile({\n  args:[\"array\"],\n  pre: {args:[], localVars:[], thisVars:[\"this_s\"], body:\"this_s=0\"},\n  body: {args:[{name:\"a\", lvalue:false, rvalue:true, count:1}], body: \"this_s+=a\", localVars: [], thisVars: [\"this_s\"]},\n  post: {args:[], localVars:[], thisVars:[\"this_s\"], body:\"return this_s\"},\n  funcName: \"sum\"\n})\n\nexports.prod = compile({\n  args:[\"array\"],\n  pre: {args:[], localVars:[], thisVars:[\"this_s\"], body:\"this_s=1\"},\n  body: {args:[{name:\"a\", lvalue:false, rvalue:true, count:1}], body: \"this_s*=a\", localVars: [], thisVars: [\"this_s\"]},\n  post: {args:[], localVars:[], thisVars:[\"this_s\"], body:\"return this_s\"},\n  funcName: \"prod\"\n})\n\nexports.norm2squared = compile({\n  args:[\"array\"],\n  pre: {args:[], localVars:[], thisVars:[\"this_s\"], body:\"this_s=0\"},\n  body: {args:[{name:\"a\", lvalue:false, rvalue:true, count:2}], body: \"this_s+=a*a\", localVars: [], thisVars: [\"this_s\"]},\n  post: {args:[], localVars:[], thisVars:[\"this_s\"], body:\"return this_s\"},\n  funcName: \"norm2squared\"\n})\n  \nexports.norm2 = compile({\n  args:[\"array\"],\n  pre: {args:[], localVars:[], thisVars:[\"this_s\"], body:\"this_s=0\"},\n  body: {args:[{name:\"a\", lvalue:false, rvalue:true, count:2}], body: \"this_s+=a*a\", localVars: [], thisVars: [\"this_s\"]},\n  post: {args:[], localVars:[], thisVars:[\"this_s\"], body:\"return Math.sqrt(this_s)\"},\n  funcName: \"norm2\"\n})\n  \n\nexports.norminf = compile({\n  args:[\"array\"],\n  pre: {args:[], localVars:[], thisVars:[\"this_s\"], body:\"this_s=0\"},\n  body: {args:[{name:\"a\", lvalue:false, rvalue:true, count:4}], body:\"if(-a>this_s){this_s=-a}else if(a>this_s){this_s=a}\", localVars: [], thisVars: [\"this_s\"]},\n  post: {args:[], localVars:[], thisVars:[\"this_s\"], body:\"return this_s\"},\n  funcName: \"norminf\"\n})\n\nexports.norm1 = compile({\n  args:[\"array\"],\n  pre: {args:[], localVars:[], thisVars:[\"this_s\"], body:\"this_s=0\"},\n  body: {args:[{name:\"a\", lvalue:false, rvalue:true, count:3}], body: \"this_s+=a<0?-a:a\", localVars: [], thisVars: [\"this_s\"]},\n  post: {args:[], localVars:[], thisVars:[\"this_s\"], body:\"return this_s\"},\n  funcName: \"norm1\"\n})\n\nexports.sup = compile({\n  args: [ \"array\" ],\n  pre:\n   { body: \"this_h=-Infinity\",\n     args: [],\n     thisVars: [ \"this_h\" ],\n     localVars: [] },\n  body:\n   { body: \"if(_inline_1_arg0_>this_h)this_h=_inline_1_arg0_\",\n     args: [{\"name\":\"_inline_1_arg0_\",\"lvalue\":false,\"rvalue\":true,\"count\":2} ],\n     thisVars: [ \"this_h\" ],\n     localVars: [] },\n  post:\n   { body: \"return this_h\",\n     args: [],\n     thisVars: [ \"this_h\" ],\n     localVars: [] }\n })\n\nexports.inf = compile({\n  args: [ \"array\" ],\n  pre:\n   { body: \"this_h=Infinity\",\n     args: [],\n     thisVars: [ \"this_h\" ],\n     localVars: [] },\n  body:\n   { body: \"if(_inline_1_arg0_<this_h)this_h=_inline_1_arg0_\",\n     args: [{\"name\":\"_inline_1_arg0_\",\"lvalue\":false,\"rvalue\":true,\"count\":2} ],\n     thisVars: [ \"this_h\" ],\n     localVars: [] },\n  post:\n   { body: \"return this_h\",\n     args: [],\n     thisVars: [ \"this_h\" ],\n     localVars: [] }\n })\n\nexports.argmin = compile({\n  args:[\"index\",\"array\",\"shape\"],\n  pre:{\n    body:\"{this_v=Infinity;this_i=_inline_0_arg2_.slice(0)}\",\n    args:[\n      {name:\"_inline_0_arg0_\",lvalue:false,rvalue:false,count:0},\n      {name:\"_inline_0_arg1_\",lvalue:false,rvalue:false,count:0},\n      {name:\"_inline_0_arg2_\",lvalue:false,rvalue:true,count:1}\n      ],\n    thisVars:[\"this_i\",\"this_v\"],\n    localVars:[]},\n  body:{\n    body:\"{if(_inline_1_arg1_<this_v){this_v=_inline_1_arg1_;for(var _inline_1_k=0;_inline_1_k<_inline_1_arg0_.length;++_inline_1_k){this_i[_inline_1_k]=_inline_1_arg0_[_inline_1_k]}}}\",\n    args:[\n      {name:\"_inline_1_arg0_\",lvalue:false,rvalue:true,count:2},\n      {name:\"_inline_1_arg1_\",lvalue:false,rvalue:true,count:2}],\n    thisVars:[\"this_i\",\"this_v\"],\n    localVars:[\"_inline_1_k\"]},\n  post:{\n    body:\"{return this_i}\",\n    args:[],\n    thisVars:[\"this_i\"],\n    localVars:[]}\n})\n\nexports.argmax = compile({\n  args:[\"index\",\"array\",\"shape\"],\n  pre:{\n    body:\"{this_v=-Infinity;this_i=_inline_0_arg2_.slice(0)}\",\n    args:[\n      {name:\"_inline_0_arg0_\",lvalue:false,rvalue:false,count:0},\n      {name:\"_inline_0_arg1_\",lvalue:false,rvalue:false,count:0},\n      {name:\"_inline_0_arg2_\",lvalue:false,rvalue:true,count:1}\n      ],\n    thisVars:[\"this_i\",\"this_v\"],\n    localVars:[]},\n  body:{\n    body:\"{if(_inline_1_arg1_>this_v){this_v=_inline_1_arg1_;for(var _inline_1_k=0;_inline_1_k<_inline_1_arg0_.length;++_inline_1_k){this_i[_inline_1_k]=_inline_1_arg0_[_inline_1_k]}}}\",\n    args:[\n      {name:\"_inline_1_arg0_\",lvalue:false,rvalue:true,count:2},\n      {name:\"_inline_1_arg1_\",lvalue:false,rvalue:true,count:2}],\n    thisVars:[\"this_i\",\"this_v\"],\n    localVars:[\"_inline_1_k\"]},\n  post:{\n    body:\"{return this_i}\",\n    args:[],\n    thisVars:[\"this_i\"],\n    localVars:[]}\n})  \n\nexports.random = makeOp({\n  args: [\"array\"],\n  pre: {args:[], body:\"this_f=Math.random\", thisVars:[\"this_f\"]},\n  body: {args: [\"a\"], body:\"a=this_f()\", thisVars:[\"this_f\"]},\n  funcName: \"random\"\n})\n\nexports.assign = makeOp({\n  args:[\"array\", \"array\"],\n  body: {args:[\"a\", \"b\"], body:\"a=b\"},\n  funcName: \"assign\" })\n\nexports.assigns = makeOp({\n  args:[\"array\", \"scalar\"],\n  body: {args:[\"a\", \"b\"], body:\"a=b\"},\n  funcName: \"assigns\" })\n\n\nexports.equals = compile({\n  args:[\"array\", \"array\"],\n  pre: EmptyProc,\n  body: {args:[{name:\"x\", lvalue:false, rvalue:true, count:1},\n               {name:\"y\", lvalue:false, rvalue:true, count:1}], \n        body: \"if(x!==y){return false}\", \n        localVars: [], \n        thisVars: []},\n  post: {args:[], localVars:[], thisVars:[], body:\"return true\"},\n  funcName: \"equals\"\n})\n\n\n//# sourceMappingURL=data:application/json;charset=utf-8;base64,eyJ2ZXJzaW9uIjozLCJzb3VyY2VzIjpbIndlYnBhY2s6Ly8vLi4vfi9uZGFycmF5LW9wcy9uZGFycmF5LW9wcy5qcz85MTYxIl0sIm5hbWVzIjpbXSwibWFwcGluZ3MiOiJBQUFBOztBQUVBOztBQUVBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTs7QUFFQTtBQUNBO0FBQ0E7QUFDQTtBQUNBLGNBQWMsaUJBQWlCO0FBQy9CO0FBQ0E7QUFDQSxtQkFBbUI7QUFDbkIsS0FBSztBQUNMLG1CQUFtQjtBQUNuQjtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTs7QUFFQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBLEdBQUc7QUFDSDs7QUFFQTtBQUNBO0FBQ0EsY0FBYyx5QkFBeUI7QUFDdkM7QUFDQTtBQUNBO0FBQ0EsZ0ZBQWdGLHdCQUF3QixVQUFVO0FBQ2xIO0FBQ0E7QUFDQTs7QUFFQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBLENBQUM7QUFDRDtBQUNBO0FBQ0E7QUFDQTtBQUNBLGFBQWE7QUFDYixnQ0FBZ0M7QUFDaEM7QUFDQSxLQUFLO0FBQ0w7QUFDQTtBQUNBLGFBQWE7QUFDYiw4QkFBOEI7QUFDOUI7QUFDQTtBQUNBLEtBQUs7QUFDTDtBQUNBO0FBQ0EsYUFBYTtBQUNiLCtCQUErQjtBQUMvQjtBQUNBLEtBQUs7QUFDTDtBQUNBO0FBQ0EsYUFBYTtBQUNiLDhCQUE4QjtBQUM5QjtBQUNBO0FBQ0EsS0FBSztBQUNMO0FBQ0EsQ0FBQzs7QUFFRDtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQSxDQUFDO0FBQ0Q7QUFDQTtBQUNBO0FBQ0E7QUFDQSxhQUFhO0FBQ2IsOEJBQThCO0FBQzlCO0FBQ0EsS0FBSztBQUNMO0FBQ0E7QUFDQSxhQUFhO0FBQ2IsOEJBQThCO0FBQzlCO0FBQ0E7QUFDQTtBQUNBLEtBQUs7QUFDTDtBQUNBLENBQUM7O0FBRUQ7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQSxDQUFDO0FBQ0Q7QUFDQTtBQUNBO0FBQ0E7QUFDQSxhQUFhO0FBQ2IsK0JBQStCO0FBQy9CO0FBQ0EsS0FBSztBQUNMO0FBQ0E7QUFDQSxhQUFhO0FBQ2IsK0JBQStCO0FBQy9CO0FBQ0EsS0FBSztBQUNMO0FBQ0E7QUFDQSxhQUFhO0FBQ2IsK0JBQStCO0FBQy9CO0FBQ0E7QUFDQTtBQUNBLEtBQUs7QUFDTDtBQUNBO0FBQ0EsYUFBYTtBQUNiLCtCQUErQjtBQUMvQjtBQUNBO0FBQ0E7QUFDQSxLQUFLO0FBQ0w7QUFDQSxDQUFDOztBQUVEO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBLENBQUM7QUFDRCxjQUFjLHFCQUFxQjtBQUNuQztBQUNBO0FBQ0E7QUFDQSwwQkFBMEIsb0RBQW9EO0FBQzlFLDJCQUEyQix3REFBd0Q7QUFDbkY7QUFDQSxtQkFBbUI7QUFDbkI7QUFDQTtBQUNBLDRCQUE0QixvREFBb0Q7QUFDaEYsNkJBQTZCLHFEQUFxRDtBQUNsRjtBQUNBO0FBQ0E7QUFDQSxxQkFBcUI7QUFDckI7QUFDQSxDQUFDOztBQUVEO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBLENBQUM7QUFDRCxjQUFjLG9CQUFvQjtBQUNsQztBQUNBO0FBQ0E7QUFDQSx3QkFBd0Isb0RBQW9EO0FBQzVFLHlCQUF5Qiw4REFBOEQ7QUFDdkY7QUFDQSxpQkFBaUI7QUFDakI7QUFDQTtBQUNBLHdCQUF3QixvREFBb0Q7QUFDNUUseUJBQXlCLDhEQUE4RDtBQUN2RjtBQUNBLG1CQUFtQjtBQUNuQiw4QkFBOEI7QUFDOUIsd0JBQXdCLG9EQUFvRDtBQUM1RSx5QkFBeUIsMERBQTBEO0FBQ25GO0FBQ0E7QUFDQTtBQUNBLG1CQUFtQjtBQUNuQiwrQkFBK0I7QUFDL0Isd0JBQXdCLG9EQUFvRDtBQUM1RSx5QkFBeUIsMERBQTBEO0FBQ25GO0FBQ0E7QUFDQTtBQUNBLG1CQUFtQjtBQUNuQjtBQUNBLENBQUM7O0FBRUQ7QUFDQTtBQUNBO0FBQ0E7QUFDQSxDQUFDO0FBQ0QsY0FBYyx1QkFBdUI7QUFDckM7QUFDQTtBQUNBO0FBQ0Esd0JBQXdCLG9EQUFvRDtBQUM1RSx5QkFBeUIsOERBQThEO0FBQ3ZGO0FBQ0EsaUJBQWlCO0FBQ2pCO0FBQ0E7QUFDQSx3QkFBd0Isb0RBQW9EO0FBQzVFLHlCQUF5Qiw4REFBOEQ7QUFDdkY7QUFDQSxtQkFBbUI7QUFDbkIsZ0NBQWdDO0FBQ2hDLHdCQUF3QixvREFBb0Q7QUFDNUUseUJBQXlCLDBEQUEwRDtBQUNuRjtBQUNBO0FBQ0E7QUFDQSxtQkFBbUI7QUFDbkIsaUNBQWlDO0FBQ2pDLHdCQUF3QixvREFBb0Q7QUFDNUUseUJBQXlCLDBEQUEwRDtBQUNuRjtBQUNBO0FBQ0E7QUFDQSxtQkFBbUI7QUFDbkI7QUFDQSxDQUFDOztBQUVEO0FBQ0E7QUFDQTtBQUNBLFNBQVMsT0FBTyw2Q0FBNkMsZ0JBQWdCLFlBQVksK0JBQStCO0FBQ3hILFNBQVMsd0RBQXdEO0FBQ2pFO0FBQ0EsQ0FBQzs7QUFFRDtBQUNBO0FBQ0E7QUFDQSxTQUFTLE9BQU8sNkNBQTZDLGlCQUFpQixhQUFhLCtCQUErQjtBQUMxSCxTQUFTLHVEQUF1RDtBQUNoRTtBQUNBLENBQUM7O0FBRUQ7QUFDQTtBQUNBLFFBQVEsNERBQTREO0FBQ3BFLFNBQVMsT0FBTyw2Q0FBNkMsMERBQTBEO0FBQ3ZILFNBQVMsaUVBQWlFO0FBQzFFO0FBQ0EsQ0FBQzs7QUFFRDtBQUNBO0FBQ0EsUUFBUSw0REFBNEQ7QUFDcEUsU0FBUyxPQUFPLDZDQUE2QywwREFBMEQ7QUFDdkgsU0FBUyxpRUFBaUU7QUFDMUU7QUFDQSxDQUFDOztBQUVEO0FBQ0E7QUFDQSxRQUFRLDREQUE0RDtBQUNwRSxTQUFTLE9BQU8sNkNBQTZDLDREQUE0RDtBQUN6SCxTQUFTLGlFQUFpRTtBQUMxRTtBQUNBLENBQUM7O0FBRUQ7QUFDQTtBQUNBLFFBQVEsNERBQTREO0FBQ3BFLFNBQVMsT0FBTyw2Q0FBNkMsNERBQTREO0FBQ3pILFNBQVMsNEVBQTRFO0FBQ3JGO0FBQ0EsQ0FBQzs7O0FBR0Q7QUFDQTtBQUNBLFFBQVEsNERBQTREO0FBQ3BFLFNBQVMsT0FBTyw2Q0FBNkMsdUJBQXVCLFVBQVUsa0JBQWtCLFNBQVMsdUNBQXVDO0FBQ2hLLFNBQVMsaUVBQWlFO0FBQzFFO0FBQ0EsQ0FBQzs7QUFFRDtBQUNBO0FBQ0EsUUFBUSw0REFBNEQ7QUFDcEUsU0FBUyxPQUFPLDZDQUE2QyxpRUFBaUU7QUFDOUgsU0FBUyxpRUFBaUU7QUFDMUU7QUFDQSxDQUFDOztBQUVEO0FBQ0E7QUFDQTtBQUNBLElBQUk7QUFDSjtBQUNBO0FBQ0Esb0JBQW9CO0FBQ3BCO0FBQ0EsSUFBSTtBQUNKLGFBQWEsZ0VBQWdFO0FBQzdFO0FBQ0Esb0JBQW9CO0FBQ3BCO0FBQ0EsSUFBSTtBQUNKO0FBQ0E7QUFDQTtBQUNBLEVBQUU7O0FBRUY7QUFDQTtBQUNBO0FBQ0EsSUFBSTtBQUNKO0FBQ0E7QUFDQSxvQkFBb0I7QUFDcEI7QUFDQSxJQUFJO0FBQ0osYUFBYSxnRUFBZ0U7QUFDN0U7QUFDQSxvQkFBb0I7QUFDcEI7QUFDQSxJQUFJO0FBQ0o7QUFDQTtBQUNBO0FBQ0EsRUFBRTs7QUFFRjtBQUNBO0FBQ0E7QUFDQSxXQUFXLGdCQUFnQixnQ0FBZ0M7QUFDM0Q7QUFDQSxPQUFPLHlEQUF5RDtBQUNoRSxPQUFPLHlEQUF5RDtBQUNoRSxPQUFPO0FBQ1A7QUFDQTtBQUNBLGlCQUFpQjtBQUNqQjtBQUNBLFdBQVcsMkJBQTJCLHVCQUF1QixzQkFBc0IsbUNBQW1DLGVBQWUsbURBQW1EO0FBQ3hMO0FBQ0EsT0FBTyx3REFBd0Q7QUFDL0QsT0FBTyx3REFBd0Q7QUFDL0Q7QUFDQSw4QkFBOEI7QUFDOUI7QUFDQSxXQUFXLGNBQWM7QUFDekI7QUFDQTtBQUNBO0FBQ0EsQ0FBQzs7QUFFRDtBQUNBO0FBQ0E7QUFDQSxXQUFXLGlCQUFpQixnQ0FBZ0M7QUFDNUQ7QUFDQSxPQUFPLHlEQUF5RDtBQUNoRSxPQUFPLHlEQUF5RDtBQUNoRSxPQUFPO0FBQ1A7QUFDQTtBQUNBLGlCQUFpQjtBQUNqQjtBQUNBLFdBQVcsMkJBQTJCLHVCQUF1QixzQkFBc0IsbUNBQW1DLGVBQWUsbURBQW1EO0FBQ3hMO0FBQ0EsT0FBTyx3REFBd0Q7QUFDL0QsT0FBTyx3REFBd0Q7QUFDL0Q7QUFDQSw4QkFBOEI7QUFDOUI7QUFDQSxXQUFXLGNBQWM7QUFDekI7QUFDQTtBQUNBO0FBQ0EsQ0FBQzs7QUFFRDtBQUNBO0FBQ0EsUUFBUSx3REFBd0Q7QUFDaEUsU0FBUyxvREFBb0Q7QUFDN0Q7QUFDQSxDQUFDOztBQUVEO0FBQ0E7QUFDQSxTQUFTLDRCQUE0QjtBQUNyQyxzQkFBc0I7O0FBRXRCO0FBQ0E7QUFDQSxTQUFTLDRCQUE0QjtBQUNyQyx1QkFBdUI7OztBQUd2QjtBQUNBO0FBQ0E7QUFDQSxTQUFTLE9BQU8sNkNBQTZDO0FBQzdELGdCQUFnQiw2Q0FBNkM7QUFDN0QseUJBQXlCLGFBQWE7QUFDdEM7QUFDQSxxQkFBcUI7QUFDckIsU0FBUyx1REFBdUQ7QUFDaEU7QUFDQSxDQUFDIiwiZmlsZSI6IjYuanMiLCJzb3VyY2VzQ29udGVudCI6WyJcInVzZSBzdHJpY3RcIlxuXG52YXIgY29tcGlsZSA9IHJlcXVpcmUoXCJjd2lzZS1jb21waWxlclwiKVxuXG52YXIgRW1wdHlQcm9jID0ge1xuICBib2R5OiBcIlwiLFxuICBhcmdzOiBbXSxcbiAgdGhpc1ZhcnM6IFtdLFxuICBsb2NhbFZhcnM6IFtdXG59XG5cbmZ1bmN0aW9uIGZpeHVwKHgpIHtcbiAgaWYoIXgpIHtcbiAgICByZXR1cm4gRW1wdHlQcm9jXG4gIH1cbiAgZm9yKHZhciBpPTA7IGk8eC5hcmdzLmxlbmd0aDsgKytpKSB7XG4gICAgdmFyIGEgPSB4LmFyZ3NbaV1cbiAgICBpZihpID09PSAwKSB7XG4gICAgICB4LmFyZ3NbaV0gPSB7bmFtZTogYSwgbHZhbHVlOnRydWUsIHJ2YWx1ZTogISF4LnJ2YWx1ZSwgY291bnQ6eC5jb3VudHx8MSB9XG4gICAgfSBlbHNlIHtcbiAgICAgIHguYXJnc1tpXSA9IHtuYW1lOiBhLCBsdmFsdWU6ZmFsc2UsIHJ2YWx1ZTp0cnVlLCBjb3VudDogMX1cbiAgICB9XG4gIH1cbiAgaWYoIXgudGhpc1ZhcnMpIHtcbiAgICB4LnRoaXNWYXJzID0gW11cbiAgfVxuICBpZigheC5sb2NhbFZhcnMpIHtcbiAgICB4LmxvY2FsVmFycyA9IFtdXG4gIH1cbiAgcmV0dXJuIHhcbn1cblxuZnVuY3Rpb24gcGNvbXBpbGUodXNlcl9hcmdzKSB7XG4gIHJldHVybiBjb21waWxlKHtcbiAgICBhcmdzOiAgICAgdXNlcl9hcmdzLmFyZ3MsXG4gICAgcHJlOiAgICAgIGZpeHVwKHVzZXJfYXJncy5wcmUpLFxuICAgIGJvZHk6ICAgICBmaXh1cCh1c2VyX2FyZ3MuYm9keSksXG4gICAgcG9zdDogICAgIGZpeHVwKHVzZXJfYXJncy5wcm9jKSxcbiAgICBmdW5jTmFtZTogdXNlcl9hcmdzLmZ1bmNOYW1lXG4gIH0pXG59XG5cbmZ1bmN0aW9uIG1ha2VPcCh1c2VyX2FyZ3MpIHtcbiAgdmFyIGFyZ3MgPSBbXVxuICBmb3IodmFyIGk9MDsgaTx1c2VyX2FyZ3MuYXJncy5sZW5ndGg7ICsraSkge1xuICAgIGFyZ3MucHVzaChcImFcIitpKVxuICB9XG4gIHZhciB3cmFwcGVyID0gbmV3IEZ1bmN0aW9uKFwiUFwiLCBbXG4gICAgXCJyZXR1cm4gZnVuY3Rpb24gXCIsIHVzZXJfYXJncy5mdW5jTmFtZSwgXCJfbmRhcnJheW9wcyhcIiwgYXJncy5qb2luKFwiLFwiKSwgXCIpIHtQKFwiLCBhcmdzLmpvaW4oXCIsXCIpLCBcIik7cmV0dXJuIGEwfVwiXG4gIF0uam9pbihcIlwiKSlcbiAgcmV0dXJuIHdyYXBwZXIocGNvbXBpbGUodXNlcl9hcmdzKSlcbn1cblxudmFyIGFzc2lnbl9vcHMgPSB7XG4gIGFkZDogIFwiK1wiLFxuICBzdWI6ICBcIi1cIixcbiAgbXVsOiAgXCIqXCIsXG4gIGRpdjogIFwiL1wiLFxuICBtb2Q6ICBcIiVcIixcbiAgYmFuZDogXCImXCIsXG4gIGJvcjogIFwifFwiLFxuICBieG9yOiBcIl5cIixcbiAgbHNoaWZ0OiBcIjw8XCIsXG4gIHJzaGlmdDogXCI+PlwiLFxuICBycnNoaWZ0OiBcIj4+PlwiXG59XG47KGZ1bmN0aW9uKCl7XG4gIGZvcih2YXIgaWQgaW4gYXNzaWduX29wcykge1xuICAgIHZhciBvcCA9IGFzc2lnbl9vcHNbaWRdXG4gICAgZXhwb3J0c1tpZF0gPSBtYWtlT3Aoe1xuICAgICAgYXJnczogW1wiYXJyYXlcIixcImFycmF5XCIsXCJhcnJheVwiXSxcbiAgICAgIGJvZHk6IHthcmdzOltcImFcIixcImJcIixcImNcIl0sXG4gICAgICAgICAgICAgYm9keTogXCJhPWJcIitvcCtcImNcIn0sXG4gICAgICBmdW5jTmFtZTogaWRcbiAgICB9KVxuICAgIGV4cG9ydHNbaWQrXCJlcVwiXSA9IG1ha2VPcCh7XG4gICAgICBhcmdzOiBbXCJhcnJheVwiLFwiYXJyYXlcIl0sXG4gICAgICBib2R5OiB7YXJnczpbXCJhXCIsXCJiXCJdLFxuICAgICAgICAgICAgIGJvZHk6XCJhXCIrb3ArXCI9YlwifSxcbiAgICAgIHJ2YWx1ZTogdHJ1ZSxcbiAgICAgIGZ1bmNOYW1lOiBpZCtcImVxXCJcbiAgICB9KVxuICAgIGV4cG9ydHNbaWQrXCJzXCJdID0gbWFrZU9wKHtcbiAgICAgIGFyZ3M6IFtcImFycmF5XCIsIFwiYXJyYXlcIiwgXCJzY2FsYXJcIl0sXG4gICAgICBib2R5OiB7YXJnczpbXCJhXCIsXCJiXCIsXCJzXCJdLFxuICAgICAgICAgICAgIGJvZHk6XCJhPWJcIitvcCtcInNcIn0sXG4gICAgICBmdW5jTmFtZTogaWQrXCJzXCJcbiAgICB9KVxuICAgIGV4cG9ydHNbaWQrXCJzZXFcIl0gPSBtYWtlT3Aoe1xuICAgICAgYXJnczogW1wiYXJyYXlcIixcInNjYWxhclwiXSxcbiAgICAgIGJvZHk6IHthcmdzOltcImFcIixcInNcIl0sXG4gICAgICAgICAgICAgYm9keTpcImFcIitvcCtcIj1zXCJ9LFxuICAgICAgcnZhbHVlOiB0cnVlLFxuICAgICAgZnVuY05hbWU6IGlkK1wic2VxXCJcbiAgICB9KVxuICB9XG59KSgpO1xuXG52YXIgdW5hcnlfb3BzID0ge1xuICBub3Q6IFwiIVwiLFxuICBibm90OiBcIn5cIixcbiAgbmVnOiBcIi1cIixcbiAgcmVjaXA6IFwiMS4wL1wiXG59XG47KGZ1bmN0aW9uKCl7XG4gIGZvcih2YXIgaWQgaW4gdW5hcnlfb3BzKSB7XG4gICAgdmFyIG9wID0gdW5hcnlfb3BzW2lkXVxuICAgIGV4cG9ydHNbaWRdID0gbWFrZU9wKHtcbiAgICAgIGFyZ3M6IFtcImFycmF5XCIsIFwiYXJyYXlcIl0sXG4gICAgICBib2R5OiB7YXJnczpbXCJhXCIsXCJiXCJdLFxuICAgICAgICAgICAgIGJvZHk6XCJhPVwiK29wK1wiYlwifSxcbiAgICAgIGZ1bmNOYW1lOiBpZFxuICAgIH0pXG4gICAgZXhwb3J0c1tpZCtcImVxXCJdID0gbWFrZU9wKHtcbiAgICAgIGFyZ3M6IFtcImFycmF5XCJdLFxuICAgICAgYm9keToge2FyZ3M6W1wiYVwiXSxcbiAgICAgICAgICAgICBib2R5OlwiYT1cIitvcCtcImFcIn0sXG4gICAgICBydmFsdWU6IHRydWUsXG4gICAgICBjb3VudDogMixcbiAgICAgIGZ1bmNOYW1lOiBpZCtcImVxXCJcbiAgICB9KVxuICB9XG59KSgpO1xuXG52YXIgYmluYXJ5X29wcyA9IHtcbiAgYW5kOiBcIiYmXCIsXG4gIG9yOiBcInx8XCIsXG4gIGVxOiBcIj09PVwiLFxuICBuZXE6IFwiIT09XCIsXG4gIGx0OiBcIjxcIixcbiAgZ3Q6IFwiPlwiLFxuICBsZXE6IFwiPD1cIixcbiAgZ2VxOiBcIj49XCJcbn1cbjsoZnVuY3Rpb24oKSB7XG4gIGZvcih2YXIgaWQgaW4gYmluYXJ5X29wcykge1xuICAgIHZhciBvcCA9IGJpbmFyeV9vcHNbaWRdXG4gICAgZXhwb3J0c1tpZF0gPSBtYWtlT3Aoe1xuICAgICAgYXJnczogW1wiYXJyYXlcIixcImFycmF5XCIsXCJhcnJheVwiXSxcbiAgICAgIGJvZHk6IHthcmdzOltcImFcIiwgXCJiXCIsIFwiY1wiXSxcbiAgICAgICAgICAgICBib2R5OlwiYT1iXCIrb3ArXCJjXCJ9LFxuICAgICAgZnVuY05hbWU6IGlkXG4gICAgfSlcbiAgICBleHBvcnRzW2lkK1wic1wiXSA9IG1ha2VPcCh7XG4gICAgICBhcmdzOiBbXCJhcnJheVwiLFwiYXJyYXlcIixcInNjYWxhclwiXSxcbiAgICAgIGJvZHk6IHthcmdzOltcImFcIiwgXCJiXCIsIFwic1wiXSxcbiAgICAgICAgICAgICBib2R5OlwiYT1iXCIrb3ArXCJzXCJ9LFxuICAgICAgZnVuY05hbWU6IGlkK1wic1wiXG4gICAgfSlcbiAgICBleHBvcnRzW2lkK1wiZXFcIl0gPSBtYWtlT3Aoe1xuICAgICAgYXJnczogW1wiYXJyYXlcIiwgXCJhcnJheVwiXSxcbiAgICAgIGJvZHk6IHthcmdzOltcImFcIiwgXCJiXCJdLFxuICAgICAgICAgICAgIGJvZHk6XCJhPWFcIitvcCtcImJcIn0sXG4gICAgICBydmFsdWU6dHJ1ZSxcbiAgICAgIGNvdW50OjIsXG4gICAgICBmdW5jTmFtZTogaWQrXCJlcVwiXG4gICAgfSlcbiAgICBleHBvcnRzW2lkK1wic2VxXCJdID0gbWFrZU9wKHtcbiAgICAgIGFyZ3M6IFtcImFycmF5XCIsIFwic2NhbGFyXCJdLFxuICAgICAgYm9keToge2FyZ3M6W1wiYVwiLFwic1wiXSxcbiAgICAgICAgICAgICBib2R5OlwiYT1hXCIrb3ArXCJzXCJ9LFxuICAgICAgcnZhbHVlOnRydWUsXG4gICAgICBjb3VudDoyLFxuICAgICAgZnVuY05hbWU6IGlkK1wic2VxXCJcbiAgICB9KVxuICB9XG59KSgpO1xuXG52YXIgbWF0aF91bmFyeSA9IFtcbiAgXCJhYnNcIixcbiAgXCJhY29zXCIsXG4gIFwiYXNpblwiLFxuICBcImF0YW5cIixcbiAgXCJjZWlsXCIsXG4gIFwiY29zXCIsXG4gIFwiZXhwXCIsXG4gIFwiZmxvb3JcIixcbiAgXCJsb2dcIixcbiAgXCJyb3VuZFwiLFxuICBcInNpblwiLFxuICBcInNxcnRcIixcbiAgXCJ0YW5cIlxuXVxuOyhmdW5jdGlvbigpIHtcbiAgZm9yKHZhciBpPTA7IGk8bWF0aF91bmFyeS5sZW5ndGg7ICsraSkge1xuICAgIHZhciBmID0gbWF0aF91bmFyeVtpXVxuICAgIGV4cG9ydHNbZl0gPSBtYWtlT3Aoe1xuICAgICAgICAgICAgICAgICAgICBhcmdzOiBbXCJhcnJheVwiLCBcImFycmF5XCJdLFxuICAgICAgICAgICAgICAgICAgICBwcmU6IHthcmdzOltdLCBib2R5OlwidGhpc19mPU1hdGguXCIrZiwgdGhpc1ZhcnM6W1widGhpc19mXCJdfSxcbiAgICAgICAgICAgICAgICAgICAgYm9keToge2FyZ3M6W1wiYVwiLFwiYlwiXSwgYm9keTpcImE9dGhpc19mKGIpXCIsIHRoaXNWYXJzOltcInRoaXNfZlwiXX0sXG4gICAgICAgICAgICAgICAgICAgIGZ1bmNOYW1lOiBmXG4gICAgICAgICAgICAgICAgICB9KVxuICAgIGV4cG9ydHNbZitcImVxXCJdID0gbWFrZU9wKHtcbiAgICAgICAgICAgICAgICAgICAgICBhcmdzOiBbXCJhcnJheVwiXSxcbiAgICAgICAgICAgICAgICAgICAgICBwcmU6IHthcmdzOltdLCBib2R5OlwidGhpc19mPU1hdGguXCIrZiwgdGhpc1ZhcnM6W1widGhpc19mXCJdfSxcbiAgICAgICAgICAgICAgICAgICAgICBib2R5OiB7YXJnczogW1wiYVwiXSwgYm9keTpcImE9dGhpc19mKGEpXCIsIHRoaXNWYXJzOltcInRoaXNfZlwiXX0sXG4gICAgICAgICAgICAgICAgICAgICAgcnZhbHVlOiB0cnVlLFxuICAgICAgICAgICAgICAgICAgICAgIGNvdW50OiAyLFxuICAgICAgICAgICAgICAgICAgICAgIGZ1bmNOYW1lOiBmK1wiZXFcIlxuICAgICAgICAgICAgICAgICAgICB9KVxuICB9XG59KSgpO1xuXG52YXIgbWF0aF9jb21tID0gW1xuICBcIm1heFwiLFxuICBcIm1pblwiLFxuICBcImF0YW4yXCIsXG4gIFwicG93XCJcbl1cbjsoZnVuY3Rpb24oKXtcbiAgZm9yKHZhciBpPTA7IGk8bWF0aF9jb21tLmxlbmd0aDsgKytpKSB7XG4gICAgdmFyIGY9IG1hdGhfY29tbVtpXVxuICAgIGV4cG9ydHNbZl0gPSBtYWtlT3Aoe1xuICAgICAgICAgICAgICAgICAgYXJnczpbXCJhcnJheVwiLCBcImFycmF5XCIsIFwiYXJyYXlcIl0sXG4gICAgICAgICAgICAgICAgICBwcmU6IHthcmdzOltdLCBib2R5OlwidGhpc19mPU1hdGguXCIrZiwgdGhpc1ZhcnM6W1widGhpc19mXCJdfSxcbiAgICAgICAgICAgICAgICAgIGJvZHk6IHthcmdzOltcImFcIixcImJcIixcImNcIl0sIGJvZHk6XCJhPXRoaXNfZihiLGMpXCIsIHRoaXNWYXJzOltcInRoaXNfZlwiXX0sXG4gICAgICAgICAgICAgICAgICBmdW5jTmFtZTogZlxuICAgICAgICAgICAgICAgIH0pXG4gICAgZXhwb3J0c1tmK1wic1wiXSA9IG1ha2VPcCh7XG4gICAgICAgICAgICAgICAgICBhcmdzOltcImFycmF5XCIsIFwiYXJyYXlcIiwgXCJzY2FsYXJcIl0sXG4gICAgICAgICAgICAgICAgICBwcmU6IHthcmdzOltdLCBib2R5OlwidGhpc19mPU1hdGguXCIrZiwgdGhpc1ZhcnM6W1widGhpc19mXCJdfSxcbiAgICAgICAgICAgICAgICAgIGJvZHk6IHthcmdzOltcImFcIixcImJcIixcImNcIl0sIGJvZHk6XCJhPXRoaXNfZihiLGMpXCIsIHRoaXNWYXJzOltcInRoaXNfZlwiXX0sXG4gICAgICAgICAgICAgICAgICBmdW5jTmFtZTogZitcInNcIlxuICAgICAgICAgICAgICAgICAgfSlcbiAgICBleHBvcnRzW2YrXCJlcVwiXSA9IG1ha2VPcCh7IGFyZ3M6W1wiYXJyYXlcIiwgXCJhcnJheVwiXSxcbiAgICAgICAgICAgICAgICAgIHByZToge2FyZ3M6W10sIGJvZHk6XCJ0aGlzX2Y9TWF0aC5cIitmLCB0aGlzVmFyczpbXCJ0aGlzX2ZcIl19LFxuICAgICAgICAgICAgICAgICAgYm9keToge2FyZ3M6W1wiYVwiLFwiYlwiXSwgYm9keTpcImE9dGhpc19mKGEsYilcIiwgdGhpc1ZhcnM6W1widGhpc19mXCJdfSxcbiAgICAgICAgICAgICAgICAgIHJ2YWx1ZTogdHJ1ZSxcbiAgICAgICAgICAgICAgICAgIGNvdW50OiAyLFxuICAgICAgICAgICAgICAgICAgZnVuY05hbWU6IGYrXCJlcVwiXG4gICAgICAgICAgICAgICAgICB9KVxuICAgIGV4cG9ydHNbZitcInNlcVwiXSA9IG1ha2VPcCh7IGFyZ3M6W1wiYXJyYXlcIiwgXCJzY2FsYXJcIl0sXG4gICAgICAgICAgICAgICAgICBwcmU6IHthcmdzOltdLCBib2R5OlwidGhpc19mPU1hdGguXCIrZiwgdGhpc1ZhcnM6W1widGhpc19mXCJdfSxcbiAgICAgICAgICAgICAgICAgIGJvZHk6IHthcmdzOltcImFcIixcImJcIl0sIGJvZHk6XCJhPXRoaXNfZihhLGIpXCIsIHRoaXNWYXJzOltcInRoaXNfZlwiXX0sXG4gICAgICAgICAgICAgICAgICBydmFsdWU6dHJ1ZSxcbiAgICAgICAgICAgICAgICAgIGNvdW50OjIsXG4gICAgICAgICAgICAgICAgICBmdW5jTmFtZTogZitcInNlcVwiXG4gICAgICAgICAgICAgICAgICB9KVxuICB9XG59KSgpO1xuXG52YXIgbWF0aF9ub25jb21tID0gW1xuICBcImF0YW4yXCIsXG4gIFwicG93XCJcbl1cbjsoZnVuY3Rpb24oKXtcbiAgZm9yKHZhciBpPTA7IGk8bWF0aF9ub25jb21tLmxlbmd0aDsgKytpKSB7XG4gICAgdmFyIGY9IG1hdGhfbm9uY29tbVtpXVxuICAgIGV4cG9ydHNbZitcIm9wXCJdID0gbWFrZU9wKHtcbiAgICAgICAgICAgICAgICAgIGFyZ3M6W1wiYXJyYXlcIiwgXCJhcnJheVwiLCBcImFycmF5XCJdLFxuICAgICAgICAgICAgICAgICAgcHJlOiB7YXJnczpbXSwgYm9keTpcInRoaXNfZj1NYXRoLlwiK2YsIHRoaXNWYXJzOltcInRoaXNfZlwiXX0sXG4gICAgICAgICAgICAgICAgICBib2R5OiB7YXJnczpbXCJhXCIsXCJiXCIsXCJjXCJdLCBib2R5OlwiYT10aGlzX2YoYyxiKVwiLCB0aGlzVmFyczpbXCJ0aGlzX2ZcIl19LFxuICAgICAgICAgICAgICAgICAgZnVuY05hbWU6IGYrXCJvcFwiXG4gICAgICAgICAgICAgICAgfSlcbiAgICBleHBvcnRzW2YrXCJvcHNcIl0gPSBtYWtlT3Aoe1xuICAgICAgICAgICAgICAgICAgYXJnczpbXCJhcnJheVwiLCBcImFycmF5XCIsIFwic2NhbGFyXCJdLFxuICAgICAgICAgICAgICAgICAgcHJlOiB7YXJnczpbXSwgYm9keTpcInRoaXNfZj1NYXRoLlwiK2YsIHRoaXNWYXJzOltcInRoaXNfZlwiXX0sXG4gICAgICAgICAgICAgICAgICBib2R5OiB7YXJnczpbXCJhXCIsXCJiXCIsXCJjXCJdLCBib2R5OlwiYT10aGlzX2YoYyxiKVwiLCB0aGlzVmFyczpbXCJ0aGlzX2ZcIl19LFxuICAgICAgICAgICAgICAgICAgZnVuY05hbWU6IGYrXCJvcHNcIlxuICAgICAgICAgICAgICAgICAgfSlcbiAgICBleHBvcnRzW2YrXCJvcGVxXCJdID0gbWFrZU9wKHsgYXJnczpbXCJhcnJheVwiLCBcImFycmF5XCJdLFxuICAgICAgICAgICAgICAgICAgcHJlOiB7YXJnczpbXSwgYm9keTpcInRoaXNfZj1NYXRoLlwiK2YsIHRoaXNWYXJzOltcInRoaXNfZlwiXX0sXG4gICAgICAgICAgICAgICAgICBib2R5OiB7YXJnczpbXCJhXCIsXCJiXCJdLCBib2R5OlwiYT10aGlzX2YoYixhKVwiLCB0aGlzVmFyczpbXCJ0aGlzX2ZcIl19LFxuICAgICAgICAgICAgICAgICAgcnZhbHVlOiB0cnVlLFxuICAgICAgICAgICAgICAgICAgY291bnQ6IDIsXG4gICAgICAgICAgICAgICAgICBmdW5jTmFtZTogZitcIm9wZXFcIlxuICAgICAgICAgICAgICAgICAgfSlcbiAgICBleHBvcnRzW2YrXCJvcHNlcVwiXSA9IG1ha2VPcCh7IGFyZ3M6W1wiYXJyYXlcIiwgXCJzY2FsYXJcIl0sXG4gICAgICAgICAgICAgICAgICBwcmU6IHthcmdzOltdLCBib2R5OlwidGhpc19mPU1hdGguXCIrZiwgdGhpc1ZhcnM6W1widGhpc19mXCJdfSxcbiAgICAgICAgICAgICAgICAgIGJvZHk6IHthcmdzOltcImFcIixcImJcIl0sIGJvZHk6XCJhPXRoaXNfZihiLGEpXCIsIHRoaXNWYXJzOltcInRoaXNfZlwiXX0sXG4gICAgICAgICAgICAgICAgICBydmFsdWU6dHJ1ZSxcbiAgICAgICAgICAgICAgICAgIGNvdW50OjIsXG4gICAgICAgICAgICAgICAgICBmdW5jTmFtZTogZitcIm9wc2VxXCJcbiAgICAgICAgICAgICAgICAgIH0pXG4gIH1cbn0pKCk7XG5cbmV4cG9ydHMuYW55ID0gY29tcGlsZSh7XG4gIGFyZ3M6W1wiYXJyYXlcIl0sXG4gIHByZTogRW1wdHlQcm9jLFxuICBib2R5OiB7YXJnczpbe25hbWU6XCJhXCIsIGx2YWx1ZTpmYWxzZSwgcnZhbHVlOnRydWUsIGNvdW50OjF9XSwgYm9keTogXCJpZihhKXtyZXR1cm4gdHJ1ZX1cIiwgbG9jYWxWYXJzOiBbXSwgdGhpc1ZhcnM6IFtdfSxcbiAgcG9zdDoge2FyZ3M6W10sIGxvY2FsVmFyczpbXSwgdGhpc1ZhcnM6W10sIGJvZHk6XCJyZXR1cm4gZmFsc2VcIn0sXG4gIGZ1bmNOYW1lOiBcImFueVwiXG59KVxuXG5leHBvcnRzLmFsbCA9IGNvbXBpbGUoe1xuICBhcmdzOltcImFycmF5XCJdLFxuICBwcmU6IEVtcHR5UHJvYyxcbiAgYm9keToge2FyZ3M6W3tuYW1lOlwieFwiLCBsdmFsdWU6ZmFsc2UsIHJ2YWx1ZTp0cnVlLCBjb3VudDoxfV0sIGJvZHk6IFwiaWYoIXgpe3JldHVybiBmYWxzZX1cIiwgbG9jYWxWYXJzOiBbXSwgdGhpc1ZhcnM6IFtdfSxcbiAgcG9zdDoge2FyZ3M6W10sIGxvY2FsVmFyczpbXSwgdGhpc1ZhcnM6W10sIGJvZHk6XCJyZXR1cm4gdHJ1ZVwifSxcbiAgZnVuY05hbWU6IFwiYWxsXCJcbn0pXG5cbmV4cG9ydHMuc3VtID0gY29tcGlsZSh7XG4gIGFyZ3M6W1wiYXJyYXlcIl0sXG4gIHByZToge2FyZ3M6W10sIGxvY2FsVmFyczpbXSwgdGhpc1ZhcnM6W1widGhpc19zXCJdLCBib2R5OlwidGhpc19zPTBcIn0sXG4gIGJvZHk6IHthcmdzOlt7bmFtZTpcImFcIiwgbHZhbHVlOmZhbHNlLCBydmFsdWU6dHJ1ZSwgY291bnQ6MX1dLCBib2R5OiBcInRoaXNfcys9YVwiLCBsb2NhbFZhcnM6IFtdLCB0aGlzVmFyczogW1widGhpc19zXCJdfSxcbiAgcG9zdDoge2FyZ3M6W10sIGxvY2FsVmFyczpbXSwgdGhpc1ZhcnM6W1widGhpc19zXCJdLCBib2R5OlwicmV0dXJuIHRoaXNfc1wifSxcbiAgZnVuY05hbWU6IFwic3VtXCJcbn0pXG5cbmV4cG9ydHMucHJvZCA9IGNvbXBpbGUoe1xuICBhcmdzOltcImFycmF5XCJdLFxuICBwcmU6IHthcmdzOltdLCBsb2NhbFZhcnM6W10sIHRoaXNWYXJzOltcInRoaXNfc1wiXSwgYm9keTpcInRoaXNfcz0xXCJ9LFxuICBib2R5OiB7YXJnczpbe25hbWU6XCJhXCIsIGx2YWx1ZTpmYWxzZSwgcnZhbHVlOnRydWUsIGNvdW50OjF9XSwgYm9keTogXCJ0aGlzX3MqPWFcIiwgbG9jYWxWYXJzOiBbXSwgdGhpc1ZhcnM6IFtcInRoaXNfc1wiXX0sXG4gIHBvc3Q6IHthcmdzOltdLCBsb2NhbFZhcnM6W10sIHRoaXNWYXJzOltcInRoaXNfc1wiXSwgYm9keTpcInJldHVybiB0aGlzX3NcIn0sXG4gIGZ1bmNOYW1lOiBcInByb2RcIlxufSlcblxuZXhwb3J0cy5ub3JtMnNxdWFyZWQgPSBjb21waWxlKHtcbiAgYXJnczpbXCJhcnJheVwiXSxcbiAgcHJlOiB7YXJnczpbXSwgbG9jYWxWYXJzOltdLCB0aGlzVmFyczpbXCJ0aGlzX3NcIl0sIGJvZHk6XCJ0aGlzX3M9MFwifSxcbiAgYm9keToge2FyZ3M6W3tuYW1lOlwiYVwiLCBsdmFsdWU6ZmFsc2UsIHJ2YWx1ZTp0cnVlLCBjb3VudDoyfV0sIGJvZHk6IFwidGhpc19zKz1hKmFcIiwgbG9jYWxWYXJzOiBbXSwgdGhpc1ZhcnM6IFtcInRoaXNfc1wiXX0sXG4gIHBvc3Q6IHthcmdzOltdLCBsb2NhbFZhcnM6W10sIHRoaXNWYXJzOltcInRoaXNfc1wiXSwgYm9keTpcInJldHVybiB0aGlzX3NcIn0sXG4gIGZ1bmNOYW1lOiBcIm5vcm0yc3F1YXJlZFwiXG59KVxuICBcbmV4cG9ydHMubm9ybTIgPSBjb21waWxlKHtcbiAgYXJnczpbXCJhcnJheVwiXSxcbiAgcHJlOiB7YXJnczpbXSwgbG9jYWxWYXJzOltdLCB0aGlzVmFyczpbXCJ0aGlzX3NcIl0sIGJvZHk6XCJ0aGlzX3M9MFwifSxcbiAgYm9keToge2FyZ3M6W3tuYW1lOlwiYVwiLCBsdmFsdWU6ZmFsc2UsIHJ2YWx1ZTp0cnVlLCBjb3VudDoyfV0sIGJvZHk6IFwidGhpc19zKz1hKmFcIiwgbG9jYWxWYXJzOiBbXSwgdGhpc1ZhcnM6IFtcInRoaXNfc1wiXX0sXG4gIHBvc3Q6IHthcmdzOltdLCBsb2NhbFZhcnM6W10sIHRoaXNWYXJzOltcInRoaXNfc1wiXSwgYm9keTpcInJldHVybiBNYXRoLnNxcnQodGhpc19zKVwifSxcbiAgZnVuY05hbWU6IFwibm9ybTJcIlxufSlcbiAgXG5cbmV4cG9ydHMubm9ybWluZiA9IGNvbXBpbGUoe1xuICBhcmdzOltcImFycmF5XCJdLFxuICBwcmU6IHthcmdzOltdLCBsb2NhbFZhcnM6W10sIHRoaXNWYXJzOltcInRoaXNfc1wiXSwgYm9keTpcInRoaXNfcz0wXCJ9LFxuICBib2R5OiB7YXJnczpbe25hbWU6XCJhXCIsIGx2YWx1ZTpmYWxzZSwgcnZhbHVlOnRydWUsIGNvdW50OjR9XSwgYm9keTpcImlmKC1hPnRoaXNfcyl7dGhpc19zPS1hfWVsc2UgaWYoYT50aGlzX3Mpe3RoaXNfcz1hfVwiLCBsb2NhbFZhcnM6IFtdLCB0aGlzVmFyczogW1widGhpc19zXCJdfSxcbiAgcG9zdDoge2FyZ3M6W10sIGxvY2FsVmFyczpbXSwgdGhpc1ZhcnM6W1widGhpc19zXCJdLCBib2R5OlwicmV0dXJuIHRoaXNfc1wifSxcbiAgZnVuY05hbWU6IFwibm9ybWluZlwiXG59KVxuXG5leHBvcnRzLm5vcm0xID0gY29tcGlsZSh7XG4gIGFyZ3M6W1wiYXJyYXlcIl0sXG4gIHByZToge2FyZ3M6W10sIGxvY2FsVmFyczpbXSwgdGhpc1ZhcnM6W1widGhpc19zXCJdLCBib2R5OlwidGhpc19zPTBcIn0sXG4gIGJvZHk6IHthcmdzOlt7bmFtZTpcImFcIiwgbHZhbHVlOmZhbHNlLCBydmFsdWU6dHJ1ZSwgY291bnQ6M31dLCBib2R5OiBcInRoaXNfcys9YTwwPy1hOmFcIiwgbG9jYWxWYXJzOiBbXSwgdGhpc1ZhcnM6IFtcInRoaXNfc1wiXX0sXG4gIHBvc3Q6IHthcmdzOltdLCBsb2NhbFZhcnM6W10sIHRoaXNWYXJzOltcInRoaXNfc1wiXSwgYm9keTpcInJldHVybiB0aGlzX3NcIn0sXG4gIGZ1bmNOYW1lOiBcIm5vcm0xXCJcbn0pXG5cbmV4cG9ydHMuc3VwID0gY29tcGlsZSh7XG4gIGFyZ3M6IFsgXCJhcnJheVwiIF0sXG4gIHByZTpcbiAgIHsgYm9keTogXCJ0aGlzX2g9LUluZmluaXR5XCIsXG4gICAgIGFyZ3M6IFtdLFxuICAgICB0aGlzVmFyczogWyBcInRoaXNfaFwiIF0sXG4gICAgIGxvY2FsVmFyczogW10gfSxcbiAgYm9keTpcbiAgIHsgYm9keTogXCJpZihfaW5saW5lXzFfYXJnMF8+dGhpc19oKXRoaXNfaD1faW5saW5lXzFfYXJnMF9cIixcbiAgICAgYXJnczogW3tcIm5hbWVcIjpcIl9pbmxpbmVfMV9hcmcwX1wiLFwibHZhbHVlXCI6ZmFsc2UsXCJydmFsdWVcIjp0cnVlLFwiY291bnRcIjoyfSBdLFxuICAgICB0aGlzVmFyczogWyBcInRoaXNfaFwiIF0sXG4gICAgIGxvY2FsVmFyczogW10gfSxcbiAgcG9zdDpcbiAgIHsgYm9keTogXCJyZXR1cm4gdGhpc19oXCIsXG4gICAgIGFyZ3M6IFtdLFxuICAgICB0aGlzVmFyczogWyBcInRoaXNfaFwiIF0sXG4gICAgIGxvY2FsVmFyczogW10gfVxuIH0pXG5cbmV4cG9ydHMuaW5mID0gY29tcGlsZSh7XG4gIGFyZ3M6IFsgXCJhcnJheVwiIF0sXG4gIHByZTpcbiAgIHsgYm9keTogXCJ0aGlzX2g9SW5maW5pdHlcIixcbiAgICAgYXJnczogW10sXG4gICAgIHRoaXNWYXJzOiBbIFwidGhpc19oXCIgXSxcbiAgICAgbG9jYWxWYXJzOiBbXSB9LFxuICBib2R5OlxuICAgeyBib2R5OiBcImlmKF9pbmxpbmVfMV9hcmcwXzx0aGlzX2gpdGhpc19oPV9pbmxpbmVfMV9hcmcwX1wiLFxuICAgICBhcmdzOiBbe1wibmFtZVwiOlwiX2lubGluZV8xX2FyZzBfXCIsXCJsdmFsdWVcIjpmYWxzZSxcInJ2YWx1ZVwiOnRydWUsXCJjb3VudFwiOjJ9IF0sXG4gICAgIHRoaXNWYXJzOiBbIFwidGhpc19oXCIgXSxcbiAgICAgbG9jYWxWYXJzOiBbXSB9LFxuICBwb3N0OlxuICAgeyBib2R5OiBcInJldHVybiB0aGlzX2hcIixcbiAgICAgYXJnczogW10sXG4gICAgIHRoaXNWYXJzOiBbIFwidGhpc19oXCIgXSxcbiAgICAgbG9jYWxWYXJzOiBbXSB9XG4gfSlcblxuZXhwb3J0cy5hcmdtaW4gPSBjb21waWxlKHtcbiAgYXJnczpbXCJpbmRleFwiLFwiYXJyYXlcIixcInNoYXBlXCJdLFxuICBwcmU6e1xuICAgIGJvZHk6XCJ7dGhpc192PUluZmluaXR5O3RoaXNfaT1faW5saW5lXzBfYXJnMl8uc2xpY2UoMCl9XCIsXG4gICAgYXJnczpbXG4gICAgICB7bmFtZTpcIl9pbmxpbmVfMF9hcmcwX1wiLGx2YWx1ZTpmYWxzZSxydmFsdWU6ZmFsc2UsY291bnQ6MH0sXG4gICAgICB7bmFtZTpcIl9pbmxpbmVfMF9hcmcxX1wiLGx2YWx1ZTpmYWxzZSxydmFsdWU6ZmFsc2UsY291bnQ6MH0sXG4gICAgICB7bmFtZTpcIl9pbmxpbmVfMF9hcmcyX1wiLGx2YWx1ZTpmYWxzZSxydmFsdWU6dHJ1ZSxjb3VudDoxfVxuICAgICAgXSxcbiAgICB0aGlzVmFyczpbXCJ0aGlzX2lcIixcInRoaXNfdlwiXSxcbiAgICBsb2NhbFZhcnM6W119LFxuICBib2R5OntcbiAgICBib2R5Olwie2lmKF9pbmxpbmVfMV9hcmcxXzx0aGlzX3Ype3RoaXNfdj1faW5saW5lXzFfYXJnMV87Zm9yKHZhciBfaW5saW5lXzFfaz0wO19pbmxpbmVfMV9rPF9pbmxpbmVfMV9hcmcwXy5sZW5ndGg7KytfaW5saW5lXzFfayl7dGhpc19pW19pbmxpbmVfMV9rXT1faW5saW5lXzFfYXJnMF9bX2lubGluZV8xX2tdfX19XCIsXG4gICAgYXJnczpbXG4gICAgICB7bmFtZTpcIl9pbmxpbmVfMV9hcmcwX1wiLGx2YWx1ZTpmYWxzZSxydmFsdWU6dHJ1ZSxjb3VudDoyfSxcbiAgICAgIHtuYW1lOlwiX2lubGluZV8xX2FyZzFfXCIsbHZhbHVlOmZhbHNlLHJ2YWx1ZTp0cnVlLGNvdW50OjJ9XSxcbiAgICB0aGlzVmFyczpbXCJ0aGlzX2lcIixcInRoaXNfdlwiXSxcbiAgICBsb2NhbFZhcnM6W1wiX2lubGluZV8xX2tcIl19LFxuICBwb3N0OntcbiAgICBib2R5Olwie3JldHVybiB0aGlzX2l9XCIsXG4gICAgYXJnczpbXSxcbiAgICB0aGlzVmFyczpbXCJ0aGlzX2lcIl0sXG4gICAgbG9jYWxWYXJzOltdfVxufSlcblxuZXhwb3J0cy5hcmdtYXggPSBjb21waWxlKHtcbiAgYXJnczpbXCJpbmRleFwiLFwiYXJyYXlcIixcInNoYXBlXCJdLFxuICBwcmU6e1xuICAgIGJvZHk6XCJ7dGhpc192PS1JbmZpbml0eTt0aGlzX2k9X2lubGluZV8wX2FyZzJfLnNsaWNlKDApfVwiLFxuICAgIGFyZ3M6W1xuICAgICAge25hbWU6XCJfaW5saW5lXzBfYXJnMF9cIixsdmFsdWU6ZmFsc2UscnZhbHVlOmZhbHNlLGNvdW50OjB9LFxuICAgICAge25hbWU6XCJfaW5saW5lXzBfYXJnMV9cIixsdmFsdWU6ZmFsc2UscnZhbHVlOmZhbHNlLGNvdW50OjB9LFxuICAgICAge25hbWU6XCJfaW5saW5lXzBfYXJnMl9cIixsdmFsdWU6ZmFsc2UscnZhbHVlOnRydWUsY291bnQ6MX1cbiAgICAgIF0sXG4gICAgdGhpc1ZhcnM6W1widGhpc19pXCIsXCJ0aGlzX3ZcIl0sXG4gICAgbG9jYWxWYXJzOltdfSxcbiAgYm9keTp7XG4gICAgYm9keTpcIntpZihfaW5saW5lXzFfYXJnMV8+dGhpc192KXt0aGlzX3Y9X2lubGluZV8xX2FyZzFfO2Zvcih2YXIgX2lubGluZV8xX2s9MDtfaW5saW5lXzFfazxfaW5saW5lXzFfYXJnMF8ubGVuZ3RoOysrX2lubGluZV8xX2spe3RoaXNfaVtfaW5saW5lXzFfa109X2lubGluZV8xX2FyZzBfW19pbmxpbmVfMV9rXX19fVwiLFxuICAgIGFyZ3M6W1xuICAgICAge25hbWU6XCJfaW5saW5lXzFfYXJnMF9cIixsdmFsdWU6ZmFsc2UscnZhbHVlOnRydWUsY291bnQ6Mn0sXG4gICAgICB7bmFtZTpcIl9pbmxpbmVfMV9hcmcxX1wiLGx2YWx1ZTpmYWxzZSxydmFsdWU6dHJ1ZSxjb3VudDoyfV0sXG4gICAgdGhpc1ZhcnM6W1widGhpc19pXCIsXCJ0aGlzX3ZcIl0sXG4gICAgbG9jYWxWYXJzOltcIl9pbmxpbmVfMV9rXCJdfSxcbiAgcG9zdDp7XG4gICAgYm9keTpcIntyZXR1cm4gdGhpc19pfVwiLFxuICAgIGFyZ3M6W10sXG4gICAgdGhpc1ZhcnM6W1widGhpc19pXCJdLFxuICAgIGxvY2FsVmFyczpbXX1cbn0pICBcblxuZXhwb3J0cy5yYW5kb20gPSBtYWtlT3Aoe1xuICBhcmdzOiBbXCJhcnJheVwiXSxcbiAgcHJlOiB7YXJnczpbXSwgYm9keTpcInRoaXNfZj1NYXRoLnJhbmRvbVwiLCB0aGlzVmFyczpbXCJ0aGlzX2ZcIl19LFxuICBib2R5OiB7YXJnczogW1wiYVwiXSwgYm9keTpcImE9dGhpc19mKClcIiwgdGhpc1ZhcnM6W1widGhpc19mXCJdfSxcbiAgZnVuY05hbWU6IFwicmFuZG9tXCJcbn0pXG5cbmV4cG9ydHMuYXNzaWduID0gbWFrZU9wKHtcbiAgYXJnczpbXCJhcnJheVwiLCBcImFycmF5XCJdLFxuICBib2R5OiB7YXJnczpbXCJhXCIsIFwiYlwiXSwgYm9keTpcImE9YlwifSxcbiAgZnVuY05hbWU6IFwiYXNzaWduXCIgfSlcblxuZXhwb3J0cy5hc3NpZ25zID0gbWFrZU9wKHtcbiAgYXJnczpbXCJhcnJheVwiLCBcInNjYWxhclwiXSxcbiAgYm9keToge2FyZ3M6W1wiYVwiLCBcImJcIl0sIGJvZHk6XCJhPWJcIn0sXG4gIGZ1bmNOYW1lOiBcImFzc2lnbnNcIiB9KVxuXG5cbmV4cG9ydHMuZXF1YWxzID0gY29tcGlsZSh7XG4gIGFyZ3M6W1wiYXJyYXlcIiwgXCJhcnJheVwiXSxcbiAgcHJlOiBFbXB0eVByb2MsXG4gIGJvZHk6IHthcmdzOlt7bmFtZTpcInhcIiwgbHZhbHVlOmZhbHNlLCBydmFsdWU6dHJ1ZSwgY291bnQ6MX0sXG4gICAgICAgICAgICAgICB7bmFtZTpcInlcIiwgbHZhbHVlOmZhbHNlLCBydmFsdWU6dHJ1ZSwgY291bnQ6MX1dLCBcbiAgICAgICAgYm9keTogXCJpZih4IT09eSl7cmV0dXJuIGZhbHNlfVwiLCBcbiAgICAgICAgbG9jYWxWYXJzOiBbXSwgXG4gICAgICAgIHRoaXNWYXJzOiBbXX0sXG4gIHBvc3Q6IHthcmdzOltdLCBsb2NhbFZhcnM6W10sIHRoaXNWYXJzOltdLCBib2R5OlwicmV0dXJuIHRydWVcIn0sXG4gIGZ1bmNOYW1lOiBcImVxdWFsc1wiXG59KVxuXG5cblxuXG5cbi8vLy8vLy8vLy8vLy8vLy8vL1xuLy8gV0VCUEFDSyBGT09URVJcbi8vIC4uL34vbmRhcnJheS1vcHMvbmRhcnJheS1vcHMuanNcbi8vIG1vZHVsZSBpZCA9IDZcbi8vIG1vZHVsZSBjaHVua3MgPSAwIl0sInNvdXJjZVJvb3QiOiIifQ==");
+	"use strict"
+	
+	var compile = __webpack_require__(7)
+	
+	var EmptyProc = {
+	  body: "",
+	  args: [],
+	  thisVars: [],
+	  localVars: []
+	}
+	
+	function fixup(x) {
+	  if(!x) {
+	    return EmptyProc
+	  }
+	  for(var i=0; i<x.args.length; ++i) {
+	    var a = x.args[i]
+	    if(i === 0) {
+	      x.args[i] = {name: a, lvalue:true, rvalue: !!x.rvalue, count:x.count||1 }
+	    } else {
+	      x.args[i] = {name: a, lvalue:false, rvalue:true, count: 1}
+	    }
+	  }
+	  if(!x.thisVars) {
+	    x.thisVars = []
+	  }
+	  if(!x.localVars) {
+	    x.localVars = []
+	  }
+	  return x
+	}
+	
+	function pcompile(user_args) {
+	  return compile({
+	    args:     user_args.args,
+	    pre:      fixup(user_args.pre),
+	    body:     fixup(user_args.body),
+	    post:     fixup(user_args.proc),
+	    funcName: user_args.funcName
+	  })
+	}
+	
+	function makeOp(user_args) {
+	  var args = []
+	  for(var i=0; i<user_args.args.length; ++i) {
+	    args.push("a"+i)
+	  }
+	  var wrapper = new Function("P", [
+	    "return function ", user_args.funcName, "_ndarrayops(", args.join(","), ") {P(", args.join(","), ");return a0}"
+	  ].join(""))
+	  return wrapper(pcompile(user_args))
+	}
+	
+	var assign_ops = {
+	  add:  "+",
+	  sub:  "-",
+	  mul:  "*",
+	  div:  "/",
+	  mod:  "%",
+	  band: "&",
+	  bor:  "|",
+	  bxor: "^",
+	  lshift: "<<",
+	  rshift: ">>",
+	  rrshift: ">>>"
+	}
+	;(function(){
+	  for(var id in assign_ops) {
+	    var op = assign_ops[id]
+	    exports[id] = makeOp({
+	      args: ["array","array","array"],
+	      body: {args:["a","b","c"],
+	             body: "a=b"+op+"c"},
+	      funcName: id
+	    })
+	    exports[id+"eq"] = makeOp({
+	      args: ["array","array"],
+	      body: {args:["a","b"],
+	             body:"a"+op+"=b"},
+	      rvalue: true,
+	      funcName: id+"eq"
+	    })
+	    exports[id+"s"] = makeOp({
+	      args: ["array", "array", "scalar"],
+	      body: {args:["a","b","s"],
+	             body:"a=b"+op+"s"},
+	      funcName: id+"s"
+	    })
+	    exports[id+"seq"] = makeOp({
+	      args: ["array","scalar"],
+	      body: {args:["a","s"],
+	             body:"a"+op+"=s"},
+	      rvalue: true,
+	      funcName: id+"seq"
+	    })
+	  }
+	})();
+	
+	var unary_ops = {
+	  not: "!",
+	  bnot: "~",
+	  neg: "-",
+	  recip: "1.0/"
+	}
+	;(function(){
+	  for(var id in unary_ops) {
+	    var op = unary_ops[id]
+	    exports[id] = makeOp({
+	      args: ["array", "array"],
+	      body: {args:["a","b"],
+	             body:"a="+op+"b"},
+	      funcName: id
+	    })
+	    exports[id+"eq"] = makeOp({
+	      args: ["array"],
+	      body: {args:["a"],
+	             body:"a="+op+"a"},
+	      rvalue: true,
+	      count: 2,
+	      funcName: id+"eq"
+	    })
+	  }
+	})();
+	
+	var binary_ops = {
+	  and: "&&",
+	  or: "||",
+	  eq: "===",
+	  neq: "!==",
+	  lt: "<",
+	  gt: ">",
+	  leq: "<=",
+	  geq: ">="
+	}
+	;(function() {
+	  for(var id in binary_ops) {
+	    var op = binary_ops[id]
+	    exports[id] = makeOp({
+	      args: ["array","array","array"],
+	      body: {args:["a", "b", "c"],
+	             body:"a=b"+op+"c"},
+	      funcName: id
+	    })
+	    exports[id+"s"] = makeOp({
+	      args: ["array","array","scalar"],
+	      body: {args:["a", "b", "s"],
+	             body:"a=b"+op+"s"},
+	      funcName: id+"s"
+	    })
+	    exports[id+"eq"] = makeOp({
+	      args: ["array", "array"],
+	      body: {args:["a", "b"],
+	             body:"a=a"+op+"b"},
+	      rvalue:true,
+	      count:2,
+	      funcName: id+"eq"
+	    })
+	    exports[id+"seq"] = makeOp({
+	      args: ["array", "scalar"],
+	      body: {args:["a","s"],
+	             body:"a=a"+op+"s"},
+	      rvalue:true,
+	      count:2,
+	      funcName: id+"seq"
+	    })
+	  }
+	})();
+	
+	var math_unary = [
+	  "abs",
+	  "acos",
+	  "asin",
+	  "atan",
+	  "ceil",
+	  "cos",
+	  "exp",
+	  "floor",
+	  "log",
+	  "round",
+	  "sin",
+	  "sqrt",
+	  "tan"
+	]
+	;(function() {
+	  for(var i=0; i<math_unary.length; ++i) {
+	    var f = math_unary[i]
+	    exports[f] = makeOp({
+	                    args: ["array", "array"],
+	                    pre: {args:[], body:"this_f=Math."+f, thisVars:["this_f"]},
+	                    body: {args:["a","b"], body:"a=this_f(b)", thisVars:["this_f"]},
+	                    funcName: f
+	                  })
+	    exports[f+"eq"] = makeOp({
+	                      args: ["array"],
+	                      pre: {args:[], body:"this_f=Math."+f, thisVars:["this_f"]},
+	                      body: {args: ["a"], body:"a=this_f(a)", thisVars:["this_f"]},
+	                      rvalue: true,
+	                      count: 2,
+	                      funcName: f+"eq"
+	                    })
+	  }
+	})();
+	
+	var math_comm = [
+	  "max",
+	  "min",
+	  "atan2",
+	  "pow"
+	]
+	;(function(){
+	  for(var i=0; i<math_comm.length; ++i) {
+	    var f= math_comm[i]
+	    exports[f] = makeOp({
+	                  args:["array", "array", "array"],
+	                  pre: {args:[], body:"this_f=Math."+f, thisVars:["this_f"]},
+	                  body: {args:["a","b","c"], body:"a=this_f(b,c)", thisVars:["this_f"]},
+	                  funcName: f
+	                })
+	    exports[f+"s"] = makeOp({
+	                  args:["array", "array", "scalar"],
+	                  pre: {args:[], body:"this_f=Math."+f, thisVars:["this_f"]},
+	                  body: {args:["a","b","c"], body:"a=this_f(b,c)", thisVars:["this_f"]},
+	                  funcName: f+"s"
+	                  })
+	    exports[f+"eq"] = makeOp({ args:["array", "array"],
+	                  pre: {args:[], body:"this_f=Math."+f, thisVars:["this_f"]},
+	                  body: {args:["a","b"], body:"a=this_f(a,b)", thisVars:["this_f"]},
+	                  rvalue: true,
+	                  count: 2,
+	                  funcName: f+"eq"
+	                  })
+	    exports[f+"seq"] = makeOp({ args:["array", "scalar"],
+	                  pre: {args:[], body:"this_f=Math."+f, thisVars:["this_f"]},
+	                  body: {args:["a","b"], body:"a=this_f(a,b)", thisVars:["this_f"]},
+	                  rvalue:true,
+	                  count:2,
+	                  funcName: f+"seq"
+	                  })
+	  }
+	})();
+	
+	var math_noncomm = [
+	  "atan2",
+	  "pow"
+	]
+	;(function(){
+	  for(var i=0; i<math_noncomm.length; ++i) {
+	    var f= math_noncomm[i]
+	    exports[f+"op"] = makeOp({
+	                  args:["array", "array", "array"],
+	                  pre: {args:[], body:"this_f=Math."+f, thisVars:["this_f"]},
+	                  body: {args:["a","b","c"], body:"a=this_f(c,b)", thisVars:["this_f"]},
+	                  funcName: f+"op"
+	                })
+	    exports[f+"ops"] = makeOp({
+	                  args:["array", "array", "scalar"],
+	                  pre: {args:[], body:"this_f=Math."+f, thisVars:["this_f"]},
+	                  body: {args:["a","b","c"], body:"a=this_f(c,b)", thisVars:["this_f"]},
+	                  funcName: f+"ops"
+	                  })
+	    exports[f+"opeq"] = makeOp({ args:["array", "array"],
+	                  pre: {args:[], body:"this_f=Math."+f, thisVars:["this_f"]},
+	                  body: {args:["a","b"], body:"a=this_f(b,a)", thisVars:["this_f"]},
+	                  rvalue: true,
+	                  count: 2,
+	                  funcName: f+"opeq"
+	                  })
+	    exports[f+"opseq"] = makeOp({ args:["array", "scalar"],
+	                  pre: {args:[], body:"this_f=Math."+f, thisVars:["this_f"]},
+	                  body: {args:["a","b"], body:"a=this_f(b,a)", thisVars:["this_f"]},
+	                  rvalue:true,
+	                  count:2,
+	                  funcName: f+"opseq"
+	                  })
+	  }
+	})();
+	
+	exports.any = compile({
+	  args:["array"],
+	  pre: EmptyProc,
+	  body: {args:[{name:"a", lvalue:false, rvalue:true, count:1}], body: "if(a){return true}", localVars: [], thisVars: []},
+	  post: {args:[], localVars:[], thisVars:[], body:"return false"},
+	  funcName: "any"
+	})
+	
+	exports.all = compile({
+	  args:["array"],
+	  pre: EmptyProc,
+	  body: {args:[{name:"x", lvalue:false, rvalue:true, count:1}], body: "if(!x){return false}", localVars: [], thisVars: []},
+	  post: {args:[], localVars:[], thisVars:[], body:"return true"},
+	  funcName: "all"
+	})
+	
+	exports.sum = compile({
+	  args:["array"],
+	  pre: {args:[], localVars:[], thisVars:["this_s"], body:"this_s=0"},
+	  body: {args:[{name:"a", lvalue:false, rvalue:true, count:1}], body: "this_s+=a", localVars: [], thisVars: ["this_s"]},
+	  post: {args:[], localVars:[], thisVars:["this_s"], body:"return this_s"},
+	  funcName: "sum"
+	})
+	
+	exports.prod = compile({
+	  args:["array"],
+	  pre: {args:[], localVars:[], thisVars:["this_s"], body:"this_s=1"},
+	  body: {args:[{name:"a", lvalue:false, rvalue:true, count:1}], body: "this_s*=a", localVars: [], thisVars: ["this_s"]},
+	  post: {args:[], localVars:[], thisVars:["this_s"], body:"return this_s"},
+	  funcName: "prod"
+	})
+	
+	exports.norm2squared = compile({
+	  args:["array"],
+	  pre: {args:[], localVars:[], thisVars:["this_s"], body:"this_s=0"},
+	  body: {args:[{name:"a", lvalue:false, rvalue:true, count:2}], body: "this_s+=a*a", localVars: [], thisVars: ["this_s"]},
+	  post: {args:[], localVars:[], thisVars:["this_s"], body:"return this_s"},
+	  funcName: "norm2squared"
+	})
+	  
+	exports.norm2 = compile({
+	  args:["array"],
+	  pre: {args:[], localVars:[], thisVars:["this_s"], body:"this_s=0"},
+	  body: {args:[{name:"a", lvalue:false, rvalue:true, count:2}], body: "this_s+=a*a", localVars: [], thisVars: ["this_s"]},
+	  post: {args:[], localVars:[], thisVars:["this_s"], body:"return Math.sqrt(this_s)"},
+	  funcName: "norm2"
+	})
+	  
+	
+	exports.norminf = compile({
+	  args:["array"],
+	  pre: {args:[], localVars:[], thisVars:["this_s"], body:"this_s=0"},
+	  body: {args:[{name:"a", lvalue:false, rvalue:true, count:4}], body:"if(-a>this_s){this_s=-a}else if(a>this_s){this_s=a}", localVars: [], thisVars: ["this_s"]},
+	  post: {args:[], localVars:[], thisVars:["this_s"], body:"return this_s"},
+	  funcName: "norminf"
+	})
+	
+	exports.norm1 = compile({
+	  args:["array"],
+	  pre: {args:[], localVars:[], thisVars:["this_s"], body:"this_s=0"},
+	  body: {args:[{name:"a", lvalue:false, rvalue:true, count:3}], body: "this_s+=a<0?-a:a", localVars: [], thisVars: ["this_s"]},
+	  post: {args:[], localVars:[], thisVars:["this_s"], body:"return this_s"},
+	  funcName: "norm1"
+	})
+	
+	exports.sup = compile({
+	  args: [ "array" ],
+	  pre:
+	   { body: "this_h=-Infinity",
+	     args: [],
+	     thisVars: [ "this_h" ],
+	     localVars: [] },
+	  body:
+	   { body: "if(_inline_1_arg0_>this_h)this_h=_inline_1_arg0_",
+	     args: [{"name":"_inline_1_arg0_","lvalue":false,"rvalue":true,"count":2} ],
+	     thisVars: [ "this_h" ],
+	     localVars: [] },
+	  post:
+	   { body: "return this_h",
+	     args: [],
+	     thisVars: [ "this_h" ],
+	     localVars: [] }
+	 })
+	
+	exports.inf = compile({
+	  args: [ "array" ],
+	  pre:
+	   { body: "this_h=Infinity",
+	     args: [],
+	     thisVars: [ "this_h" ],
+	     localVars: [] },
+	  body:
+	   { body: "if(_inline_1_arg0_<this_h)this_h=_inline_1_arg0_",
+	     args: [{"name":"_inline_1_arg0_","lvalue":false,"rvalue":true,"count":2} ],
+	     thisVars: [ "this_h" ],
+	     localVars: [] },
+	  post:
+	   { body: "return this_h",
+	     args: [],
+	     thisVars: [ "this_h" ],
+	     localVars: [] }
+	 })
+	
+	exports.argmin = compile({
+	  args:["index","array","shape"],
+	  pre:{
+	    body:"{this_v=Infinity;this_i=_inline_0_arg2_.slice(0)}",
+	    args:[
+	      {name:"_inline_0_arg0_",lvalue:false,rvalue:false,count:0},
+	      {name:"_inline_0_arg1_",lvalue:false,rvalue:false,count:0},
+	      {name:"_inline_0_arg2_",lvalue:false,rvalue:true,count:1}
+	      ],
+	    thisVars:["this_i","this_v"],
+	    localVars:[]},
+	  body:{
+	    body:"{if(_inline_1_arg1_<this_v){this_v=_inline_1_arg1_;for(var _inline_1_k=0;_inline_1_k<_inline_1_arg0_.length;++_inline_1_k){this_i[_inline_1_k]=_inline_1_arg0_[_inline_1_k]}}}",
+	    args:[
+	      {name:"_inline_1_arg0_",lvalue:false,rvalue:true,count:2},
+	      {name:"_inline_1_arg1_",lvalue:false,rvalue:true,count:2}],
+	    thisVars:["this_i","this_v"],
+	    localVars:["_inline_1_k"]},
+	  post:{
+	    body:"{return this_i}",
+	    args:[],
+	    thisVars:["this_i"],
+	    localVars:[]}
+	})
+	
+	exports.argmax = compile({
+	  args:["index","array","shape"],
+	  pre:{
+	    body:"{this_v=-Infinity;this_i=_inline_0_arg2_.slice(0)}",
+	    args:[
+	      {name:"_inline_0_arg0_",lvalue:false,rvalue:false,count:0},
+	      {name:"_inline_0_arg1_",lvalue:false,rvalue:false,count:0},
+	      {name:"_inline_0_arg2_",lvalue:false,rvalue:true,count:1}
+	      ],
+	    thisVars:["this_i","this_v"],
+	    localVars:[]},
+	  body:{
+	    body:"{if(_inline_1_arg1_>this_v){this_v=_inline_1_arg1_;for(var _inline_1_k=0;_inline_1_k<_inline_1_arg0_.length;++_inline_1_k){this_i[_inline_1_k]=_inline_1_arg0_[_inline_1_k]}}}",
+	    args:[
+	      {name:"_inline_1_arg0_",lvalue:false,rvalue:true,count:2},
+	      {name:"_inline_1_arg1_",lvalue:false,rvalue:true,count:2}],
+	    thisVars:["this_i","this_v"],
+	    localVars:["_inline_1_k"]},
+	  post:{
+	    body:"{return this_i}",
+	    args:[],
+	    thisVars:["this_i"],
+	    localVars:[]}
+	})  
+	
+	exports.random = makeOp({
+	  args: ["array"],
+	  pre: {args:[], body:"this_f=Math.random", thisVars:["this_f"]},
+	  body: {args: ["a"], body:"a=this_f()", thisVars:["this_f"]},
+	  funcName: "random"
+	})
+	
+	exports.assign = makeOp({
+	  args:["array", "array"],
+	  body: {args:["a", "b"], body:"a=b"},
+	  funcName: "assign" })
+	
+	exports.assigns = makeOp({
+	  args:["array", "scalar"],
+	  body: {args:["a", "b"], body:"a=b"},
+	  funcName: "assigns" })
+	
+	
+	exports.equals = compile({
+	  args:["array", "array"],
+	  pre: EmptyProc,
+	  body: {args:[{name:"x", lvalue:false, rvalue:true, count:1},
+	               {name:"y", lvalue:false, rvalue:true, count:1}], 
+	        body: "if(x!==y){return false}", 
+	        localVars: [], 
+	        thisVars: []},
+	  post: {args:[], localVars:[], thisVars:[], body:"return true"},
+	  funcName: "equals"
+	})
+	
+	
+
 
 /***/ },
 /* 7 */
 /***/ function(module, exports, __webpack_require__) {
 
-	eval("\"use strict\"\r\n\r\nvar createThunk = __webpack_require__(8)\r\n\r\nfunction Procedure() {\r\n  this.argTypes = []\r\n  this.shimArgs = []\r\n  this.arrayArgs = []\r\n  this.arrayBlockIndices = []\r\n  this.scalarArgs = []\r\n  this.offsetArgs = []\r\n  this.offsetArgIndex = []\r\n  this.indexArgs = []\r\n  this.shapeArgs = []\r\n  this.funcName = \"\"\r\n  this.pre = null\r\n  this.body = null\r\n  this.post = null\r\n  this.debug = false\r\n}\r\n\r\nfunction compileCwise(user_args) {\r\n  //Create procedure\r\n  var proc = new Procedure()\r\n  \r\n  //Parse blocks\r\n  proc.pre    = user_args.pre\r\n  proc.body   = user_args.body\r\n  proc.post   = user_args.post\r\n\r\n  //Parse arguments\r\n  var proc_args = user_args.args.slice(0)\r\n  proc.argTypes = proc_args\r\n  for(var i=0; i<proc_args.length; ++i) {\r\n    var arg_type = proc_args[i]\r\n    if(arg_type === \"array\" || (typeof arg_type === \"object\" && arg_type.blockIndices)) {\r\n      proc.argTypes[i] = \"array\"\r\n      proc.arrayArgs.push(i)\r\n      proc.arrayBlockIndices.push(arg_type.blockIndices ? arg_type.blockIndices : 0)\r\n      proc.shimArgs.push(\"array\" + i)\r\n      if(i < proc.pre.args.length && proc.pre.args[i].count>0) {\r\n        throw new Error(\"cwise: pre() block may not reference array args\")\r\n      }\r\n      if(i < proc.post.args.length && proc.post.args[i].count>0) {\r\n        throw new Error(\"cwise: post() block may not reference array args\")\r\n      }\r\n    } else if(arg_type === \"scalar\") {\r\n      proc.scalarArgs.push(i)\r\n      proc.shimArgs.push(\"scalar\" + i)\r\n    } else if(arg_type === \"index\") {\r\n      proc.indexArgs.push(i)\r\n      if(i < proc.pre.args.length && proc.pre.args[i].count > 0) {\r\n        throw new Error(\"cwise: pre() block may not reference array index\")\r\n      }\r\n      if(i < proc.body.args.length && proc.body.args[i].lvalue) {\r\n        throw new Error(\"cwise: body() block may not write to array index\")\r\n      }\r\n      if(i < proc.post.args.length && proc.post.args[i].count > 0) {\r\n        throw new Error(\"cwise: post() block may not reference array index\")\r\n      }\r\n    } else if(arg_type === \"shape\") {\r\n      proc.shapeArgs.push(i)\r\n      if(i < proc.pre.args.length && proc.pre.args[i].lvalue) {\r\n        throw new Error(\"cwise: pre() block may not write to array shape\")\r\n      }\r\n      if(i < proc.body.args.length && proc.body.args[i].lvalue) {\r\n        throw new Error(\"cwise: body() block may not write to array shape\")\r\n      }\r\n      if(i < proc.post.args.length && proc.post.args[i].lvalue) {\r\n        throw new Error(\"cwise: post() block may not write to array shape\")\r\n      }\r\n    } else if(typeof arg_type === \"object\" && arg_type.offset) {\r\n      proc.argTypes[i] = \"offset\"\r\n      proc.offsetArgs.push({ array: arg_type.array, offset:arg_type.offset })\r\n      proc.offsetArgIndex.push(i)\r\n    } else {\r\n      throw new Error(\"cwise: Unknown argument type \" + proc_args[i])\r\n    }\r\n  }\r\n  \r\n  //Make sure at least one array argument was specified\r\n  if(proc.arrayArgs.length <= 0) {\r\n    throw new Error(\"cwise: No array arguments specified\")\r\n  }\r\n  \r\n  //Make sure arguments are correct\r\n  if(proc.pre.args.length > proc_args.length) {\r\n    throw new Error(\"cwise: Too many arguments in pre() block\")\r\n  }\r\n  if(proc.body.args.length > proc_args.length) {\r\n    throw new Error(\"cwise: Too many arguments in body() block\")\r\n  }\r\n  if(proc.post.args.length > proc_args.length) {\r\n    throw new Error(\"cwise: Too many arguments in post() block\")\r\n  }\r\n\r\n  //Check debug flag\r\n  proc.debug = !!user_args.printCode || !!user_args.debug\r\n  \r\n  //Retrieve name\r\n  proc.funcName = user_args.funcName || \"cwise\"\r\n  \r\n  //Read in block size\r\n  proc.blockSize = user_args.blockSize || 64\r\n\r\n  return createThunk(proc)\r\n}\r\n\r\nmodule.exports = compileCwise\r\n//# sourceMappingURL=data:application/json;charset=utf-8;base64,eyJ2ZXJzaW9uIjozLCJzb3VyY2VzIjpbIndlYnBhY2s6Ly8vLi4vfi9jd2lzZS1jb21waWxlci9jb21waWxlci5qcz85YzM5Il0sIm5hbWVzIjpbXSwibWFwcGluZ3MiOiJBQUFBOztBQUVBOztBQUVBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBOztBQUVBO0FBQ0E7QUFDQTs7QUFFQTtBQUNBO0FBQ0E7QUFDQTs7QUFFQTtBQUNBO0FBQ0E7QUFDQSxjQUFjLG9CQUFvQjtBQUNsQztBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQSxLQUFLO0FBQ0w7QUFDQTtBQUNBLEtBQUs7QUFDTDtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBLEtBQUs7QUFDTDtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBLEtBQUs7QUFDTDtBQUNBLDRCQUE0QixnREFBZ0Q7QUFDNUU7QUFDQSxLQUFLO0FBQ0w7QUFDQTtBQUNBOztBQUVBO0FBQ0E7QUFDQTtBQUNBOztBQUVBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBOztBQUVBO0FBQ0E7O0FBRUE7QUFDQTs7QUFFQTtBQUNBOztBQUVBO0FBQ0E7O0FBRUEiLCJmaWxlIjoiNy5qcyIsInNvdXJjZXNDb250ZW50IjpbIlwidXNlIHN0cmljdFwiXHJcblxyXG52YXIgY3JlYXRlVGh1bmsgPSByZXF1aXJlKFwiLi9saWIvdGh1bmsuanNcIilcclxuXHJcbmZ1bmN0aW9uIFByb2NlZHVyZSgpIHtcclxuICB0aGlzLmFyZ1R5cGVzID0gW11cclxuICB0aGlzLnNoaW1BcmdzID0gW11cclxuICB0aGlzLmFycmF5QXJncyA9IFtdXHJcbiAgdGhpcy5hcnJheUJsb2NrSW5kaWNlcyA9IFtdXHJcbiAgdGhpcy5zY2FsYXJBcmdzID0gW11cclxuICB0aGlzLm9mZnNldEFyZ3MgPSBbXVxyXG4gIHRoaXMub2Zmc2V0QXJnSW5kZXggPSBbXVxyXG4gIHRoaXMuaW5kZXhBcmdzID0gW11cclxuICB0aGlzLnNoYXBlQXJncyA9IFtdXHJcbiAgdGhpcy5mdW5jTmFtZSA9IFwiXCJcclxuICB0aGlzLnByZSA9IG51bGxcclxuICB0aGlzLmJvZHkgPSBudWxsXHJcbiAgdGhpcy5wb3N0ID0gbnVsbFxyXG4gIHRoaXMuZGVidWcgPSBmYWxzZVxyXG59XHJcblxyXG5mdW5jdGlvbiBjb21waWxlQ3dpc2UodXNlcl9hcmdzKSB7XHJcbiAgLy9DcmVhdGUgcHJvY2VkdXJlXHJcbiAgdmFyIHByb2MgPSBuZXcgUHJvY2VkdXJlKClcclxuICBcclxuICAvL1BhcnNlIGJsb2Nrc1xyXG4gIHByb2MucHJlICAgID0gdXNlcl9hcmdzLnByZVxyXG4gIHByb2MuYm9keSAgID0gdXNlcl9hcmdzLmJvZHlcclxuICBwcm9jLnBvc3QgICA9IHVzZXJfYXJncy5wb3N0XHJcblxyXG4gIC8vUGFyc2UgYXJndW1lbnRzXHJcbiAgdmFyIHByb2NfYXJncyA9IHVzZXJfYXJncy5hcmdzLnNsaWNlKDApXHJcbiAgcHJvYy5hcmdUeXBlcyA9IHByb2NfYXJnc1xyXG4gIGZvcih2YXIgaT0wOyBpPHByb2NfYXJncy5sZW5ndGg7ICsraSkge1xyXG4gICAgdmFyIGFyZ190eXBlID0gcHJvY19hcmdzW2ldXHJcbiAgICBpZihhcmdfdHlwZSA9PT0gXCJhcnJheVwiIHx8ICh0eXBlb2YgYXJnX3R5cGUgPT09IFwib2JqZWN0XCIgJiYgYXJnX3R5cGUuYmxvY2tJbmRpY2VzKSkge1xyXG4gICAgICBwcm9jLmFyZ1R5cGVzW2ldID0gXCJhcnJheVwiXHJcbiAgICAgIHByb2MuYXJyYXlBcmdzLnB1c2goaSlcclxuICAgICAgcHJvYy5hcnJheUJsb2NrSW5kaWNlcy5wdXNoKGFyZ190eXBlLmJsb2NrSW5kaWNlcyA/IGFyZ190eXBlLmJsb2NrSW5kaWNlcyA6IDApXHJcbiAgICAgIHByb2Muc2hpbUFyZ3MucHVzaChcImFycmF5XCIgKyBpKVxyXG4gICAgICBpZihpIDwgcHJvYy5wcmUuYXJncy5sZW5ndGggJiYgcHJvYy5wcmUuYXJnc1tpXS5jb3VudD4wKSB7XHJcbiAgICAgICAgdGhyb3cgbmV3IEVycm9yKFwiY3dpc2U6IHByZSgpIGJsb2NrIG1heSBub3QgcmVmZXJlbmNlIGFycmF5IGFyZ3NcIilcclxuICAgICAgfVxyXG4gICAgICBpZihpIDwgcHJvYy5wb3N0LmFyZ3MubGVuZ3RoICYmIHByb2MucG9zdC5hcmdzW2ldLmNvdW50PjApIHtcclxuICAgICAgICB0aHJvdyBuZXcgRXJyb3IoXCJjd2lzZTogcG9zdCgpIGJsb2NrIG1heSBub3QgcmVmZXJlbmNlIGFycmF5IGFyZ3NcIilcclxuICAgICAgfVxyXG4gICAgfSBlbHNlIGlmKGFyZ190eXBlID09PSBcInNjYWxhclwiKSB7XHJcbiAgICAgIHByb2Muc2NhbGFyQXJncy5wdXNoKGkpXHJcbiAgICAgIHByb2Muc2hpbUFyZ3MucHVzaChcInNjYWxhclwiICsgaSlcclxuICAgIH0gZWxzZSBpZihhcmdfdHlwZSA9PT0gXCJpbmRleFwiKSB7XHJcbiAgICAgIHByb2MuaW5kZXhBcmdzLnB1c2goaSlcclxuICAgICAgaWYoaSA8IHByb2MucHJlLmFyZ3MubGVuZ3RoICYmIHByb2MucHJlLmFyZ3NbaV0uY291bnQgPiAwKSB7XHJcbiAgICAgICAgdGhyb3cgbmV3IEVycm9yKFwiY3dpc2U6IHByZSgpIGJsb2NrIG1heSBub3QgcmVmZXJlbmNlIGFycmF5IGluZGV4XCIpXHJcbiAgICAgIH1cclxuICAgICAgaWYoaSA8IHByb2MuYm9keS5hcmdzLmxlbmd0aCAmJiBwcm9jLmJvZHkuYXJnc1tpXS5sdmFsdWUpIHtcclxuICAgICAgICB0aHJvdyBuZXcgRXJyb3IoXCJjd2lzZTogYm9keSgpIGJsb2NrIG1heSBub3Qgd3JpdGUgdG8gYXJyYXkgaW5kZXhcIilcclxuICAgICAgfVxyXG4gICAgICBpZihpIDwgcHJvYy5wb3N0LmFyZ3MubGVuZ3RoICYmIHByb2MucG9zdC5hcmdzW2ldLmNvdW50ID4gMCkge1xyXG4gICAgICAgIHRocm93IG5ldyBFcnJvcihcImN3aXNlOiBwb3N0KCkgYmxvY2sgbWF5IG5vdCByZWZlcmVuY2UgYXJyYXkgaW5kZXhcIilcclxuICAgICAgfVxyXG4gICAgfSBlbHNlIGlmKGFyZ190eXBlID09PSBcInNoYXBlXCIpIHtcclxuICAgICAgcHJvYy5zaGFwZUFyZ3MucHVzaChpKVxyXG4gICAgICBpZihpIDwgcHJvYy5wcmUuYXJncy5sZW5ndGggJiYgcHJvYy5wcmUuYXJnc1tpXS5sdmFsdWUpIHtcclxuICAgICAgICB0aHJvdyBuZXcgRXJyb3IoXCJjd2lzZTogcHJlKCkgYmxvY2sgbWF5IG5vdCB3cml0ZSB0byBhcnJheSBzaGFwZVwiKVxyXG4gICAgICB9XHJcbiAgICAgIGlmKGkgPCBwcm9jLmJvZHkuYXJncy5sZW5ndGggJiYgcHJvYy5ib2R5LmFyZ3NbaV0ubHZhbHVlKSB7XHJcbiAgICAgICAgdGhyb3cgbmV3IEVycm9yKFwiY3dpc2U6IGJvZHkoKSBibG9jayBtYXkgbm90IHdyaXRlIHRvIGFycmF5IHNoYXBlXCIpXHJcbiAgICAgIH1cclxuICAgICAgaWYoaSA8IHByb2MucG9zdC5hcmdzLmxlbmd0aCAmJiBwcm9jLnBvc3QuYXJnc1tpXS5sdmFsdWUpIHtcclxuICAgICAgICB0aHJvdyBuZXcgRXJyb3IoXCJjd2lzZTogcG9zdCgpIGJsb2NrIG1heSBub3Qgd3JpdGUgdG8gYXJyYXkgc2hhcGVcIilcclxuICAgICAgfVxyXG4gICAgfSBlbHNlIGlmKHR5cGVvZiBhcmdfdHlwZSA9PT0gXCJvYmplY3RcIiAmJiBhcmdfdHlwZS5vZmZzZXQpIHtcclxuICAgICAgcHJvYy5hcmdUeXBlc1tpXSA9IFwib2Zmc2V0XCJcclxuICAgICAgcHJvYy5vZmZzZXRBcmdzLnB1c2goeyBhcnJheTogYXJnX3R5cGUuYXJyYXksIG9mZnNldDphcmdfdHlwZS5vZmZzZXQgfSlcclxuICAgICAgcHJvYy5vZmZzZXRBcmdJbmRleC5wdXNoKGkpXHJcbiAgICB9IGVsc2Uge1xyXG4gICAgICB0aHJvdyBuZXcgRXJyb3IoXCJjd2lzZTogVW5rbm93biBhcmd1bWVudCB0eXBlIFwiICsgcHJvY19hcmdzW2ldKVxyXG4gICAgfVxyXG4gIH1cclxuICBcclxuICAvL01ha2Ugc3VyZSBhdCBsZWFzdCBvbmUgYXJyYXkgYXJndW1lbnQgd2FzIHNwZWNpZmllZFxyXG4gIGlmKHByb2MuYXJyYXlBcmdzLmxlbmd0aCA8PSAwKSB7XHJcbiAgICB0aHJvdyBuZXcgRXJyb3IoXCJjd2lzZTogTm8gYXJyYXkgYXJndW1lbnRzIHNwZWNpZmllZFwiKVxyXG4gIH1cclxuICBcclxuICAvL01ha2Ugc3VyZSBhcmd1bWVudHMgYXJlIGNvcnJlY3RcclxuICBpZihwcm9jLnByZS5hcmdzLmxlbmd0aCA+IHByb2NfYXJncy5sZW5ndGgpIHtcclxuICAgIHRocm93IG5ldyBFcnJvcihcImN3aXNlOiBUb28gbWFueSBhcmd1bWVudHMgaW4gcHJlKCkgYmxvY2tcIilcclxuICB9XHJcbiAgaWYocHJvYy5ib2R5LmFyZ3MubGVuZ3RoID4gcHJvY19hcmdzLmxlbmd0aCkge1xyXG4gICAgdGhyb3cgbmV3IEVycm9yKFwiY3dpc2U6IFRvbyBtYW55IGFyZ3VtZW50cyBpbiBib2R5KCkgYmxvY2tcIilcclxuICB9XHJcbiAgaWYocHJvYy5wb3N0LmFyZ3MubGVuZ3RoID4gcHJvY19hcmdzLmxlbmd0aCkge1xyXG4gICAgdGhyb3cgbmV3IEVycm9yKFwiY3dpc2U6IFRvbyBtYW55IGFyZ3VtZW50cyBpbiBwb3N0KCkgYmxvY2tcIilcclxuICB9XHJcblxyXG4gIC8vQ2hlY2sgZGVidWcgZmxhZ1xyXG4gIHByb2MuZGVidWcgPSAhIXVzZXJfYXJncy5wcmludENvZGUgfHwgISF1c2VyX2FyZ3MuZGVidWdcclxuICBcclxuICAvL1JldHJpZXZlIG5hbWVcclxuICBwcm9jLmZ1bmNOYW1lID0gdXNlcl9hcmdzLmZ1bmNOYW1lIHx8IFwiY3dpc2VcIlxyXG4gIFxyXG4gIC8vUmVhZCBpbiBibG9jayBzaXplXHJcbiAgcHJvYy5ibG9ja1NpemUgPSB1c2VyX2FyZ3MuYmxvY2tTaXplIHx8IDY0XHJcblxyXG4gIHJldHVybiBjcmVhdGVUaHVuayhwcm9jKVxyXG59XHJcblxyXG5tb2R1bGUuZXhwb3J0cyA9IGNvbXBpbGVDd2lzZVxyXG5cblxuXG4vLy8vLy8vLy8vLy8vLy8vLy9cbi8vIFdFQlBBQ0sgRk9PVEVSXG4vLyAuLi9+L2N3aXNlLWNvbXBpbGVyL2NvbXBpbGVyLmpzXG4vLyBtb2R1bGUgaWQgPSA3XG4vLyBtb2R1bGUgY2h1bmtzID0gMCJdLCJzb3VyY2VSb290IjoiIn0=");
+	"use strict"
+	
+	var createThunk = __webpack_require__(8)
+	
+	function Procedure() {
+	  this.argTypes = []
+	  this.shimArgs = []
+	  this.arrayArgs = []
+	  this.arrayBlockIndices = []
+	  this.scalarArgs = []
+	  this.offsetArgs = []
+	  this.offsetArgIndex = []
+	  this.indexArgs = []
+	  this.shapeArgs = []
+	  this.funcName = ""
+	  this.pre = null
+	  this.body = null
+	  this.post = null
+	  this.debug = false
+	}
+	
+	function compileCwise(user_args) {
+	  //Create procedure
+	  var proc = new Procedure()
+	  
+	  //Parse blocks
+	  proc.pre    = user_args.pre
+	  proc.body   = user_args.body
+	  proc.post   = user_args.post
+	
+	  //Parse arguments
+	  var proc_args = user_args.args.slice(0)
+	  proc.argTypes = proc_args
+	  for(var i=0; i<proc_args.length; ++i) {
+	    var arg_type = proc_args[i]
+	    if(arg_type === "array" || (typeof arg_type === "object" && arg_type.blockIndices)) {
+	      proc.argTypes[i] = "array"
+	      proc.arrayArgs.push(i)
+	      proc.arrayBlockIndices.push(arg_type.blockIndices ? arg_type.blockIndices : 0)
+	      proc.shimArgs.push("array" + i)
+	      if(i < proc.pre.args.length && proc.pre.args[i].count>0) {
+	        throw new Error("cwise: pre() block may not reference array args")
+	      }
+	      if(i < proc.post.args.length && proc.post.args[i].count>0) {
+	        throw new Error("cwise: post() block may not reference array args")
+	      }
+	    } else if(arg_type === "scalar") {
+	      proc.scalarArgs.push(i)
+	      proc.shimArgs.push("scalar" + i)
+	    } else if(arg_type === "index") {
+	      proc.indexArgs.push(i)
+	      if(i < proc.pre.args.length && proc.pre.args[i].count > 0) {
+	        throw new Error("cwise: pre() block may not reference array index")
+	      }
+	      if(i < proc.body.args.length && proc.body.args[i].lvalue) {
+	        throw new Error("cwise: body() block may not write to array index")
+	      }
+	      if(i < proc.post.args.length && proc.post.args[i].count > 0) {
+	        throw new Error("cwise: post() block may not reference array index")
+	      }
+	    } else if(arg_type === "shape") {
+	      proc.shapeArgs.push(i)
+	      if(i < proc.pre.args.length && proc.pre.args[i].lvalue) {
+	        throw new Error("cwise: pre() block may not write to array shape")
+	      }
+	      if(i < proc.body.args.length && proc.body.args[i].lvalue) {
+	        throw new Error("cwise: body() block may not write to array shape")
+	      }
+	      if(i < proc.post.args.length && proc.post.args[i].lvalue) {
+	        throw new Error("cwise: post() block may not write to array shape")
+	      }
+	    } else if(typeof arg_type === "object" && arg_type.offset) {
+	      proc.argTypes[i] = "offset"
+	      proc.offsetArgs.push({ array: arg_type.array, offset:arg_type.offset })
+	      proc.offsetArgIndex.push(i)
+	    } else {
+	      throw new Error("cwise: Unknown argument type " + proc_args[i])
+	    }
+	  }
+	  
+	  //Make sure at least one array argument was specified
+	  if(proc.arrayArgs.length <= 0) {
+	    throw new Error("cwise: No array arguments specified")
+	  }
+	  
+	  //Make sure arguments are correct
+	  if(proc.pre.args.length > proc_args.length) {
+	    throw new Error("cwise: Too many arguments in pre() block")
+	  }
+	  if(proc.body.args.length > proc_args.length) {
+	    throw new Error("cwise: Too many arguments in body() block")
+	  }
+	  if(proc.post.args.length > proc_args.length) {
+	    throw new Error("cwise: Too many arguments in post() block")
+	  }
+	
+	  //Check debug flag
+	  proc.debug = !!user_args.printCode || !!user_args.debug
+	  
+	  //Retrieve name
+	  proc.funcName = user_args.funcName || "cwise"
+	  
+	  //Read in block size
+	  proc.blockSize = user_args.blockSize || 64
+	
+	  return createThunk(proc)
+	}
+	
+	module.exports = compileCwise
+
 
 /***/ },
 /* 8 */
 /***/ function(module, exports, __webpack_require__) {
 
-	eval("\"use strict\"\r\n\r\n// The function below is called when constructing a cwise function object, and does the following:\r\n// A function object is constructed which accepts as argument a compilation function and returns another function.\r\n// It is this other function that is eventually returned by createThunk, and this function is the one that actually\r\n// checks whether a certain pattern of arguments has already been used before and compiles new loops as needed.\r\n// The compilation passed to the first function object is used for compiling new functions.\r\n// Once this function object is created, it is called with compile as argument, where the first argument of compile\r\n// is bound to \"proc\" (essentially containing a preprocessed version of the user arguments to cwise).\r\n// So createThunk roughly works like this:\r\n// function createThunk(proc) {\r\n//   var thunk = function(compileBound) {\r\n//     var CACHED = {}\r\n//     return function(arrays and scalars) {\r\n//       if (dtype and order of arrays in CACHED) {\r\n//         var func = CACHED[dtype and order of arrays]\r\n//       } else {\r\n//         var func = CACHED[dtype and order of arrays] = compileBound(dtype and order of arrays)\r\n//       }\r\n//       return func(arrays and scalars)\r\n//     }\r\n//   }\r\n//   return thunk(compile.bind1(proc))\r\n// }\r\n\r\nvar compile = __webpack_require__(9)\r\n\r\nfunction createThunk(proc) {\r\n  var code = [\"'use strict'\", \"var CACHED={}\"]\r\n  var vars = []\r\n  var thunkName = proc.funcName + \"_cwise_thunk\"\r\n  \r\n  //Build thunk\r\n  code.push([\"return function \", thunkName, \"(\", proc.shimArgs.join(\",\"), \"){\"].join(\"\"))\r\n  var typesig = []\r\n  var string_typesig = []\r\n  var proc_args = [[\"array\",proc.arrayArgs[0],\".shape.slice(\", // Slice shape so that we only retain the shape over which we iterate (which gets passed to the cwise operator as SS).\r\n                    Math.max(0,proc.arrayBlockIndices[0]),proc.arrayBlockIndices[0]<0?(\",\"+proc.arrayBlockIndices[0]+\")\"):\")\"].join(\"\")]\r\n  var shapeLengthConditions = [], shapeConditions = []\r\n  // Process array arguments\r\n  for(var i=0; i<proc.arrayArgs.length; ++i) {\r\n    var j = proc.arrayArgs[i]\r\n    vars.push([\"t\", j, \"=array\", j, \".dtype,\",\r\n               \"r\", j, \"=array\", j, \".order\"].join(\"\"))\r\n    typesig.push(\"t\" + j)\r\n    typesig.push(\"r\" + j)\r\n    string_typesig.push(\"t\"+j)\r\n    string_typesig.push(\"r\"+j+\".join()\")\r\n    proc_args.push(\"array\" + j + \".data\")\r\n    proc_args.push(\"array\" + j + \".stride\")\r\n    proc_args.push(\"array\" + j + \".offset|0\")\r\n    if (i>0) { // Gather conditions to check for shape equality (ignoring block indices)\r\n      shapeLengthConditions.push(\"array\" + proc.arrayArgs[0] + \".shape.length===array\" + j + \".shape.length+\" + (Math.abs(proc.arrayBlockIndices[0])-Math.abs(proc.arrayBlockIndices[i])))\r\n      shapeConditions.push(\"array\" + proc.arrayArgs[0] + \".shape[shapeIndex+\" + Math.max(0,proc.arrayBlockIndices[0]) + \"]===array\" + j + \".shape[shapeIndex+\" + Math.max(0,proc.arrayBlockIndices[i]) + \"]\")\r\n    }\r\n  }\r\n  // Check for shape equality\r\n  if (proc.arrayArgs.length > 1) {\r\n    code.push(\"if (!(\" + shapeLengthConditions.join(\" && \") + \")) throw new Error('cwise: Arrays do not all have the same dimensionality!')\")\r\n    code.push(\"for(var shapeIndex=array\" + proc.arrayArgs[0] + \".shape.length-\" + Math.abs(proc.arrayBlockIndices[0]) + \"; shapeIndex-->0;) {\")\r\n    code.push(\"if (!(\" + shapeConditions.join(\" && \") + \")) throw new Error('cwise: Arrays do not all have the same shape!')\")\r\n    code.push(\"}\")\r\n  }\r\n  // Process scalar arguments\r\n  for(var i=0; i<proc.scalarArgs.length; ++i) {\r\n    proc_args.push(\"scalar\" + proc.scalarArgs[i])\r\n  }\r\n  // Check for cached function (and if not present, generate it)\r\n  vars.push([\"type=[\", string_typesig.join(\",\"), \"].join()\"].join(\"\"))\r\n  vars.push(\"proc=CACHED[type]\")\r\n  code.push(\"var \" + vars.join(\",\"))\r\n  \r\n  code.push([\"if(!proc){\",\r\n             \"CACHED[type]=proc=compile([\", typesig.join(\",\"), \"])}\",\r\n             \"return proc(\", proc_args.join(\",\"), \")}\"].join(\"\"))\r\n\r\n  if(proc.debug) {\r\n    console.log(\"-----Generated thunk:\\n\" + code.join(\"\\n\") + \"\\n----------\")\r\n  }\r\n  \r\n  //Compile thunk\r\n  var thunk = new Function(\"compile\", code.join(\"\\n\"))\r\n  return thunk(compile.bind(undefined, proc))\r\n}\r\n\r\nmodule.exports = createThunk\r\n//# sourceMappingURL=data:application/json;charset=utf-8;base64,eyJ2ZXJzaW9uIjozLCJzb3VyY2VzIjpbIndlYnBhY2s6Ly8vLi4vfi9jd2lzZS1jb21waWxlci9saWIvdGh1bmsuanM/NTNiNiJdLCJuYW1lcyI6W10sIm1hcHBpbmdzIjoiQUFBQTs7QUFFQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0EsVUFBVTtBQUNWO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBOztBQUVBOztBQUVBO0FBQ0EsNENBQTRDO0FBQzVDO0FBQ0E7O0FBRUE7QUFDQSw2RUFBNkU7QUFDN0U7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0EsY0FBYyx5QkFBeUI7QUFDdkM7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQSxjQUFjO0FBQ2Q7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQSwwSEFBMEgsZ0JBQWdCLEdBQUc7QUFDN0k7QUFDQSxnQkFBZ0I7QUFDaEI7QUFDQTtBQUNBLGNBQWMsMEJBQTBCO0FBQ3hDO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTs7QUFFQSx3QkFBd0I7QUFDeEIsbUVBQW1FO0FBQ25FLHFEQUFxRDs7QUFFckQ7QUFDQTtBQUNBOztBQUVBO0FBQ0E7QUFDQTtBQUNBOztBQUVBIiwiZmlsZSI6IjguanMiLCJzb3VyY2VzQ29udGVudCI6WyJcInVzZSBzdHJpY3RcIlxyXG5cclxuLy8gVGhlIGZ1bmN0aW9uIGJlbG93IGlzIGNhbGxlZCB3aGVuIGNvbnN0cnVjdGluZyBhIGN3aXNlIGZ1bmN0aW9uIG9iamVjdCwgYW5kIGRvZXMgdGhlIGZvbGxvd2luZzpcclxuLy8gQSBmdW5jdGlvbiBvYmplY3QgaXMgY29uc3RydWN0ZWQgd2hpY2ggYWNjZXB0cyBhcyBhcmd1bWVudCBhIGNvbXBpbGF0aW9uIGZ1bmN0aW9uIGFuZCByZXR1cm5zIGFub3RoZXIgZnVuY3Rpb24uXHJcbi8vIEl0IGlzIHRoaXMgb3RoZXIgZnVuY3Rpb24gdGhhdCBpcyBldmVudHVhbGx5IHJldHVybmVkIGJ5IGNyZWF0ZVRodW5rLCBhbmQgdGhpcyBmdW5jdGlvbiBpcyB0aGUgb25lIHRoYXQgYWN0dWFsbHlcclxuLy8gY2hlY2tzIHdoZXRoZXIgYSBjZXJ0YWluIHBhdHRlcm4gb2YgYXJndW1lbnRzIGhhcyBhbHJlYWR5IGJlZW4gdXNlZCBiZWZvcmUgYW5kIGNvbXBpbGVzIG5ldyBsb29wcyBhcyBuZWVkZWQuXHJcbi8vIFRoZSBjb21waWxhdGlvbiBwYXNzZWQgdG8gdGhlIGZpcnN0IGZ1bmN0aW9uIG9iamVjdCBpcyB1c2VkIGZvciBjb21waWxpbmcgbmV3IGZ1bmN0aW9ucy5cclxuLy8gT25jZSB0aGlzIGZ1bmN0aW9uIG9iamVjdCBpcyBjcmVhdGVkLCBpdCBpcyBjYWxsZWQgd2l0aCBjb21waWxlIGFzIGFyZ3VtZW50LCB3aGVyZSB0aGUgZmlyc3QgYXJndW1lbnQgb2YgY29tcGlsZVxyXG4vLyBpcyBib3VuZCB0byBcInByb2NcIiAoZXNzZW50aWFsbHkgY29udGFpbmluZyBhIHByZXByb2Nlc3NlZCB2ZXJzaW9uIG9mIHRoZSB1c2VyIGFyZ3VtZW50cyB0byBjd2lzZSkuXHJcbi8vIFNvIGNyZWF0ZVRodW5rIHJvdWdobHkgd29ya3MgbGlrZSB0aGlzOlxyXG4vLyBmdW5jdGlvbiBjcmVhdGVUaHVuayhwcm9jKSB7XHJcbi8vICAgdmFyIHRodW5rID0gZnVuY3Rpb24oY29tcGlsZUJvdW5kKSB7XHJcbi8vICAgICB2YXIgQ0FDSEVEID0ge31cclxuLy8gICAgIHJldHVybiBmdW5jdGlvbihhcnJheXMgYW5kIHNjYWxhcnMpIHtcclxuLy8gICAgICAgaWYgKGR0eXBlIGFuZCBvcmRlciBvZiBhcnJheXMgaW4gQ0FDSEVEKSB7XHJcbi8vICAgICAgICAgdmFyIGZ1bmMgPSBDQUNIRURbZHR5cGUgYW5kIG9yZGVyIG9mIGFycmF5c11cclxuLy8gICAgICAgfSBlbHNlIHtcclxuLy8gICAgICAgICB2YXIgZnVuYyA9IENBQ0hFRFtkdHlwZSBhbmQgb3JkZXIgb2YgYXJyYXlzXSA9IGNvbXBpbGVCb3VuZChkdHlwZSBhbmQgb3JkZXIgb2YgYXJyYXlzKVxyXG4vLyAgICAgICB9XHJcbi8vICAgICAgIHJldHVybiBmdW5jKGFycmF5cyBhbmQgc2NhbGFycylcclxuLy8gICAgIH1cclxuLy8gICB9XHJcbi8vICAgcmV0dXJuIHRodW5rKGNvbXBpbGUuYmluZDEocHJvYykpXHJcbi8vIH1cclxuXHJcbnZhciBjb21waWxlID0gcmVxdWlyZShcIi4vY29tcGlsZS5qc1wiKVxyXG5cclxuZnVuY3Rpb24gY3JlYXRlVGh1bmsocHJvYykge1xyXG4gIHZhciBjb2RlID0gW1wiJ3VzZSBzdHJpY3QnXCIsIFwidmFyIENBQ0hFRD17fVwiXVxyXG4gIHZhciB2YXJzID0gW11cclxuICB2YXIgdGh1bmtOYW1lID0gcHJvYy5mdW5jTmFtZSArIFwiX2N3aXNlX3RodW5rXCJcclxuICBcclxuICAvL0J1aWxkIHRodW5rXHJcbiAgY29kZS5wdXNoKFtcInJldHVybiBmdW5jdGlvbiBcIiwgdGh1bmtOYW1lLCBcIihcIiwgcHJvYy5zaGltQXJncy5qb2luKFwiLFwiKSwgXCIpe1wiXS5qb2luKFwiXCIpKVxyXG4gIHZhciB0eXBlc2lnID0gW11cclxuICB2YXIgc3RyaW5nX3R5cGVzaWcgPSBbXVxyXG4gIHZhciBwcm9jX2FyZ3MgPSBbW1wiYXJyYXlcIixwcm9jLmFycmF5QXJnc1swXSxcIi5zaGFwZS5zbGljZShcIiwgLy8gU2xpY2Ugc2hhcGUgc28gdGhhdCB3ZSBvbmx5IHJldGFpbiB0aGUgc2hhcGUgb3ZlciB3aGljaCB3ZSBpdGVyYXRlICh3aGljaCBnZXRzIHBhc3NlZCB0byB0aGUgY3dpc2Ugb3BlcmF0b3IgYXMgU1MpLlxyXG4gICAgICAgICAgICAgICAgICAgIE1hdGgubWF4KDAscHJvYy5hcnJheUJsb2NrSW5kaWNlc1swXSkscHJvYy5hcnJheUJsb2NrSW5kaWNlc1swXTwwPyhcIixcIitwcm9jLmFycmF5QmxvY2tJbmRpY2VzWzBdK1wiKVwiKTpcIilcIl0uam9pbihcIlwiKV1cclxuICB2YXIgc2hhcGVMZW5ndGhDb25kaXRpb25zID0gW10sIHNoYXBlQ29uZGl0aW9ucyA9IFtdXHJcbiAgLy8gUHJvY2VzcyBhcnJheSBhcmd1bWVudHNcclxuICBmb3IodmFyIGk9MDsgaTxwcm9jLmFycmF5QXJncy5sZW5ndGg7ICsraSkge1xyXG4gICAgdmFyIGogPSBwcm9jLmFycmF5QXJnc1tpXVxyXG4gICAgdmFycy5wdXNoKFtcInRcIiwgaiwgXCI9YXJyYXlcIiwgaiwgXCIuZHR5cGUsXCIsXHJcbiAgICAgICAgICAgICAgIFwiclwiLCBqLCBcIj1hcnJheVwiLCBqLCBcIi5vcmRlclwiXS5qb2luKFwiXCIpKVxyXG4gICAgdHlwZXNpZy5wdXNoKFwidFwiICsgailcclxuICAgIHR5cGVzaWcucHVzaChcInJcIiArIGopXHJcbiAgICBzdHJpbmdfdHlwZXNpZy5wdXNoKFwidFwiK2opXHJcbiAgICBzdHJpbmdfdHlwZXNpZy5wdXNoKFwiclwiK2orXCIuam9pbigpXCIpXHJcbiAgICBwcm9jX2FyZ3MucHVzaChcImFycmF5XCIgKyBqICsgXCIuZGF0YVwiKVxyXG4gICAgcHJvY19hcmdzLnB1c2goXCJhcnJheVwiICsgaiArIFwiLnN0cmlkZVwiKVxyXG4gICAgcHJvY19hcmdzLnB1c2goXCJhcnJheVwiICsgaiArIFwiLm9mZnNldHwwXCIpXHJcbiAgICBpZiAoaT4wKSB7IC8vIEdhdGhlciBjb25kaXRpb25zIHRvIGNoZWNrIGZvciBzaGFwZSBlcXVhbGl0eSAoaWdub3JpbmcgYmxvY2sgaW5kaWNlcylcclxuICAgICAgc2hhcGVMZW5ndGhDb25kaXRpb25zLnB1c2goXCJhcnJheVwiICsgcHJvYy5hcnJheUFyZ3NbMF0gKyBcIi5zaGFwZS5sZW5ndGg9PT1hcnJheVwiICsgaiArIFwiLnNoYXBlLmxlbmd0aCtcIiArIChNYXRoLmFicyhwcm9jLmFycmF5QmxvY2tJbmRpY2VzWzBdKS1NYXRoLmFicyhwcm9jLmFycmF5QmxvY2tJbmRpY2VzW2ldKSkpXHJcbiAgICAgIHNoYXBlQ29uZGl0aW9ucy5wdXNoKFwiYXJyYXlcIiArIHByb2MuYXJyYXlBcmdzWzBdICsgXCIuc2hhcGVbc2hhcGVJbmRleCtcIiArIE1hdGgubWF4KDAscHJvYy5hcnJheUJsb2NrSW5kaWNlc1swXSkgKyBcIl09PT1hcnJheVwiICsgaiArIFwiLnNoYXBlW3NoYXBlSW5kZXgrXCIgKyBNYXRoLm1heCgwLHByb2MuYXJyYXlCbG9ja0luZGljZXNbaV0pICsgXCJdXCIpXHJcbiAgICB9XHJcbiAgfVxyXG4gIC8vIENoZWNrIGZvciBzaGFwZSBlcXVhbGl0eVxyXG4gIGlmIChwcm9jLmFycmF5QXJncy5sZW5ndGggPiAxKSB7XHJcbiAgICBjb2RlLnB1c2goXCJpZiAoIShcIiArIHNoYXBlTGVuZ3RoQ29uZGl0aW9ucy5qb2luKFwiICYmIFwiKSArIFwiKSkgdGhyb3cgbmV3IEVycm9yKCdjd2lzZTogQXJyYXlzIGRvIG5vdCBhbGwgaGF2ZSB0aGUgc2FtZSBkaW1lbnNpb25hbGl0eSEnKVwiKVxyXG4gICAgY29kZS5wdXNoKFwiZm9yKHZhciBzaGFwZUluZGV4PWFycmF5XCIgKyBwcm9jLmFycmF5QXJnc1swXSArIFwiLnNoYXBlLmxlbmd0aC1cIiArIE1hdGguYWJzKHByb2MuYXJyYXlCbG9ja0luZGljZXNbMF0pICsgXCI7IHNoYXBlSW5kZXgtLT4wOykge1wiKVxyXG4gICAgY29kZS5wdXNoKFwiaWYgKCEoXCIgKyBzaGFwZUNvbmRpdGlvbnMuam9pbihcIiAmJiBcIikgKyBcIikpIHRocm93IG5ldyBFcnJvcignY3dpc2U6IEFycmF5cyBkbyBub3QgYWxsIGhhdmUgdGhlIHNhbWUgc2hhcGUhJylcIilcclxuICAgIGNvZGUucHVzaChcIn1cIilcclxuICB9XHJcbiAgLy8gUHJvY2VzcyBzY2FsYXIgYXJndW1lbnRzXHJcbiAgZm9yKHZhciBpPTA7IGk8cHJvYy5zY2FsYXJBcmdzLmxlbmd0aDsgKytpKSB7XHJcbiAgICBwcm9jX2FyZ3MucHVzaChcInNjYWxhclwiICsgcHJvYy5zY2FsYXJBcmdzW2ldKVxyXG4gIH1cclxuICAvLyBDaGVjayBmb3IgY2FjaGVkIGZ1bmN0aW9uIChhbmQgaWYgbm90IHByZXNlbnQsIGdlbmVyYXRlIGl0KVxyXG4gIHZhcnMucHVzaChbXCJ0eXBlPVtcIiwgc3RyaW5nX3R5cGVzaWcuam9pbihcIixcIiksIFwiXS5qb2luKClcIl0uam9pbihcIlwiKSlcclxuICB2YXJzLnB1c2goXCJwcm9jPUNBQ0hFRFt0eXBlXVwiKVxyXG4gIGNvZGUucHVzaChcInZhciBcIiArIHZhcnMuam9pbihcIixcIikpXHJcbiAgXHJcbiAgY29kZS5wdXNoKFtcImlmKCFwcm9jKXtcIixcclxuICAgICAgICAgICAgIFwiQ0FDSEVEW3R5cGVdPXByb2M9Y29tcGlsZShbXCIsIHR5cGVzaWcuam9pbihcIixcIiksIFwiXSl9XCIsXHJcbiAgICAgICAgICAgICBcInJldHVybiBwcm9jKFwiLCBwcm9jX2FyZ3Muam9pbihcIixcIiksIFwiKX1cIl0uam9pbihcIlwiKSlcclxuXHJcbiAgaWYocHJvYy5kZWJ1Zykge1xyXG4gICAgY29uc29sZS5sb2coXCItLS0tLUdlbmVyYXRlZCB0aHVuazpcXG5cIiArIGNvZGUuam9pbihcIlxcblwiKSArIFwiXFxuLS0tLS0tLS0tLVwiKVxyXG4gIH1cclxuICBcclxuICAvL0NvbXBpbGUgdGh1bmtcclxuICB2YXIgdGh1bmsgPSBuZXcgRnVuY3Rpb24oXCJjb21waWxlXCIsIGNvZGUuam9pbihcIlxcblwiKSlcclxuICByZXR1cm4gdGh1bmsoY29tcGlsZS5iaW5kKHVuZGVmaW5lZCwgcHJvYykpXHJcbn1cclxuXHJcbm1vZHVsZS5leHBvcnRzID0gY3JlYXRlVGh1bmtcclxuXG5cblxuLy8vLy8vLy8vLy8vLy8vLy8vXG4vLyBXRUJQQUNLIEZPT1RFUlxuLy8gLi4vfi9jd2lzZS1jb21waWxlci9saWIvdGh1bmsuanNcbi8vIG1vZHVsZSBpZCA9IDhcbi8vIG1vZHVsZSBjaHVua3MgPSAwIl0sInNvdXJjZVJvb3QiOiIifQ==");
+	"use strict"
+	
+	// The function below is called when constructing a cwise function object, and does the following:
+	// A function object is constructed which accepts as argument a compilation function and returns another function.
+	// It is this other function that is eventually returned by createThunk, and this function is the one that actually
+	// checks whether a certain pattern of arguments has already been used before and compiles new loops as needed.
+	// The compilation passed to the first function object is used for compiling new functions.
+	// Once this function object is created, it is called with compile as argument, where the first argument of compile
+	// is bound to "proc" (essentially containing a preprocessed version of the user arguments to cwise).
+	// So createThunk roughly works like this:
+	// function createThunk(proc) {
+	//   var thunk = function(compileBound) {
+	//     var CACHED = {}
+	//     return function(arrays and scalars) {
+	//       if (dtype and order of arrays in CACHED) {
+	//         var func = CACHED[dtype and order of arrays]
+	//       } else {
+	//         var func = CACHED[dtype and order of arrays] = compileBound(dtype and order of arrays)
+	//       }
+	//       return func(arrays and scalars)
+	//     }
+	//   }
+	//   return thunk(compile.bind1(proc))
+	// }
+	
+	var compile = __webpack_require__(9)
+	
+	function createThunk(proc) {
+	  var code = ["'use strict'", "var CACHED={}"]
+	  var vars = []
+	  var thunkName = proc.funcName + "_cwise_thunk"
+	  
+	  //Build thunk
+	  code.push(["return function ", thunkName, "(", proc.shimArgs.join(","), "){"].join(""))
+	  var typesig = []
+	  var string_typesig = []
+	  var proc_args = [["array",proc.arrayArgs[0],".shape.slice(", // Slice shape so that we only retain the shape over which we iterate (which gets passed to the cwise operator as SS).
+	                    Math.max(0,proc.arrayBlockIndices[0]),proc.arrayBlockIndices[0]<0?(","+proc.arrayBlockIndices[0]+")"):")"].join("")]
+	  var shapeLengthConditions = [], shapeConditions = []
+	  // Process array arguments
+	  for(var i=0; i<proc.arrayArgs.length; ++i) {
+	    var j = proc.arrayArgs[i]
+	    vars.push(["t", j, "=array", j, ".dtype,",
+	               "r", j, "=array", j, ".order"].join(""))
+	    typesig.push("t" + j)
+	    typesig.push("r" + j)
+	    string_typesig.push("t"+j)
+	    string_typesig.push("r"+j+".join()")
+	    proc_args.push("array" + j + ".data")
+	    proc_args.push("array" + j + ".stride")
+	    proc_args.push("array" + j + ".offset|0")
+	    if (i>0) { // Gather conditions to check for shape equality (ignoring block indices)
+	      shapeLengthConditions.push("array" + proc.arrayArgs[0] + ".shape.length===array" + j + ".shape.length+" + (Math.abs(proc.arrayBlockIndices[0])-Math.abs(proc.arrayBlockIndices[i])))
+	      shapeConditions.push("array" + proc.arrayArgs[0] + ".shape[shapeIndex+" + Math.max(0,proc.arrayBlockIndices[0]) + "]===array" + j + ".shape[shapeIndex+" + Math.max(0,proc.arrayBlockIndices[i]) + "]")
+	    }
+	  }
+	  // Check for shape equality
+	  if (proc.arrayArgs.length > 1) {
+	    code.push("if (!(" + shapeLengthConditions.join(" && ") + ")) throw new Error('cwise: Arrays do not all have the same dimensionality!')")
+	    code.push("for(var shapeIndex=array" + proc.arrayArgs[0] + ".shape.length-" + Math.abs(proc.arrayBlockIndices[0]) + "; shapeIndex-->0;) {")
+	    code.push("if (!(" + shapeConditions.join(" && ") + ")) throw new Error('cwise: Arrays do not all have the same shape!')")
+	    code.push("}")
+	  }
+	  // Process scalar arguments
+	  for(var i=0; i<proc.scalarArgs.length; ++i) {
+	    proc_args.push("scalar" + proc.scalarArgs[i])
+	  }
+	  // Check for cached function (and if not present, generate it)
+	  vars.push(["type=[", string_typesig.join(","), "].join()"].join(""))
+	  vars.push("proc=CACHED[type]")
+	  code.push("var " + vars.join(","))
+	  
+	  code.push(["if(!proc){",
+	             "CACHED[type]=proc=compile([", typesig.join(","), "])}",
+	             "return proc(", proc_args.join(","), ")}"].join(""))
+	
+	  if(proc.debug) {
+	    console.log("-----Generated thunk:\n" + code.join("\n") + "\n----------")
+	  }
+	  
+	  //Compile thunk
+	  var thunk = new Function("compile", code.join("\n"))
+	  return thunk(compile.bind(undefined, proc))
+	}
+	
+	module.exports = createThunk
+
 
 /***/ },
 /* 9 */
 /***/ function(module, exports, __webpack_require__) {
 
-	eval("\"use strict\"\r\n\r\nvar uniq = __webpack_require__(10)\r\n\r\n// This function generates very simple loops analogous to how you typically traverse arrays (the outermost loop corresponds to the slowest changing index, the innermost loop to the fastest changing index)\r\n// TODO: If two arrays have the same strides (and offsets) there is potential for decreasing the number of \"pointers\" and related variables. The drawback is that the type signature would become more specific and that there would thus be less potential for caching, but it might still be worth it, especially when dealing with large numbers of arguments.\r\nfunction innerFill(order, proc, body) {\r\n  var dimension = order.length\r\n    , nargs = proc.arrayArgs.length\r\n    , has_index = proc.indexArgs.length>0\r\n    , code = []\r\n    , vars = []\r\n    , idx=0, pidx=0, i, j\r\n  for(i=0; i<dimension; ++i) { // Iteration variables\r\n    vars.push([\"i\",i,\"=0\"].join(\"\"))\r\n  }\r\n  //Compute scan deltas\r\n  for(j=0; j<nargs; ++j) {\r\n    for(i=0; i<dimension; ++i) {\r\n      pidx = idx\r\n      idx = order[i]\r\n      if(i === 0) { // The innermost/fastest dimension's delta is simply its stride\r\n        vars.push([\"d\",j,\"s\",i,\"=t\",j,\"p\",idx].join(\"\"))\r\n      } else { // For other dimensions the delta is basically the stride minus something which essentially \"rewinds\" the previous (more inner) dimension\r\n        vars.push([\"d\",j,\"s\",i,\"=(t\",j,\"p\",idx,\"-s\",pidx,\"*t\",j,\"p\",pidx,\")\"].join(\"\"))\r\n      }\r\n    }\r\n  }\r\n  code.push(\"var \" + vars.join(\",\"))\r\n  //Scan loop\r\n  for(i=dimension-1; i>=0; --i) { // Start at largest stride and work your way inwards\r\n    idx = order[i]\r\n    code.push([\"for(i\",i,\"=0;i\",i,\"<s\",idx,\";++i\",i,\"){\"].join(\"\"))\r\n  }\r\n  //Push body of inner loop\r\n  code.push(body)\r\n  //Advance scan pointers\r\n  for(i=0; i<dimension; ++i) {\r\n    pidx = idx\r\n    idx = order[i]\r\n    for(j=0; j<nargs; ++j) {\r\n      code.push([\"p\",j,\"+=d\",j,\"s\",i].join(\"\"))\r\n    }\r\n    if(has_index) {\r\n      if(i > 0) {\r\n        code.push([\"index[\",pidx,\"]-=s\",pidx].join(\"\"))\r\n      }\r\n      code.push([\"++index[\",idx,\"]\"].join(\"\"))\r\n    }\r\n    code.push(\"}\")\r\n  }\r\n  return code.join(\"\\n\")\r\n}\r\n\r\n// Generate \"outer\" loops that loop over blocks of data, applying \"inner\" loops to the blocks by manipulating the local variables in such a way that the inner loop only \"sees\" the current block.\r\n// TODO: If this is used, then the previous declaration (done by generateCwiseOp) of s* is essentially unnecessary.\r\n//       I believe the s* are not used elsewhere (in particular, I don't think they're used in the pre/post parts and \"shape\" is defined independently), so it would be possible to make defining the s* dependent on what loop method is being used.\r\nfunction outerFill(matched, order, proc, body) {\r\n  var dimension = order.length\r\n    , nargs = proc.arrayArgs.length\r\n    , blockSize = proc.blockSize\r\n    , has_index = proc.indexArgs.length > 0\r\n    , code = []\r\n  for(var i=0; i<nargs; ++i) {\r\n    code.push([\"var offset\",i,\"=p\",i].join(\"\"))\r\n  }\r\n  //Generate loops for unmatched dimensions\r\n  // The order in which these dimensions are traversed is fairly arbitrary (from small stride to large stride, for the first argument)\r\n  // TODO: It would be nice if the order in which these loops are placed would also be somehow \"optimal\" (at the very least we should check that it really doesn't hurt us if they're not).\r\n  for(var i=matched; i<dimension; ++i) {\r\n    code.push([\"for(var j\"+i+\"=SS[\", order[i], \"]|0;j\", i, \">0;){\"].join(\"\")) // Iterate back to front\r\n    code.push([\"if(j\",i,\"<\",blockSize,\"){\"].join(\"\")) // Either decrease j by blockSize (s = blockSize), or set it to zero (after setting s = j).\r\n    code.push([\"s\",order[i],\"=j\",i].join(\"\"))\r\n    code.push([\"j\",i,\"=0\"].join(\"\"))\r\n    code.push([\"}else{s\",order[i],\"=\",blockSize].join(\"\"))\r\n    code.push([\"j\",i,\"-=\",blockSize,\"}\"].join(\"\"))\r\n    if(has_index) {\r\n      code.push([\"index[\",order[i],\"]=j\",i].join(\"\"))\r\n    }\r\n  }\r\n  for(var i=0; i<nargs; ++i) {\r\n    var indexStr = [\"offset\"+i]\r\n    for(var j=matched; j<dimension; ++j) {\r\n      indexStr.push([\"j\",j,\"*t\",i,\"p\",order[j]].join(\"\"))\r\n    }\r\n    code.push([\"p\",i,\"=(\",indexStr.join(\"+\"),\")\"].join(\"\"))\r\n  }\r\n  code.push(innerFill(order, proc, body))\r\n  for(var i=matched; i<dimension; ++i) {\r\n    code.push(\"}\")\r\n  }\r\n  return code.join(\"\\n\")\r\n}\r\n\r\n//Count the number of compatible inner orders\r\n// This is the length of the longest common prefix of the arrays in orders.\r\n// Each array in orders lists the dimensions of the correspond ndarray in order of increasing stride.\r\n// This is thus the maximum number of dimensions that can be efficiently traversed by simple nested loops for all arrays.\r\nfunction countMatches(orders) {\r\n  var matched = 0, dimension = orders[0].length\r\n  while(matched < dimension) {\r\n    for(var j=1; j<orders.length; ++j) {\r\n      if(orders[j][matched] !== orders[0][matched]) {\r\n        return matched\r\n      }\r\n    }\r\n    ++matched\r\n  }\r\n  return matched\r\n}\r\n\r\n//Processes a block according to the given data types\r\n// Replaces variable names by different ones, either \"local\" ones (that are then ferried in and out of the given array) or ones matching the arguments that the function performing the ultimate loop will accept.\r\nfunction processBlock(block, proc, dtypes) {\r\n  var code = block.body\r\n  var pre = []\r\n  var post = []\r\n  for(var i=0; i<block.args.length; ++i) {\r\n    var carg = block.args[i]\r\n    if(carg.count <= 0) {\r\n      continue\r\n    }\r\n    var re = new RegExp(carg.name, \"g\")\r\n    var ptrStr = \"\"\r\n    var arrNum = proc.arrayArgs.indexOf(i)\r\n    switch(proc.argTypes[i]) {\r\n      case \"offset\":\r\n        var offArgIndex = proc.offsetArgIndex.indexOf(i)\r\n        var offArg = proc.offsetArgs[offArgIndex]\r\n        arrNum = offArg.array\r\n        ptrStr = \"+q\" + offArgIndex // Adds offset to the \"pointer\" in the array\r\n      case \"array\":\r\n        ptrStr = \"p\" + arrNum + ptrStr\r\n        var localStr = \"l\" + i\r\n        var arrStr = \"a\" + arrNum\r\n        if (proc.arrayBlockIndices[arrNum] === 0) { // Argument to body is just a single value from this array\r\n          if(carg.count === 1) { // Argument/array used only once(?)\r\n            if(dtypes[arrNum] === \"generic\") {\r\n              if(carg.lvalue) {\r\n                pre.push([\"var \", localStr, \"=\", arrStr, \".get(\", ptrStr, \")\"].join(\"\")) // Is this necessary if the argument is ONLY used as an lvalue? (keep in mind that we can have a += something, so we would actually need to check carg.rvalue)\r\n                code = code.replace(re, localStr)\r\n                post.push([arrStr, \".set(\", ptrStr, \",\", localStr,\")\"].join(\"\"))\r\n              } else {\r\n                code = code.replace(re, [arrStr, \".get(\", ptrStr, \")\"].join(\"\"))\r\n              }\r\n            } else {\r\n              code = code.replace(re, [arrStr, \"[\", ptrStr, \"]\"].join(\"\"))\r\n            }\r\n          } else if(dtypes[arrNum] === \"generic\") {\r\n            pre.push([\"var \", localStr, \"=\", arrStr, \".get(\", ptrStr, \")\"].join(\"\")) // TODO: Could we optimize by checking for carg.rvalue?\r\n            code = code.replace(re, localStr)\r\n            if(carg.lvalue) {\r\n              post.push([arrStr, \".set(\", ptrStr, \",\", localStr,\")\"].join(\"\"))\r\n            }\r\n          } else {\r\n            pre.push([\"var \", localStr, \"=\", arrStr, \"[\", ptrStr, \"]\"].join(\"\")) // TODO: Could we optimize by checking for carg.rvalue?\r\n            code = code.replace(re, localStr)\r\n            if(carg.lvalue) {\r\n              post.push([arrStr, \"[\", ptrStr, \"]=\", localStr].join(\"\"))\r\n            }\r\n          }\r\n        } else { // Argument to body is a \"block\"\r\n          var reStrArr = [carg.name], ptrStrArr = [ptrStr]\r\n          for(var j=0; j<Math.abs(proc.arrayBlockIndices[arrNum]); j++) {\r\n            reStrArr.push(\"\\\\s*\\\\[([^\\\\]]+)\\\\]\")\r\n            ptrStrArr.push(\"$\" + (j+1) + \"*t\" + arrNum + \"b\" + j) // Matched index times stride\r\n          }\r\n          re = new RegExp(reStrArr.join(\"\"), \"g\")\r\n          ptrStr = ptrStrArr.join(\"+\")\r\n          if(dtypes[arrNum] === \"generic\") {\r\n            /*if(carg.lvalue) {\r\n              pre.push([\"var \", localStr, \"=\", arrStr, \".get(\", ptrStr, \")\"].join(\"\")) // Is this necessary if the argument is ONLY used as an lvalue? (keep in mind that we can have a += something, so we would actually need to check carg.rvalue)\r\n              code = code.replace(re, localStr)\r\n              post.push([arrStr, \".set(\", ptrStr, \",\", localStr,\")\"].join(\"\"))\r\n            } else {\r\n              code = code.replace(re, [arrStr, \".get(\", ptrStr, \")\"].join(\"\"))\r\n            }*/\r\n            throw new Error(\"cwise: Generic arrays not supported in combination with blocks!\")\r\n          } else {\r\n            // This does not produce any local variables, even if variables are used multiple times. It would be possible to do so, but it would complicate things quite a bit.\r\n            code = code.replace(re, [arrStr, \"[\", ptrStr, \"]\"].join(\"\"))\r\n          }\r\n        }\r\n      break\r\n      case \"scalar\":\r\n        code = code.replace(re, \"Y\" + proc.scalarArgs.indexOf(i))\r\n      break\r\n      case \"index\":\r\n        code = code.replace(re, \"index\")\r\n      break\r\n      case \"shape\":\r\n        code = code.replace(re, \"shape\")\r\n      break\r\n    }\r\n  }\r\n  return [pre.join(\"\\n\"), code, post.join(\"\\n\")].join(\"\\n\").trim()\r\n}\r\n\r\nfunction typeSummary(dtypes) {\r\n  var summary = new Array(dtypes.length)\r\n  var allEqual = true\r\n  for(var i=0; i<dtypes.length; ++i) {\r\n    var t = dtypes[i]\r\n    var digits = t.match(/\\d+/)\r\n    if(!digits) {\r\n      digits = \"\"\r\n    } else {\r\n      digits = digits[0]\r\n    }\r\n    if(t.charAt(0) === 0) {\r\n      summary[i] = \"u\" + t.charAt(1) + digits\r\n    } else {\r\n      summary[i] = t.charAt(0) + digits\r\n    }\r\n    if(i > 0) {\r\n      allEqual = allEqual && summary[i] === summary[i-1]\r\n    }\r\n  }\r\n  if(allEqual) {\r\n    return summary[0]\r\n  }\r\n  return summary.join(\"\")\r\n}\r\n\r\n//Generates a cwise operator\r\nfunction generateCWiseOp(proc, typesig) {\r\n\r\n  //Compute dimension\r\n  // Arrays get put first in typesig, and there are two entries per array (dtype and order), so this gets the number of dimensions in the first array arg.\r\n  var dimension = (typesig[1].length - Math.abs(proc.arrayBlockIndices[0]))|0\r\n  var orders = new Array(proc.arrayArgs.length)\r\n  var dtypes = new Array(proc.arrayArgs.length)\r\n  for(var i=0; i<proc.arrayArgs.length; ++i) {\r\n    dtypes[i] = typesig[2*i]\r\n    orders[i] = typesig[2*i+1]\r\n  }\r\n  \r\n  //Determine where block and loop indices start and end\r\n  var blockBegin = [], blockEnd = [] // These indices are exposed as blocks\r\n  var loopBegin = [], loopEnd = [] // These indices are iterated over\r\n  var loopOrders = [] // orders restricted to the loop indices\r\n  for(var i=0; i<proc.arrayArgs.length; ++i) {\r\n    if (proc.arrayBlockIndices[i]<0) {\r\n      loopBegin.push(0)\r\n      loopEnd.push(dimension)\r\n      blockBegin.push(dimension)\r\n      blockEnd.push(dimension+proc.arrayBlockIndices[i])\r\n    } else {\r\n      loopBegin.push(proc.arrayBlockIndices[i]) // Non-negative\r\n      loopEnd.push(proc.arrayBlockIndices[i]+dimension)\r\n      blockBegin.push(0)\r\n      blockEnd.push(proc.arrayBlockIndices[i])\r\n    }\r\n    var newOrder = []\r\n    for(var j=0; j<orders[i].length; j++) {\r\n      if (loopBegin[i]<=orders[i][j] && orders[i][j]<loopEnd[i]) {\r\n        newOrder.push(orders[i][j]-loopBegin[i]) // If this is a loop index, put it in newOrder, subtracting loopBegin, to make sure that all loopOrders are using a common set of indices.\r\n      }\r\n    }\r\n    loopOrders.push(newOrder)\r\n  }\r\n\r\n  //First create arguments for procedure\r\n  var arglist = [\"SS\"] // SS is the overall shape over which we iterate\r\n  var code = [\"'use strict'\"]\r\n  var vars = []\r\n  \r\n  for(var j=0; j<dimension; ++j) {\r\n    vars.push([\"s\", j, \"=SS[\", j, \"]\"].join(\"\")) // The limits for each dimension.\r\n  }\r\n  for(var i=0; i<proc.arrayArgs.length; ++i) {\r\n    arglist.push(\"a\"+i) // Actual data array\r\n    arglist.push(\"t\"+i) // Strides\r\n    arglist.push(\"p\"+i) // Offset in the array at which the data starts (also used for iterating over the data)\r\n    \r\n    for(var j=0; j<dimension; ++j) { // Unpack the strides into vars for looping\r\n      vars.push([\"t\",i,\"p\",j,\"=t\",i,\"[\",loopBegin[i]+j,\"]\"].join(\"\"))\r\n    }\r\n    \r\n    for(var j=0; j<Math.abs(proc.arrayBlockIndices[i]); ++j) { // Unpack the strides into vars for block iteration\r\n      vars.push([\"t\",i,\"b\",j,\"=t\",i,\"[\",blockBegin[i]+j,\"]\"].join(\"\"))\r\n    }\r\n  }\r\n  for(var i=0; i<proc.scalarArgs.length; ++i) {\r\n    arglist.push(\"Y\" + i)\r\n  }\r\n  if(proc.shapeArgs.length > 0) {\r\n    vars.push(\"shape=SS.slice(0)\") // Makes the shape over which we iterate available to the user defined functions (so you can use width/height for example)\r\n  }\r\n  if(proc.indexArgs.length > 0) {\r\n    // Prepare an array to keep track of the (logical) indices, initialized to dimension zeroes.\r\n    var zeros = new Array(dimension)\r\n    for(var i=0; i<dimension; ++i) {\r\n      zeros[i] = \"0\"\r\n    }\r\n    vars.push([\"index=[\", zeros.join(\",\"), \"]\"].join(\"\"))\r\n  }\r\n  for(var i=0; i<proc.offsetArgs.length; ++i) { // Offset arguments used for stencil operations\r\n    var off_arg = proc.offsetArgs[i]\r\n    var init_string = []\r\n    for(var j=0; j<off_arg.offset.length; ++j) {\r\n      if(off_arg.offset[j] === 0) {\r\n        continue\r\n      } else if(off_arg.offset[j] === 1) {\r\n        init_string.push([\"t\", off_arg.array, \"p\", j].join(\"\"))      \r\n      } else {\r\n        init_string.push([off_arg.offset[j], \"*t\", off_arg.array, \"p\", j].join(\"\"))\r\n      }\r\n    }\r\n    if(init_string.length === 0) {\r\n      vars.push(\"q\" + i + \"=0\")\r\n    } else {\r\n      vars.push([\"q\", i, \"=\", init_string.join(\"+\")].join(\"\"))\r\n    }\r\n  }\r\n\r\n  //Prepare this variables\r\n  var thisVars = uniq([].concat(proc.pre.thisVars)\r\n                      .concat(proc.body.thisVars)\r\n                      .concat(proc.post.thisVars))\r\n  vars = vars.concat(thisVars)\r\n  code.push(\"var \" + vars.join(\",\"))\r\n  for(var i=0; i<proc.arrayArgs.length; ++i) {\r\n    code.push(\"p\"+i+\"|=0\")\r\n  }\r\n  \r\n  //Inline prelude\r\n  if(proc.pre.body.length > 3) {\r\n    code.push(processBlock(proc.pre, proc, dtypes))\r\n  }\r\n\r\n  //Process body\r\n  var body = processBlock(proc.body, proc, dtypes)\r\n  var matched = countMatches(loopOrders)\r\n  if(matched < dimension) {\r\n    code.push(outerFill(matched, loopOrders[0], proc, body)) // TODO: Rather than passing loopOrders[0], it might be interesting to look at passing an order that represents the majority of the arguments for example.\r\n  } else {\r\n    code.push(innerFill(loopOrders[0], proc, body))\r\n  }\r\n\r\n  //Inline epilog\r\n  if(proc.post.body.length > 3) {\r\n    code.push(processBlock(proc.post, proc, dtypes))\r\n  }\r\n  \r\n  if(proc.debug) {\r\n    console.log(\"-----Generated cwise routine for \", typesig, \":\\n\" + code.join(\"\\n\") + \"\\n----------\")\r\n  }\r\n  \r\n  var loopName = [(proc.funcName||\"unnamed\"), \"_cwise_loop_\", orders[0].join(\"s\"),\"m\",matched,typeSummary(dtypes)].join(\"\")\r\n  var f = new Function([\"function \",loopName,\"(\", arglist.join(\",\"),\"){\", code.join(\"\\n\"),\"} return \", loopName].join(\"\"))\r\n  return f()\r\n}\r\nmodule.exports = generateCWiseOp\r\n//# sourceMappingURL=data:application/json;charset=utf-8;base64,eyJ2ZXJzaW9uIjozLCJzb3VyY2VzIjpbIndlYnBhY2s6Ly8vLi4vfi9jd2lzZS1jb21waWxlci9saWIvY29tcGlsZS5qcz82YTQ0Il0sIm5hbWVzIjpbXSwibWFwcGluZ3MiOiJBQUFBOztBQUVBOztBQUVBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBLFVBQVUsYUFBYSxPQUFPO0FBQzlCO0FBQ0E7QUFDQTtBQUNBLFVBQVUsU0FBUztBQUNuQixZQUFZLGFBQWE7QUFDekI7QUFDQTtBQUNBLG1CQUFtQjtBQUNuQjtBQUNBLE9BQU8sT0FBTztBQUNkO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBLG9CQUFvQixNQUFNLE9BQU87QUFDakM7QUFDQSw2QkFBNkIsZ0JBQWdCLFVBQVU7QUFDdkQ7QUFDQTtBQUNBO0FBQ0E7QUFDQSxVQUFVLGFBQWE7QUFDdkI7QUFDQTtBQUNBLFlBQVksU0FBUztBQUNyQjtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0EsZ0JBQWdCO0FBQ2hCO0FBQ0E7QUFDQTs7QUFFQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQSxjQUFjLFNBQVM7QUFDdkI7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBLG9CQUFvQixhQUFhO0FBQ2pDLG9EQUFvRCxXQUFXLEVBQUU7QUFDakUseUNBQXlDO0FBQ3pDO0FBQ0E7QUFDQSxpQkFBaUIsS0FBSztBQUN0QixzQ0FBc0M7QUFDdEM7QUFDQTtBQUNBO0FBQ0E7QUFDQSxjQUFjLFNBQVM7QUFDdkI7QUFDQSxzQkFBc0IsYUFBYTtBQUNuQztBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0Esb0JBQW9CLGFBQWE7QUFDakMsZ0JBQWdCO0FBQ2hCO0FBQ0E7QUFDQTs7QUFFQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBLGdCQUFnQixpQkFBaUI7QUFDakM7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTs7QUFFQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQSxjQUFjLHFCQUFxQjtBQUNuQztBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0EsbURBQW1EO0FBQ25ELGdDQUFnQztBQUNoQztBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0EsZUFBZTtBQUNmO0FBQ0E7QUFDQSxhQUFhO0FBQ2I7QUFDQTtBQUNBLFdBQVc7QUFDWDtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0EsV0FBVztBQUNYO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBLFNBQVMsT0FBTztBQUNoQjtBQUNBLHNCQUFzQiw0Q0FBNEM7QUFDbEU7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQSxhQUFhO0FBQ2I7QUFDQSxhQUFhO0FBQ2I7QUFDQSxXQUFXO0FBQ1g7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBOztBQUVBO0FBQ0E7QUFDQTtBQUNBLGNBQWMsaUJBQWlCO0FBQy9CO0FBQ0E7QUFDQTtBQUNBO0FBQ0EsS0FBSztBQUNMO0FBQ0E7QUFDQTtBQUNBO0FBQ0EsS0FBSztBQUNMO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7O0FBRUE7QUFDQTs7QUFFQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0EsY0FBYyx5QkFBeUI7QUFDdkM7QUFDQTtBQUNBOztBQUVBO0FBQ0E7QUFDQTtBQUNBO0FBQ0EsY0FBYyx5QkFBeUI7QUFDdkM7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBLEtBQUs7QUFDTDtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQSxnQkFBZ0Isb0JBQW9CO0FBQ3BDO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTs7QUFFQTtBQUNBO0FBQ0E7QUFDQTs7QUFFQSxjQUFjLGFBQWE7QUFDM0I7QUFDQTtBQUNBLGNBQWMseUJBQXlCO0FBQ3ZDO0FBQ0E7QUFDQTs7QUFFQSxnQkFBZ0IsYUFBYSxPQUFPO0FBQ3BDO0FBQ0E7O0FBRUEsZ0JBQWdCLHVDQUF1QyxPQUFPO0FBQzlEO0FBQ0E7QUFDQTtBQUNBLGNBQWMsMEJBQTBCO0FBQ3hDO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQSxnQkFBZ0IsYUFBYTtBQUM3QjtBQUNBO0FBQ0E7QUFDQTtBQUNBLGNBQWMsMEJBQTBCLE9BQU87QUFDL0M7QUFDQTtBQUNBLGdCQUFnQix5QkFBeUI7QUFDekM7QUFDQTtBQUNBLE9BQU87QUFDUDtBQUNBLE9BQU87QUFDUDtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0EsS0FBSztBQUNMO0FBQ0E7QUFDQTs7QUFFQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQSxjQUFjLHlCQUF5QjtBQUN2QztBQUNBOztBQUVBO0FBQ0E7QUFDQTtBQUNBOztBQUVBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQSxHQUFHO0FBQ0g7QUFDQTs7QUFFQTtBQUNBO0FBQ0E7QUFDQTs7QUFFQTtBQUNBO0FBQ0E7O0FBRUE7QUFDQSx1RUFBdUUscUJBQXFCO0FBQzVGO0FBQ0E7QUFDQSIsImZpbGUiOiI5LmpzIiwic291cmNlc0NvbnRlbnQiOlsiXCJ1c2Ugc3RyaWN0XCJcclxuXHJcbnZhciB1bmlxID0gcmVxdWlyZShcInVuaXFcIilcclxuXHJcbi8vIFRoaXMgZnVuY3Rpb24gZ2VuZXJhdGVzIHZlcnkgc2ltcGxlIGxvb3BzIGFuYWxvZ291cyB0byBob3cgeW91IHR5cGljYWxseSB0cmF2ZXJzZSBhcnJheXMgKHRoZSBvdXRlcm1vc3QgbG9vcCBjb3JyZXNwb25kcyB0byB0aGUgc2xvd2VzdCBjaGFuZ2luZyBpbmRleCwgdGhlIGlubmVybW9zdCBsb29wIHRvIHRoZSBmYXN0ZXN0IGNoYW5naW5nIGluZGV4KVxyXG4vLyBUT0RPOiBJZiB0d28gYXJyYXlzIGhhdmUgdGhlIHNhbWUgc3RyaWRlcyAoYW5kIG9mZnNldHMpIHRoZXJlIGlzIHBvdGVudGlhbCBmb3IgZGVjcmVhc2luZyB0aGUgbnVtYmVyIG9mIFwicG9pbnRlcnNcIiBhbmQgcmVsYXRlZCB2YXJpYWJsZXMuIFRoZSBkcmF3YmFjayBpcyB0aGF0IHRoZSB0eXBlIHNpZ25hdHVyZSB3b3VsZCBiZWNvbWUgbW9yZSBzcGVjaWZpYyBhbmQgdGhhdCB0aGVyZSB3b3VsZCB0aHVzIGJlIGxlc3MgcG90ZW50aWFsIGZvciBjYWNoaW5nLCBidXQgaXQgbWlnaHQgc3RpbGwgYmUgd29ydGggaXQsIGVzcGVjaWFsbHkgd2hlbiBkZWFsaW5nIHdpdGggbGFyZ2UgbnVtYmVycyBvZiBhcmd1bWVudHMuXHJcbmZ1bmN0aW9uIGlubmVyRmlsbChvcmRlciwgcHJvYywgYm9keSkge1xyXG4gIHZhciBkaW1lbnNpb24gPSBvcmRlci5sZW5ndGhcclxuICAgICwgbmFyZ3MgPSBwcm9jLmFycmF5QXJncy5sZW5ndGhcclxuICAgICwgaGFzX2luZGV4ID0gcHJvYy5pbmRleEFyZ3MubGVuZ3RoPjBcclxuICAgICwgY29kZSA9IFtdXHJcbiAgICAsIHZhcnMgPSBbXVxyXG4gICAgLCBpZHg9MCwgcGlkeD0wLCBpLCBqXHJcbiAgZm9yKGk9MDsgaTxkaW1lbnNpb247ICsraSkgeyAvLyBJdGVyYXRpb24gdmFyaWFibGVzXHJcbiAgICB2YXJzLnB1c2goW1wiaVwiLGksXCI9MFwiXS5qb2luKFwiXCIpKVxyXG4gIH1cclxuICAvL0NvbXB1dGUgc2NhbiBkZWx0YXNcclxuICBmb3Ioaj0wOyBqPG5hcmdzOyArK2opIHtcclxuICAgIGZvcihpPTA7IGk8ZGltZW5zaW9uOyArK2kpIHtcclxuICAgICAgcGlkeCA9IGlkeFxyXG4gICAgICBpZHggPSBvcmRlcltpXVxyXG4gICAgICBpZihpID09PSAwKSB7IC8vIFRoZSBpbm5lcm1vc3QvZmFzdGVzdCBkaW1lbnNpb24ncyBkZWx0YSBpcyBzaW1wbHkgaXRzIHN0cmlkZVxyXG4gICAgICAgIHZhcnMucHVzaChbXCJkXCIsaixcInNcIixpLFwiPXRcIixqLFwicFwiLGlkeF0uam9pbihcIlwiKSlcclxuICAgICAgfSBlbHNlIHsgLy8gRm9yIG90aGVyIGRpbWVuc2lvbnMgdGhlIGRlbHRhIGlzIGJhc2ljYWxseSB0aGUgc3RyaWRlIG1pbnVzIHNvbWV0aGluZyB3aGljaCBlc3NlbnRpYWxseSBcInJld2luZHNcIiB0aGUgcHJldmlvdXMgKG1vcmUgaW5uZXIpIGRpbWVuc2lvblxyXG4gICAgICAgIHZhcnMucHVzaChbXCJkXCIsaixcInNcIixpLFwiPSh0XCIsaixcInBcIixpZHgsXCItc1wiLHBpZHgsXCIqdFwiLGosXCJwXCIscGlkeCxcIilcIl0uam9pbihcIlwiKSlcclxuICAgICAgfVxyXG4gICAgfVxyXG4gIH1cclxuICBjb2RlLnB1c2goXCJ2YXIgXCIgKyB2YXJzLmpvaW4oXCIsXCIpKVxyXG4gIC8vU2NhbiBsb29wXHJcbiAgZm9yKGk9ZGltZW5zaW9uLTE7IGk+PTA7IC0taSkgeyAvLyBTdGFydCBhdCBsYXJnZXN0IHN0cmlkZSBhbmQgd29yayB5b3VyIHdheSBpbndhcmRzXHJcbiAgICBpZHggPSBvcmRlcltpXVxyXG4gICAgY29kZS5wdXNoKFtcImZvcihpXCIsaSxcIj0wO2lcIixpLFwiPHNcIixpZHgsXCI7KytpXCIsaSxcIil7XCJdLmpvaW4oXCJcIikpXHJcbiAgfVxyXG4gIC8vUHVzaCBib2R5IG9mIGlubmVyIGxvb3BcclxuICBjb2RlLnB1c2goYm9keSlcclxuICAvL0FkdmFuY2Ugc2NhbiBwb2ludGVyc1xyXG4gIGZvcihpPTA7IGk8ZGltZW5zaW9uOyArK2kpIHtcclxuICAgIHBpZHggPSBpZHhcclxuICAgIGlkeCA9IG9yZGVyW2ldXHJcbiAgICBmb3Ioaj0wOyBqPG5hcmdzOyArK2opIHtcclxuICAgICAgY29kZS5wdXNoKFtcInBcIixqLFwiKz1kXCIsaixcInNcIixpXS5qb2luKFwiXCIpKVxyXG4gICAgfVxyXG4gICAgaWYoaGFzX2luZGV4KSB7XHJcbiAgICAgIGlmKGkgPiAwKSB7XHJcbiAgICAgICAgY29kZS5wdXNoKFtcImluZGV4W1wiLHBpZHgsXCJdLT1zXCIscGlkeF0uam9pbihcIlwiKSlcclxuICAgICAgfVxyXG4gICAgICBjb2RlLnB1c2goW1wiKytpbmRleFtcIixpZHgsXCJdXCJdLmpvaW4oXCJcIikpXHJcbiAgICB9XHJcbiAgICBjb2RlLnB1c2goXCJ9XCIpXHJcbiAgfVxyXG4gIHJldHVybiBjb2RlLmpvaW4oXCJcXG5cIilcclxufVxyXG5cclxuLy8gR2VuZXJhdGUgXCJvdXRlclwiIGxvb3BzIHRoYXQgbG9vcCBvdmVyIGJsb2NrcyBvZiBkYXRhLCBhcHBseWluZyBcImlubmVyXCIgbG9vcHMgdG8gdGhlIGJsb2NrcyBieSBtYW5pcHVsYXRpbmcgdGhlIGxvY2FsIHZhcmlhYmxlcyBpbiBzdWNoIGEgd2F5IHRoYXQgdGhlIGlubmVyIGxvb3Agb25seSBcInNlZXNcIiB0aGUgY3VycmVudCBibG9jay5cclxuLy8gVE9ETzogSWYgdGhpcyBpcyB1c2VkLCB0aGVuIHRoZSBwcmV2aW91cyBkZWNsYXJhdGlvbiAoZG9uZSBieSBnZW5lcmF0ZUN3aXNlT3ApIG9mIHMqIGlzIGVzc2VudGlhbGx5IHVubmVjZXNzYXJ5LlxyXG4vLyAgICAgICBJIGJlbGlldmUgdGhlIHMqIGFyZSBub3QgdXNlZCBlbHNld2hlcmUgKGluIHBhcnRpY3VsYXIsIEkgZG9uJ3QgdGhpbmsgdGhleSdyZSB1c2VkIGluIHRoZSBwcmUvcG9zdCBwYXJ0cyBhbmQgXCJzaGFwZVwiIGlzIGRlZmluZWQgaW5kZXBlbmRlbnRseSksIHNvIGl0IHdvdWxkIGJlIHBvc3NpYmxlIHRvIG1ha2UgZGVmaW5pbmcgdGhlIHMqIGRlcGVuZGVudCBvbiB3aGF0IGxvb3AgbWV0aG9kIGlzIGJlaW5nIHVzZWQuXHJcbmZ1bmN0aW9uIG91dGVyRmlsbChtYXRjaGVkLCBvcmRlciwgcHJvYywgYm9keSkge1xyXG4gIHZhciBkaW1lbnNpb24gPSBvcmRlci5sZW5ndGhcclxuICAgICwgbmFyZ3MgPSBwcm9jLmFycmF5QXJncy5sZW5ndGhcclxuICAgICwgYmxvY2tTaXplID0gcHJvYy5ibG9ja1NpemVcclxuICAgICwgaGFzX2luZGV4ID0gcHJvYy5pbmRleEFyZ3MubGVuZ3RoID4gMFxyXG4gICAgLCBjb2RlID0gW11cclxuICBmb3IodmFyIGk9MDsgaTxuYXJnczsgKytpKSB7XHJcbiAgICBjb2RlLnB1c2goW1widmFyIG9mZnNldFwiLGksXCI9cFwiLGldLmpvaW4oXCJcIikpXHJcbiAgfVxyXG4gIC8vR2VuZXJhdGUgbG9vcHMgZm9yIHVubWF0Y2hlZCBkaW1lbnNpb25zXHJcbiAgLy8gVGhlIG9yZGVyIGluIHdoaWNoIHRoZXNlIGRpbWVuc2lvbnMgYXJlIHRyYXZlcnNlZCBpcyBmYWlybHkgYXJiaXRyYXJ5IChmcm9tIHNtYWxsIHN0cmlkZSB0byBsYXJnZSBzdHJpZGUsIGZvciB0aGUgZmlyc3QgYXJndW1lbnQpXHJcbiAgLy8gVE9ETzogSXQgd291bGQgYmUgbmljZSBpZiB0aGUgb3JkZXIgaW4gd2hpY2ggdGhlc2UgbG9vcHMgYXJlIHBsYWNlZCB3b3VsZCBhbHNvIGJlIHNvbWVob3cgXCJvcHRpbWFsXCIgKGF0IHRoZSB2ZXJ5IGxlYXN0IHdlIHNob3VsZCBjaGVjayB0aGF0IGl0IHJlYWxseSBkb2Vzbid0IGh1cnQgdXMgaWYgdGhleSdyZSBub3QpLlxyXG4gIGZvcih2YXIgaT1tYXRjaGVkOyBpPGRpbWVuc2lvbjsgKytpKSB7XHJcbiAgICBjb2RlLnB1c2goW1wiZm9yKHZhciBqXCIraStcIj1TU1tcIiwgb3JkZXJbaV0sIFwiXXwwO2pcIiwgaSwgXCI+MDspe1wiXS5qb2luKFwiXCIpKSAvLyBJdGVyYXRlIGJhY2sgdG8gZnJvbnRcclxuICAgIGNvZGUucHVzaChbXCJpZihqXCIsaSxcIjxcIixibG9ja1NpemUsXCIpe1wiXS5qb2luKFwiXCIpKSAvLyBFaXRoZXIgZGVjcmVhc2UgaiBieSBibG9ja1NpemUgKHMgPSBibG9ja1NpemUpLCBvciBzZXQgaXQgdG8gemVybyAoYWZ0ZXIgc2V0dGluZyBzID0gaikuXHJcbiAgICBjb2RlLnB1c2goW1wic1wiLG9yZGVyW2ldLFwiPWpcIixpXS5qb2luKFwiXCIpKVxyXG4gICAgY29kZS5wdXNoKFtcImpcIixpLFwiPTBcIl0uam9pbihcIlwiKSlcclxuICAgIGNvZGUucHVzaChbXCJ9ZWxzZXtzXCIsb3JkZXJbaV0sXCI9XCIsYmxvY2tTaXplXS5qb2luKFwiXCIpKVxyXG4gICAgY29kZS5wdXNoKFtcImpcIixpLFwiLT1cIixibG9ja1NpemUsXCJ9XCJdLmpvaW4oXCJcIikpXHJcbiAgICBpZihoYXNfaW5kZXgpIHtcclxuICAgICAgY29kZS5wdXNoKFtcImluZGV4W1wiLG9yZGVyW2ldLFwiXT1qXCIsaV0uam9pbihcIlwiKSlcclxuICAgIH1cclxuICB9XHJcbiAgZm9yKHZhciBpPTA7IGk8bmFyZ3M7ICsraSkge1xyXG4gICAgdmFyIGluZGV4U3RyID0gW1wib2Zmc2V0XCIraV1cclxuICAgIGZvcih2YXIgaj1tYXRjaGVkOyBqPGRpbWVuc2lvbjsgKytqKSB7XHJcbiAgICAgIGluZGV4U3RyLnB1c2goW1wialwiLGosXCIqdFwiLGksXCJwXCIsb3JkZXJbal1dLmpvaW4oXCJcIikpXHJcbiAgICB9XHJcbiAgICBjb2RlLnB1c2goW1wicFwiLGksXCI9KFwiLGluZGV4U3RyLmpvaW4oXCIrXCIpLFwiKVwiXS5qb2luKFwiXCIpKVxyXG4gIH1cclxuICBjb2RlLnB1c2goaW5uZXJGaWxsKG9yZGVyLCBwcm9jLCBib2R5KSlcclxuICBmb3IodmFyIGk9bWF0Y2hlZDsgaTxkaW1lbnNpb247ICsraSkge1xyXG4gICAgY29kZS5wdXNoKFwifVwiKVxyXG4gIH1cclxuICByZXR1cm4gY29kZS5qb2luKFwiXFxuXCIpXHJcbn1cclxuXHJcbi8vQ291bnQgdGhlIG51bWJlciBvZiBjb21wYXRpYmxlIGlubmVyIG9yZGVyc1xyXG4vLyBUaGlzIGlzIHRoZSBsZW5ndGggb2YgdGhlIGxvbmdlc3QgY29tbW9uIHByZWZpeCBvZiB0aGUgYXJyYXlzIGluIG9yZGVycy5cclxuLy8gRWFjaCBhcnJheSBpbiBvcmRlcnMgbGlzdHMgdGhlIGRpbWVuc2lvbnMgb2YgdGhlIGNvcnJlc3BvbmQgbmRhcnJheSBpbiBvcmRlciBvZiBpbmNyZWFzaW5nIHN0cmlkZS5cclxuLy8gVGhpcyBpcyB0aHVzIHRoZSBtYXhpbXVtIG51bWJlciBvZiBkaW1lbnNpb25zIHRoYXQgY2FuIGJlIGVmZmljaWVudGx5IHRyYXZlcnNlZCBieSBzaW1wbGUgbmVzdGVkIGxvb3BzIGZvciBhbGwgYXJyYXlzLlxyXG5mdW5jdGlvbiBjb3VudE1hdGNoZXMob3JkZXJzKSB7XHJcbiAgdmFyIG1hdGNoZWQgPSAwLCBkaW1lbnNpb24gPSBvcmRlcnNbMF0ubGVuZ3RoXHJcbiAgd2hpbGUobWF0Y2hlZCA8IGRpbWVuc2lvbikge1xyXG4gICAgZm9yKHZhciBqPTE7IGo8b3JkZXJzLmxlbmd0aDsgKytqKSB7XHJcbiAgICAgIGlmKG9yZGVyc1tqXVttYXRjaGVkXSAhPT0gb3JkZXJzWzBdW21hdGNoZWRdKSB7XHJcbiAgICAgICAgcmV0dXJuIG1hdGNoZWRcclxuICAgICAgfVxyXG4gICAgfVxyXG4gICAgKyttYXRjaGVkXHJcbiAgfVxyXG4gIHJldHVybiBtYXRjaGVkXHJcbn1cclxuXHJcbi8vUHJvY2Vzc2VzIGEgYmxvY2sgYWNjb3JkaW5nIHRvIHRoZSBnaXZlbiBkYXRhIHR5cGVzXHJcbi8vIFJlcGxhY2VzIHZhcmlhYmxlIG5hbWVzIGJ5IGRpZmZlcmVudCBvbmVzLCBlaXRoZXIgXCJsb2NhbFwiIG9uZXMgKHRoYXQgYXJlIHRoZW4gZmVycmllZCBpbiBhbmQgb3V0IG9mIHRoZSBnaXZlbiBhcnJheSkgb3Igb25lcyBtYXRjaGluZyB0aGUgYXJndW1lbnRzIHRoYXQgdGhlIGZ1bmN0aW9uIHBlcmZvcm1pbmcgdGhlIHVsdGltYXRlIGxvb3Agd2lsbCBhY2NlcHQuXHJcbmZ1bmN0aW9uIHByb2Nlc3NCbG9jayhibG9jaywgcHJvYywgZHR5cGVzKSB7XHJcbiAgdmFyIGNvZGUgPSBibG9jay5ib2R5XHJcbiAgdmFyIHByZSA9IFtdXHJcbiAgdmFyIHBvc3QgPSBbXVxyXG4gIGZvcih2YXIgaT0wOyBpPGJsb2NrLmFyZ3MubGVuZ3RoOyArK2kpIHtcclxuICAgIHZhciBjYXJnID0gYmxvY2suYXJnc1tpXVxyXG4gICAgaWYoY2FyZy5jb3VudCA8PSAwKSB7XHJcbiAgICAgIGNvbnRpbnVlXHJcbiAgICB9XHJcbiAgICB2YXIgcmUgPSBuZXcgUmVnRXhwKGNhcmcubmFtZSwgXCJnXCIpXHJcbiAgICB2YXIgcHRyU3RyID0gXCJcIlxyXG4gICAgdmFyIGFyck51bSA9IHByb2MuYXJyYXlBcmdzLmluZGV4T2YoaSlcclxuICAgIHN3aXRjaChwcm9jLmFyZ1R5cGVzW2ldKSB7XHJcbiAgICAgIGNhc2UgXCJvZmZzZXRcIjpcclxuICAgICAgICB2YXIgb2ZmQXJnSW5kZXggPSBwcm9jLm9mZnNldEFyZ0luZGV4LmluZGV4T2YoaSlcclxuICAgICAgICB2YXIgb2ZmQXJnID0gcHJvYy5vZmZzZXRBcmdzW29mZkFyZ0luZGV4XVxyXG4gICAgICAgIGFyck51bSA9IG9mZkFyZy5hcnJheVxyXG4gICAgICAgIHB0clN0ciA9IFwiK3FcIiArIG9mZkFyZ0luZGV4IC8vIEFkZHMgb2Zmc2V0IHRvIHRoZSBcInBvaW50ZXJcIiBpbiB0aGUgYXJyYXlcclxuICAgICAgY2FzZSBcImFycmF5XCI6XHJcbiAgICAgICAgcHRyU3RyID0gXCJwXCIgKyBhcnJOdW0gKyBwdHJTdHJcclxuICAgICAgICB2YXIgbG9jYWxTdHIgPSBcImxcIiArIGlcclxuICAgICAgICB2YXIgYXJyU3RyID0gXCJhXCIgKyBhcnJOdW1cclxuICAgICAgICBpZiAocHJvYy5hcnJheUJsb2NrSW5kaWNlc1thcnJOdW1dID09PSAwKSB7IC8vIEFyZ3VtZW50IHRvIGJvZHkgaXMganVzdCBhIHNpbmdsZSB2YWx1ZSBmcm9tIHRoaXMgYXJyYXlcclxuICAgICAgICAgIGlmKGNhcmcuY291bnQgPT09IDEpIHsgLy8gQXJndW1lbnQvYXJyYXkgdXNlZCBvbmx5IG9uY2UoPylcclxuICAgICAgICAgICAgaWYoZHR5cGVzW2Fyck51bV0gPT09IFwiZ2VuZXJpY1wiKSB7XHJcbiAgICAgICAgICAgICAgaWYoY2FyZy5sdmFsdWUpIHtcclxuICAgICAgICAgICAgICAgIHByZS5wdXNoKFtcInZhciBcIiwgbG9jYWxTdHIsIFwiPVwiLCBhcnJTdHIsIFwiLmdldChcIiwgcHRyU3RyLCBcIilcIl0uam9pbihcIlwiKSkgLy8gSXMgdGhpcyBuZWNlc3NhcnkgaWYgdGhlIGFyZ3VtZW50IGlzIE9OTFkgdXNlZCBhcyBhbiBsdmFsdWU/IChrZWVwIGluIG1pbmQgdGhhdCB3ZSBjYW4gaGF2ZSBhICs9IHNvbWV0aGluZywgc28gd2Ugd291bGQgYWN0dWFsbHkgbmVlZCB0byBjaGVjayBjYXJnLnJ2YWx1ZSlcclxuICAgICAgICAgICAgICAgIGNvZGUgPSBjb2RlLnJlcGxhY2UocmUsIGxvY2FsU3RyKVxyXG4gICAgICAgICAgICAgICAgcG9zdC5wdXNoKFthcnJTdHIsIFwiLnNldChcIiwgcHRyU3RyLCBcIixcIiwgbG9jYWxTdHIsXCIpXCJdLmpvaW4oXCJcIikpXHJcbiAgICAgICAgICAgICAgfSBlbHNlIHtcclxuICAgICAgICAgICAgICAgIGNvZGUgPSBjb2RlLnJlcGxhY2UocmUsIFthcnJTdHIsIFwiLmdldChcIiwgcHRyU3RyLCBcIilcIl0uam9pbihcIlwiKSlcclxuICAgICAgICAgICAgICB9XHJcbiAgICAgICAgICAgIH0gZWxzZSB7XHJcbiAgICAgICAgICAgICAgY29kZSA9IGNvZGUucmVwbGFjZShyZSwgW2FyclN0ciwgXCJbXCIsIHB0clN0ciwgXCJdXCJdLmpvaW4oXCJcIikpXHJcbiAgICAgICAgICAgIH1cclxuICAgICAgICAgIH0gZWxzZSBpZihkdHlwZXNbYXJyTnVtXSA9PT0gXCJnZW5lcmljXCIpIHtcclxuICAgICAgICAgICAgcHJlLnB1c2goW1widmFyIFwiLCBsb2NhbFN0ciwgXCI9XCIsIGFyclN0ciwgXCIuZ2V0KFwiLCBwdHJTdHIsIFwiKVwiXS5qb2luKFwiXCIpKSAvLyBUT0RPOiBDb3VsZCB3ZSBvcHRpbWl6ZSBieSBjaGVja2luZyBmb3IgY2FyZy5ydmFsdWU/XHJcbiAgICAgICAgICAgIGNvZGUgPSBjb2RlLnJlcGxhY2UocmUsIGxvY2FsU3RyKVxyXG4gICAgICAgICAgICBpZihjYXJnLmx2YWx1ZSkge1xyXG4gICAgICAgICAgICAgIHBvc3QucHVzaChbYXJyU3RyLCBcIi5zZXQoXCIsIHB0clN0ciwgXCIsXCIsIGxvY2FsU3RyLFwiKVwiXS5qb2luKFwiXCIpKVxyXG4gICAgICAgICAgICB9XHJcbiAgICAgICAgICB9IGVsc2Uge1xyXG4gICAgICAgICAgICBwcmUucHVzaChbXCJ2YXIgXCIsIGxvY2FsU3RyLCBcIj1cIiwgYXJyU3RyLCBcIltcIiwgcHRyU3RyLCBcIl1cIl0uam9pbihcIlwiKSkgLy8gVE9ETzogQ291bGQgd2Ugb3B0aW1pemUgYnkgY2hlY2tpbmcgZm9yIGNhcmcucnZhbHVlP1xyXG4gICAgICAgICAgICBjb2RlID0gY29kZS5yZXBsYWNlKHJlLCBsb2NhbFN0cilcclxuICAgICAgICAgICAgaWYoY2FyZy5sdmFsdWUpIHtcclxuICAgICAgICAgICAgICBwb3N0LnB1c2goW2FyclN0ciwgXCJbXCIsIHB0clN0ciwgXCJdPVwiLCBsb2NhbFN0cl0uam9pbihcIlwiKSlcclxuICAgICAgICAgICAgfVxyXG4gICAgICAgICAgfVxyXG4gICAgICAgIH0gZWxzZSB7IC8vIEFyZ3VtZW50IHRvIGJvZHkgaXMgYSBcImJsb2NrXCJcclxuICAgICAgICAgIHZhciByZVN0ckFyciA9IFtjYXJnLm5hbWVdLCBwdHJTdHJBcnIgPSBbcHRyU3RyXVxyXG4gICAgICAgICAgZm9yKHZhciBqPTA7IGo8TWF0aC5hYnMocHJvYy5hcnJheUJsb2NrSW5kaWNlc1thcnJOdW1dKTsgaisrKSB7XHJcbiAgICAgICAgICAgIHJlU3RyQXJyLnB1c2goXCJcXFxccypcXFxcWyhbXlxcXFxdXSspXFxcXF1cIilcclxuICAgICAgICAgICAgcHRyU3RyQXJyLnB1c2goXCIkXCIgKyAoaisxKSArIFwiKnRcIiArIGFyck51bSArIFwiYlwiICsgaikgLy8gTWF0Y2hlZCBpbmRleCB0aW1lcyBzdHJpZGVcclxuICAgICAgICAgIH1cclxuICAgICAgICAgIHJlID0gbmV3IFJlZ0V4cChyZVN0ckFyci5qb2luKFwiXCIpLCBcImdcIilcclxuICAgICAgICAgIHB0clN0ciA9IHB0clN0ckFyci5qb2luKFwiK1wiKVxyXG4gICAgICAgICAgaWYoZHR5cGVzW2Fyck51bV0gPT09IFwiZ2VuZXJpY1wiKSB7XHJcbiAgICAgICAgICAgIC8qaWYoY2FyZy5sdmFsdWUpIHtcclxuICAgICAgICAgICAgICBwcmUucHVzaChbXCJ2YXIgXCIsIGxvY2FsU3RyLCBcIj1cIiwgYXJyU3RyLCBcIi5nZXQoXCIsIHB0clN0ciwgXCIpXCJdLmpvaW4oXCJcIikpIC8vIElzIHRoaXMgbmVjZXNzYXJ5IGlmIHRoZSBhcmd1bWVudCBpcyBPTkxZIHVzZWQgYXMgYW4gbHZhbHVlPyAoa2VlcCBpbiBtaW5kIHRoYXQgd2UgY2FuIGhhdmUgYSArPSBzb21ldGhpbmcsIHNvIHdlIHdvdWxkIGFjdHVhbGx5IG5lZWQgdG8gY2hlY2sgY2FyZy5ydmFsdWUpXHJcbiAgICAgICAgICAgICAgY29kZSA9IGNvZGUucmVwbGFjZShyZSwgbG9jYWxTdHIpXHJcbiAgICAgICAgICAgICAgcG9zdC5wdXNoKFthcnJTdHIsIFwiLnNldChcIiwgcHRyU3RyLCBcIixcIiwgbG9jYWxTdHIsXCIpXCJdLmpvaW4oXCJcIikpXHJcbiAgICAgICAgICAgIH0gZWxzZSB7XHJcbiAgICAgICAgICAgICAgY29kZSA9IGNvZGUucmVwbGFjZShyZSwgW2FyclN0ciwgXCIuZ2V0KFwiLCBwdHJTdHIsIFwiKVwiXS5qb2luKFwiXCIpKVxyXG4gICAgICAgICAgICB9Ki9cclxuICAgICAgICAgICAgdGhyb3cgbmV3IEVycm9yKFwiY3dpc2U6IEdlbmVyaWMgYXJyYXlzIG5vdCBzdXBwb3J0ZWQgaW4gY29tYmluYXRpb24gd2l0aCBibG9ja3MhXCIpXHJcbiAgICAgICAgICB9IGVsc2Uge1xyXG4gICAgICAgICAgICAvLyBUaGlzIGRvZXMgbm90IHByb2R1Y2UgYW55IGxvY2FsIHZhcmlhYmxlcywgZXZlbiBpZiB2YXJpYWJsZXMgYXJlIHVzZWQgbXVsdGlwbGUgdGltZXMuIEl0IHdvdWxkIGJlIHBvc3NpYmxlIHRvIGRvIHNvLCBidXQgaXQgd291bGQgY29tcGxpY2F0ZSB0aGluZ3MgcXVpdGUgYSBiaXQuXHJcbiAgICAgICAgICAgIGNvZGUgPSBjb2RlLnJlcGxhY2UocmUsIFthcnJTdHIsIFwiW1wiLCBwdHJTdHIsIFwiXVwiXS5qb2luKFwiXCIpKVxyXG4gICAgICAgICAgfVxyXG4gICAgICAgIH1cclxuICAgICAgYnJlYWtcclxuICAgICAgY2FzZSBcInNjYWxhclwiOlxyXG4gICAgICAgIGNvZGUgPSBjb2RlLnJlcGxhY2UocmUsIFwiWVwiICsgcHJvYy5zY2FsYXJBcmdzLmluZGV4T2YoaSkpXHJcbiAgICAgIGJyZWFrXHJcbiAgICAgIGNhc2UgXCJpbmRleFwiOlxyXG4gICAgICAgIGNvZGUgPSBjb2RlLnJlcGxhY2UocmUsIFwiaW5kZXhcIilcclxuICAgICAgYnJlYWtcclxuICAgICAgY2FzZSBcInNoYXBlXCI6XHJcbiAgICAgICAgY29kZSA9IGNvZGUucmVwbGFjZShyZSwgXCJzaGFwZVwiKVxyXG4gICAgICBicmVha1xyXG4gICAgfVxyXG4gIH1cclxuICByZXR1cm4gW3ByZS5qb2luKFwiXFxuXCIpLCBjb2RlLCBwb3N0LmpvaW4oXCJcXG5cIildLmpvaW4oXCJcXG5cIikudHJpbSgpXHJcbn1cclxuXHJcbmZ1bmN0aW9uIHR5cGVTdW1tYXJ5KGR0eXBlcykge1xyXG4gIHZhciBzdW1tYXJ5ID0gbmV3IEFycmF5KGR0eXBlcy5sZW5ndGgpXHJcbiAgdmFyIGFsbEVxdWFsID0gdHJ1ZVxyXG4gIGZvcih2YXIgaT0wOyBpPGR0eXBlcy5sZW5ndGg7ICsraSkge1xyXG4gICAgdmFyIHQgPSBkdHlwZXNbaV1cclxuICAgIHZhciBkaWdpdHMgPSB0Lm1hdGNoKC9cXGQrLylcclxuICAgIGlmKCFkaWdpdHMpIHtcclxuICAgICAgZGlnaXRzID0gXCJcIlxyXG4gICAgfSBlbHNlIHtcclxuICAgICAgZGlnaXRzID0gZGlnaXRzWzBdXHJcbiAgICB9XHJcbiAgICBpZih0LmNoYXJBdCgwKSA9PT0gMCkge1xyXG4gICAgICBzdW1tYXJ5W2ldID0gXCJ1XCIgKyB0LmNoYXJBdCgxKSArIGRpZ2l0c1xyXG4gICAgfSBlbHNlIHtcclxuICAgICAgc3VtbWFyeVtpXSA9IHQuY2hhckF0KDApICsgZGlnaXRzXHJcbiAgICB9XHJcbiAgICBpZihpID4gMCkge1xyXG4gICAgICBhbGxFcXVhbCA9IGFsbEVxdWFsICYmIHN1bW1hcnlbaV0gPT09IHN1bW1hcnlbaS0xXVxyXG4gICAgfVxyXG4gIH1cclxuICBpZihhbGxFcXVhbCkge1xyXG4gICAgcmV0dXJuIHN1bW1hcnlbMF1cclxuICB9XHJcbiAgcmV0dXJuIHN1bW1hcnkuam9pbihcIlwiKVxyXG59XHJcblxyXG4vL0dlbmVyYXRlcyBhIGN3aXNlIG9wZXJhdG9yXHJcbmZ1bmN0aW9uIGdlbmVyYXRlQ1dpc2VPcChwcm9jLCB0eXBlc2lnKSB7XHJcblxyXG4gIC8vQ29tcHV0ZSBkaW1lbnNpb25cclxuICAvLyBBcnJheXMgZ2V0IHB1dCBmaXJzdCBpbiB0eXBlc2lnLCBhbmQgdGhlcmUgYXJlIHR3byBlbnRyaWVzIHBlciBhcnJheSAoZHR5cGUgYW5kIG9yZGVyKSwgc28gdGhpcyBnZXRzIHRoZSBudW1iZXIgb2YgZGltZW5zaW9ucyBpbiB0aGUgZmlyc3QgYXJyYXkgYXJnLlxyXG4gIHZhciBkaW1lbnNpb24gPSAodHlwZXNpZ1sxXS5sZW5ndGggLSBNYXRoLmFicyhwcm9jLmFycmF5QmxvY2tJbmRpY2VzWzBdKSl8MFxyXG4gIHZhciBvcmRlcnMgPSBuZXcgQXJyYXkocHJvYy5hcnJheUFyZ3MubGVuZ3RoKVxyXG4gIHZhciBkdHlwZXMgPSBuZXcgQXJyYXkocHJvYy5hcnJheUFyZ3MubGVuZ3RoKVxyXG4gIGZvcih2YXIgaT0wOyBpPHByb2MuYXJyYXlBcmdzLmxlbmd0aDsgKytpKSB7XHJcbiAgICBkdHlwZXNbaV0gPSB0eXBlc2lnWzIqaV1cclxuICAgIG9yZGVyc1tpXSA9IHR5cGVzaWdbMippKzFdXHJcbiAgfVxyXG4gIFxyXG4gIC8vRGV0ZXJtaW5lIHdoZXJlIGJsb2NrIGFuZCBsb29wIGluZGljZXMgc3RhcnQgYW5kIGVuZFxyXG4gIHZhciBibG9ja0JlZ2luID0gW10sIGJsb2NrRW5kID0gW10gLy8gVGhlc2UgaW5kaWNlcyBhcmUgZXhwb3NlZCBhcyBibG9ja3NcclxuICB2YXIgbG9vcEJlZ2luID0gW10sIGxvb3BFbmQgPSBbXSAvLyBUaGVzZSBpbmRpY2VzIGFyZSBpdGVyYXRlZCBvdmVyXHJcbiAgdmFyIGxvb3BPcmRlcnMgPSBbXSAvLyBvcmRlcnMgcmVzdHJpY3RlZCB0byB0aGUgbG9vcCBpbmRpY2VzXHJcbiAgZm9yKHZhciBpPTA7IGk8cHJvYy5hcnJheUFyZ3MubGVuZ3RoOyArK2kpIHtcclxuICAgIGlmIChwcm9jLmFycmF5QmxvY2tJbmRpY2VzW2ldPDApIHtcclxuICAgICAgbG9vcEJlZ2luLnB1c2goMClcclxuICAgICAgbG9vcEVuZC5wdXNoKGRpbWVuc2lvbilcclxuICAgICAgYmxvY2tCZWdpbi5wdXNoKGRpbWVuc2lvbilcclxuICAgICAgYmxvY2tFbmQucHVzaChkaW1lbnNpb24rcHJvYy5hcnJheUJsb2NrSW5kaWNlc1tpXSlcclxuICAgIH0gZWxzZSB7XHJcbiAgICAgIGxvb3BCZWdpbi5wdXNoKHByb2MuYXJyYXlCbG9ja0luZGljZXNbaV0pIC8vIE5vbi1uZWdhdGl2ZVxyXG4gICAgICBsb29wRW5kLnB1c2gocHJvYy5hcnJheUJsb2NrSW5kaWNlc1tpXStkaW1lbnNpb24pXHJcbiAgICAgIGJsb2NrQmVnaW4ucHVzaCgwKVxyXG4gICAgICBibG9ja0VuZC5wdXNoKHByb2MuYXJyYXlCbG9ja0luZGljZXNbaV0pXHJcbiAgICB9XHJcbiAgICB2YXIgbmV3T3JkZXIgPSBbXVxyXG4gICAgZm9yKHZhciBqPTA7IGo8b3JkZXJzW2ldLmxlbmd0aDsgaisrKSB7XHJcbiAgICAgIGlmIChsb29wQmVnaW5baV08PW9yZGVyc1tpXVtqXSAmJiBvcmRlcnNbaV1bal08bG9vcEVuZFtpXSkge1xyXG4gICAgICAgIG5ld09yZGVyLnB1c2gob3JkZXJzW2ldW2pdLWxvb3BCZWdpbltpXSkgLy8gSWYgdGhpcyBpcyBhIGxvb3AgaW5kZXgsIHB1dCBpdCBpbiBuZXdPcmRlciwgc3VidHJhY3RpbmcgbG9vcEJlZ2luLCB0byBtYWtlIHN1cmUgdGhhdCBhbGwgbG9vcE9yZGVycyBhcmUgdXNpbmcgYSBjb21tb24gc2V0IG9mIGluZGljZXMuXHJcbiAgICAgIH1cclxuICAgIH1cclxuICAgIGxvb3BPcmRlcnMucHVzaChuZXdPcmRlcilcclxuICB9XHJcblxyXG4gIC8vRmlyc3QgY3JlYXRlIGFyZ3VtZW50cyBmb3IgcHJvY2VkdXJlXHJcbiAgdmFyIGFyZ2xpc3QgPSBbXCJTU1wiXSAvLyBTUyBpcyB0aGUgb3ZlcmFsbCBzaGFwZSBvdmVyIHdoaWNoIHdlIGl0ZXJhdGVcclxuICB2YXIgY29kZSA9IFtcIid1c2Ugc3RyaWN0J1wiXVxyXG4gIHZhciB2YXJzID0gW11cclxuICBcclxuICBmb3IodmFyIGo9MDsgajxkaW1lbnNpb247ICsraikge1xyXG4gICAgdmFycy5wdXNoKFtcInNcIiwgaiwgXCI9U1NbXCIsIGosIFwiXVwiXS5qb2luKFwiXCIpKSAvLyBUaGUgbGltaXRzIGZvciBlYWNoIGRpbWVuc2lvbi5cclxuICB9XHJcbiAgZm9yKHZhciBpPTA7IGk8cHJvYy5hcnJheUFyZ3MubGVuZ3RoOyArK2kpIHtcclxuICAgIGFyZ2xpc3QucHVzaChcImFcIitpKSAvLyBBY3R1YWwgZGF0YSBhcnJheVxyXG4gICAgYXJnbGlzdC5wdXNoKFwidFwiK2kpIC8vIFN0cmlkZXNcclxuICAgIGFyZ2xpc3QucHVzaChcInBcIitpKSAvLyBPZmZzZXQgaW4gdGhlIGFycmF5IGF0IHdoaWNoIHRoZSBkYXRhIHN0YXJ0cyAoYWxzbyB1c2VkIGZvciBpdGVyYXRpbmcgb3ZlciB0aGUgZGF0YSlcclxuICAgIFxyXG4gICAgZm9yKHZhciBqPTA7IGo8ZGltZW5zaW9uOyArK2opIHsgLy8gVW5wYWNrIHRoZSBzdHJpZGVzIGludG8gdmFycyBmb3IgbG9vcGluZ1xyXG4gICAgICB2YXJzLnB1c2goW1widFwiLGksXCJwXCIsaixcIj10XCIsaSxcIltcIixsb29wQmVnaW5baV0raixcIl1cIl0uam9pbihcIlwiKSlcclxuICAgIH1cclxuICAgIFxyXG4gICAgZm9yKHZhciBqPTA7IGo8TWF0aC5hYnMocHJvYy5hcnJheUJsb2NrSW5kaWNlc1tpXSk7ICsraikgeyAvLyBVbnBhY2sgdGhlIHN0cmlkZXMgaW50byB2YXJzIGZvciBibG9jayBpdGVyYXRpb25cclxuICAgICAgdmFycy5wdXNoKFtcInRcIixpLFwiYlwiLGosXCI9dFwiLGksXCJbXCIsYmxvY2tCZWdpbltpXStqLFwiXVwiXS5qb2luKFwiXCIpKVxyXG4gICAgfVxyXG4gIH1cclxuICBmb3IodmFyIGk9MDsgaTxwcm9jLnNjYWxhckFyZ3MubGVuZ3RoOyArK2kpIHtcclxuICAgIGFyZ2xpc3QucHVzaChcIllcIiArIGkpXHJcbiAgfVxyXG4gIGlmKHByb2Muc2hhcGVBcmdzLmxlbmd0aCA+IDApIHtcclxuICAgIHZhcnMucHVzaChcInNoYXBlPVNTLnNsaWNlKDApXCIpIC8vIE1ha2VzIHRoZSBzaGFwZSBvdmVyIHdoaWNoIHdlIGl0ZXJhdGUgYXZhaWxhYmxlIHRvIHRoZSB1c2VyIGRlZmluZWQgZnVuY3Rpb25zIChzbyB5b3UgY2FuIHVzZSB3aWR0aC9oZWlnaHQgZm9yIGV4YW1wbGUpXHJcbiAgfVxyXG4gIGlmKHByb2MuaW5kZXhBcmdzLmxlbmd0aCA+IDApIHtcclxuICAgIC8vIFByZXBhcmUgYW4gYXJyYXkgdG8ga2VlcCB0cmFjayBvZiB0aGUgKGxvZ2ljYWwpIGluZGljZXMsIGluaXRpYWxpemVkIHRvIGRpbWVuc2lvbiB6ZXJvZXMuXHJcbiAgICB2YXIgemVyb3MgPSBuZXcgQXJyYXkoZGltZW5zaW9uKVxyXG4gICAgZm9yKHZhciBpPTA7IGk8ZGltZW5zaW9uOyArK2kpIHtcclxuICAgICAgemVyb3NbaV0gPSBcIjBcIlxyXG4gICAgfVxyXG4gICAgdmFycy5wdXNoKFtcImluZGV4PVtcIiwgemVyb3Muam9pbihcIixcIiksIFwiXVwiXS5qb2luKFwiXCIpKVxyXG4gIH1cclxuICBmb3IodmFyIGk9MDsgaTxwcm9jLm9mZnNldEFyZ3MubGVuZ3RoOyArK2kpIHsgLy8gT2Zmc2V0IGFyZ3VtZW50cyB1c2VkIGZvciBzdGVuY2lsIG9wZXJhdGlvbnNcclxuICAgIHZhciBvZmZfYXJnID0gcHJvYy5vZmZzZXRBcmdzW2ldXHJcbiAgICB2YXIgaW5pdF9zdHJpbmcgPSBbXVxyXG4gICAgZm9yKHZhciBqPTA7IGo8b2ZmX2FyZy5vZmZzZXQubGVuZ3RoOyArK2opIHtcclxuICAgICAgaWYob2ZmX2FyZy5vZmZzZXRbal0gPT09IDApIHtcclxuICAgICAgICBjb250aW51ZVxyXG4gICAgICB9IGVsc2UgaWYob2ZmX2FyZy5vZmZzZXRbal0gPT09IDEpIHtcclxuICAgICAgICBpbml0X3N0cmluZy5wdXNoKFtcInRcIiwgb2ZmX2FyZy5hcnJheSwgXCJwXCIsIGpdLmpvaW4oXCJcIikpICAgICAgXHJcbiAgICAgIH0gZWxzZSB7XHJcbiAgICAgICAgaW5pdF9zdHJpbmcucHVzaChbb2ZmX2FyZy5vZmZzZXRbal0sIFwiKnRcIiwgb2ZmX2FyZy5hcnJheSwgXCJwXCIsIGpdLmpvaW4oXCJcIikpXHJcbiAgICAgIH1cclxuICAgIH1cclxuICAgIGlmKGluaXRfc3RyaW5nLmxlbmd0aCA9PT0gMCkge1xyXG4gICAgICB2YXJzLnB1c2goXCJxXCIgKyBpICsgXCI9MFwiKVxyXG4gICAgfSBlbHNlIHtcclxuICAgICAgdmFycy5wdXNoKFtcInFcIiwgaSwgXCI9XCIsIGluaXRfc3RyaW5nLmpvaW4oXCIrXCIpXS5qb2luKFwiXCIpKVxyXG4gICAgfVxyXG4gIH1cclxuXHJcbiAgLy9QcmVwYXJlIHRoaXMgdmFyaWFibGVzXHJcbiAgdmFyIHRoaXNWYXJzID0gdW5pcShbXS5jb25jYXQocHJvYy5wcmUudGhpc1ZhcnMpXHJcbiAgICAgICAgICAgICAgICAgICAgICAuY29uY2F0KHByb2MuYm9keS50aGlzVmFycylcclxuICAgICAgICAgICAgICAgICAgICAgIC5jb25jYXQocHJvYy5wb3N0LnRoaXNWYXJzKSlcclxuICB2YXJzID0gdmFycy5jb25jYXQodGhpc1ZhcnMpXHJcbiAgY29kZS5wdXNoKFwidmFyIFwiICsgdmFycy5qb2luKFwiLFwiKSlcclxuICBmb3IodmFyIGk9MDsgaTxwcm9jLmFycmF5QXJncy5sZW5ndGg7ICsraSkge1xyXG4gICAgY29kZS5wdXNoKFwicFwiK2krXCJ8PTBcIilcclxuICB9XHJcbiAgXHJcbiAgLy9JbmxpbmUgcHJlbHVkZVxyXG4gIGlmKHByb2MucHJlLmJvZHkubGVuZ3RoID4gMykge1xyXG4gICAgY29kZS5wdXNoKHByb2Nlc3NCbG9jayhwcm9jLnByZSwgcHJvYywgZHR5cGVzKSlcclxuICB9XHJcblxyXG4gIC8vUHJvY2VzcyBib2R5XHJcbiAgdmFyIGJvZHkgPSBwcm9jZXNzQmxvY2socHJvYy5ib2R5LCBwcm9jLCBkdHlwZXMpXHJcbiAgdmFyIG1hdGNoZWQgPSBjb3VudE1hdGNoZXMobG9vcE9yZGVycylcclxuICBpZihtYXRjaGVkIDwgZGltZW5zaW9uKSB7XHJcbiAgICBjb2RlLnB1c2gob3V0ZXJGaWxsKG1hdGNoZWQsIGxvb3BPcmRlcnNbMF0sIHByb2MsIGJvZHkpKSAvLyBUT0RPOiBSYXRoZXIgdGhhbiBwYXNzaW5nIGxvb3BPcmRlcnNbMF0sIGl0IG1pZ2h0IGJlIGludGVyZXN0aW5nIHRvIGxvb2sgYXQgcGFzc2luZyBhbiBvcmRlciB0aGF0IHJlcHJlc2VudHMgdGhlIG1ham9yaXR5IG9mIHRoZSBhcmd1bWVudHMgZm9yIGV4YW1wbGUuXHJcbiAgfSBlbHNlIHtcclxuICAgIGNvZGUucHVzaChpbm5lckZpbGwobG9vcE9yZGVyc1swXSwgcHJvYywgYm9keSkpXHJcbiAgfVxyXG5cclxuICAvL0lubGluZSBlcGlsb2dcclxuICBpZihwcm9jLnBvc3QuYm9keS5sZW5ndGggPiAzKSB7XHJcbiAgICBjb2RlLnB1c2gocHJvY2Vzc0Jsb2NrKHByb2MucG9zdCwgcHJvYywgZHR5cGVzKSlcclxuICB9XHJcbiAgXHJcbiAgaWYocHJvYy5kZWJ1Zykge1xyXG4gICAgY29uc29sZS5sb2coXCItLS0tLUdlbmVyYXRlZCBjd2lzZSByb3V0aW5lIGZvciBcIiwgdHlwZXNpZywgXCI6XFxuXCIgKyBjb2RlLmpvaW4oXCJcXG5cIikgKyBcIlxcbi0tLS0tLS0tLS1cIilcclxuICB9XHJcbiAgXHJcbiAgdmFyIGxvb3BOYW1lID0gWyhwcm9jLmZ1bmNOYW1lfHxcInVubmFtZWRcIiksIFwiX2N3aXNlX2xvb3BfXCIsIG9yZGVyc1swXS5qb2luKFwic1wiKSxcIm1cIixtYXRjaGVkLHR5cGVTdW1tYXJ5KGR0eXBlcyldLmpvaW4oXCJcIilcclxuICB2YXIgZiA9IG5ldyBGdW5jdGlvbihbXCJmdW5jdGlvbiBcIixsb29wTmFtZSxcIihcIiwgYXJnbGlzdC5qb2luKFwiLFwiKSxcIil7XCIsIGNvZGUuam9pbihcIlxcblwiKSxcIn0gcmV0dXJuIFwiLCBsb29wTmFtZV0uam9pbihcIlwiKSlcclxuICByZXR1cm4gZigpXHJcbn1cclxubW9kdWxlLmV4cG9ydHMgPSBnZW5lcmF0ZUNXaXNlT3BcclxuXG5cblxuLy8vLy8vLy8vLy8vLy8vLy8vXG4vLyBXRUJQQUNLIEZPT1RFUlxuLy8gLi4vfi9jd2lzZS1jb21waWxlci9saWIvY29tcGlsZS5qc1xuLy8gbW9kdWxlIGlkID0gOVxuLy8gbW9kdWxlIGNodW5rcyA9IDAiXSwic291cmNlUm9vdCI6IiJ9");
+	"use strict"
+	
+	var uniq = __webpack_require__(10)
+	
+	// This function generates very simple loops analogous to how you typically traverse arrays (the outermost loop corresponds to the slowest changing index, the innermost loop to the fastest changing index)
+	// TODO: If two arrays have the same strides (and offsets) there is potential for decreasing the number of "pointers" and related variables. The drawback is that the type signature would become more specific and that there would thus be less potential for caching, but it might still be worth it, especially when dealing with large numbers of arguments.
+	function innerFill(order, proc, body) {
+	  var dimension = order.length
+	    , nargs = proc.arrayArgs.length
+	    , has_index = proc.indexArgs.length>0
+	    , code = []
+	    , vars = []
+	    , idx=0, pidx=0, i, j
+	  for(i=0; i<dimension; ++i) { // Iteration variables
+	    vars.push(["i",i,"=0"].join(""))
+	  }
+	  //Compute scan deltas
+	  for(j=0; j<nargs; ++j) {
+	    for(i=0; i<dimension; ++i) {
+	      pidx = idx
+	      idx = order[i]
+	      if(i === 0) { // The innermost/fastest dimension's delta is simply its stride
+	        vars.push(["d",j,"s",i,"=t",j,"p",idx].join(""))
+	      } else { // For other dimensions the delta is basically the stride minus something which essentially "rewinds" the previous (more inner) dimension
+	        vars.push(["d",j,"s",i,"=(t",j,"p",idx,"-s",pidx,"*t",j,"p",pidx,")"].join(""))
+	      }
+	    }
+	  }
+	  code.push("var " + vars.join(","))
+	  //Scan loop
+	  for(i=dimension-1; i>=0; --i) { // Start at largest stride and work your way inwards
+	    idx = order[i]
+	    code.push(["for(i",i,"=0;i",i,"<s",idx,";++i",i,"){"].join(""))
+	  }
+	  //Push body of inner loop
+	  code.push(body)
+	  //Advance scan pointers
+	  for(i=0; i<dimension; ++i) {
+	    pidx = idx
+	    idx = order[i]
+	    for(j=0; j<nargs; ++j) {
+	      code.push(["p",j,"+=d",j,"s",i].join(""))
+	    }
+	    if(has_index) {
+	      if(i > 0) {
+	        code.push(["index[",pidx,"]-=s",pidx].join(""))
+	      }
+	      code.push(["++index[",idx,"]"].join(""))
+	    }
+	    code.push("}")
+	  }
+	  return code.join("\n")
+	}
+	
+	// Generate "outer" loops that loop over blocks of data, applying "inner" loops to the blocks by manipulating the local variables in such a way that the inner loop only "sees" the current block.
+	// TODO: If this is used, then the previous declaration (done by generateCwiseOp) of s* is essentially unnecessary.
+	//       I believe the s* are not used elsewhere (in particular, I don't think they're used in the pre/post parts and "shape" is defined independently), so it would be possible to make defining the s* dependent on what loop method is being used.
+	function outerFill(matched, order, proc, body) {
+	  var dimension = order.length
+	    , nargs = proc.arrayArgs.length
+	    , blockSize = proc.blockSize
+	    , has_index = proc.indexArgs.length > 0
+	    , code = []
+	  for(var i=0; i<nargs; ++i) {
+	    code.push(["var offset",i,"=p",i].join(""))
+	  }
+	  //Generate loops for unmatched dimensions
+	  // The order in which these dimensions are traversed is fairly arbitrary (from small stride to large stride, for the first argument)
+	  // TODO: It would be nice if the order in which these loops are placed would also be somehow "optimal" (at the very least we should check that it really doesn't hurt us if they're not).
+	  for(var i=matched; i<dimension; ++i) {
+	    code.push(["for(var j"+i+"=SS[", order[i], "]|0;j", i, ">0;){"].join("")) // Iterate back to front
+	    code.push(["if(j",i,"<",blockSize,"){"].join("")) // Either decrease j by blockSize (s = blockSize), or set it to zero (after setting s = j).
+	    code.push(["s",order[i],"=j",i].join(""))
+	    code.push(["j",i,"=0"].join(""))
+	    code.push(["}else{s",order[i],"=",blockSize].join(""))
+	    code.push(["j",i,"-=",blockSize,"}"].join(""))
+	    if(has_index) {
+	      code.push(["index[",order[i],"]=j",i].join(""))
+	    }
+	  }
+	  for(var i=0; i<nargs; ++i) {
+	    var indexStr = ["offset"+i]
+	    for(var j=matched; j<dimension; ++j) {
+	      indexStr.push(["j",j,"*t",i,"p",order[j]].join(""))
+	    }
+	    code.push(["p",i,"=(",indexStr.join("+"),")"].join(""))
+	  }
+	  code.push(innerFill(order, proc, body))
+	  for(var i=matched; i<dimension; ++i) {
+	    code.push("}")
+	  }
+	  return code.join("\n")
+	}
+	
+	//Count the number of compatible inner orders
+	// This is the length of the longest common prefix of the arrays in orders.
+	// Each array in orders lists the dimensions of the correspond ndarray in order of increasing stride.
+	// This is thus the maximum number of dimensions that can be efficiently traversed by simple nested loops for all arrays.
+	function countMatches(orders) {
+	  var matched = 0, dimension = orders[0].length
+	  while(matched < dimension) {
+	    for(var j=1; j<orders.length; ++j) {
+	      if(orders[j][matched] !== orders[0][matched]) {
+	        return matched
+	      }
+	    }
+	    ++matched
+	  }
+	  return matched
+	}
+	
+	//Processes a block according to the given data types
+	// Replaces variable names by different ones, either "local" ones (that are then ferried in and out of the given array) or ones matching the arguments that the function performing the ultimate loop will accept.
+	function processBlock(block, proc, dtypes) {
+	  var code = block.body
+	  var pre = []
+	  var post = []
+	  for(var i=0; i<block.args.length; ++i) {
+	    var carg = block.args[i]
+	    if(carg.count <= 0) {
+	      continue
+	    }
+	    var re = new RegExp(carg.name, "g")
+	    var ptrStr = ""
+	    var arrNum = proc.arrayArgs.indexOf(i)
+	    switch(proc.argTypes[i]) {
+	      case "offset":
+	        var offArgIndex = proc.offsetArgIndex.indexOf(i)
+	        var offArg = proc.offsetArgs[offArgIndex]
+	        arrNum = offArg.array
+	        ptrStr = "+q" + offArgIndex // Adds offset to the "pointer" in the array
+	      case "array":
+	        ptrStr = "p" + arrNum + ptrStr
+	        var localStr = "l" + i
+	        var arrStr = "a" + arrNum
+	        if (proc.arrayBlockIndices[arrNum] === 0) { // Argument to body is just a single value from this array
+	          if(carg.count === 1) { // Argument/array used only once(?)
+	            if(dtypes[arrNum] === "generic") {
+	              if(carg.lvalue) {
+	                pre.push(["var ", localStr, "=", arrStr, ".get(", ptrStr, ")"].join("")) // Is this necessary if the argument is ONLY used as an lvalue? (keep in mind that we can have a += something, so we would actually need to check carg.rvalue)
+	                code = code.replace(re, localStr)
+	                post.push([arrStr, ".set(", ptrStr, ",", localStr,")"].join(""))
+	              } else {
+	                code = code.replace(re, [arrStr, ".get(", ptrStr, ")"].join(""))
+	              }
+	            } else {
+	              code = code.replace(re, [arrStr, "[", ptrStr, "]"].join(""))
+	            }
+	          } else if(dtypes[arrNum] === "generic") {
+	            pre.push(["var ", localStr, "=", arrStr, ".get(", ptrStr, ")"].join("")) // TODO: Could we optimize by checking for carg.rvalue?
+	            code = code.replace(re, localStr)
+	            if(carg.lvalue) {
+	              post.push([arrStr, ".set(", ptrStr, ",", localStr,")"].join(""))
+	            }
+	          } else {
+	            pre.push(["var ", localStr, "=", arrStr, "[", ptrStr, "]"].join("")) // TODO: Could we optimize by checking for carg.rvalue?
+	            code = code.replace(re, localStr)
+	            if(carg.lvalue) {
+	              post.push([arrStr, "[", ptrStr, "]=", localStr].join(""))
+	            }
+	          }
+	        } else { // Argument to body is a "block"
+	          var reStrArr = [carg.name], ptrStrArr = [ptrStr]
+	          for(var j=0; j<Math.abs(proc.arrayBlockIndices[arrNum]); j++) {
+	            reStrArr.push("\\s*\\[([^\\]]+)\\]")
+	            ptrStrArr.push("$" + (j+1) + "*t" + arrNum + "b" + j) // Matched index times stride
+	          }
+	          re = new RegExp(reStrArr.join(""), "g")
+	          ptrStr = ptrStrArr.join("+")
+	          if(dtypes[arrNum] === "generic") {
+	            /*if(carg.lvalue) {
+	              pre.push(["var ", localStr, "=", arrStr, ".get(", ptrStr, ")"].join("")) // Is this necessary if the argument is ONLY used as an lvalue? (keep in mind that we can have a += something, so we would actually need to check carg.rvalue)
+	              code = code.replace(re, localStr)
+	              post.push([arrStr, ".set(", ptrStr, ",", localStr,")"].join(""))
+	            } else {
+	              code = code.replace(re, [arrStr, ".get(", ptrStr, ")"].join(""))
+	            }*/
+	            throw new Error("cwise: Generic arrays not supported in combination with blocks!")
+	          } else {
+	            // This does not produce any local variables, even if variables are used multiple times. It would be possible to do so, but it would complicate things quite a bit.
+	            code = code.replace(re, [arrStr, "[", ptrStr, "]"].join(""))
+	          }
+	        }
+	      break
+	      case "scalar":
+	        code = code.replace(re, "Y" + proc.scalarArgs.indexOf(i))
+	      break
+	      case "index":
+	        code = code.replace(re, "index")
+	      break
+	      case "shape":
+	        code = code.replace(re, "shape")
+	      break
+	    }
+	  }
+	  return [pre.join("\n"), code, post.join("\n")].join("\n").trim()
+	}
+	
+	function typeSummary(dtypes) {
+	  var summary = new Array(dtypes.length)
+	  var allEqual = true
+	  for(var i=0; i<dtypes.length; ++i) {
+	    var t = dtypes[i]
+	    var digits = t.match(/\d+/)
+	    if(!digits) {
+	      digits = ""
+	    } else {
+	      digits = digits[0]
+	    }
+	    if(t.charAt(0) === 0) {
+	      summary[i] = "u" + t.charAt(1) + digits
+	    } else {
+	      summary[i] = t.charAt(0) + digits
+	    }
+	    if(i > 0) {
+	      allEqual = allEqual && summary[i] === summary[i-1]
+	    }
+	  }
+	  if(allEqual) {
+	    return summary[0]
+	  }
+	  return summary.join("")
+	}
+	
+	//Generates a cwise operator
+	function generateCWiseOp(proc, typesig) {
+	
+	  //Compute dimension
+	  // Arrays get put first in typesig, and there are two entries per array (dtype and order), so this gets the number of dimensions in the first array arg.
+	  var dimension = (typesig[1].length - Math.abs(proc.arrayBlockIndices[0]))|0
+	  var orders = new Array(proc.arrayArgs.length)
+	  var dtypes = new Array(proc.arrayArgs.length)
+	  for(var i=0; i<proc.arrayArgs.length; ++i) {
+	    dtypes[i] = typesig[2*i]
+	    orders[i] = typesig[2*i+1]
+	  }
+	  
+	  //Determine where block and loop indices start and end
+	  var blockBegin = [], blockEnd = [] // These indices are exposed as blocks
+	  var loopBegin = [], loopEnd = [] // These indices are iterated over
+	  var loopOrders = [] // orders restricted to the loop indices
+	  for(var i=0; i<proc.arrayArgs.length; ++i) {
+	    if (proc.arrayBlockIndices[i]<0) {
+	      loopBegin.push(0)
+	      loopEnd.push(dimension)
+	      blockBegin.push(dimension)
+	      blockEnd.push(dimension+proc.arrayBlockIndices[i])
+	    } else {
+	      loopBegin.push(proc.arrayBlockIndices[i]) // Non-negative
+	      loopEnd.push(proc.arrayBlockIndices[i]+dimension)
+	      blockBegin.push(0)
+	      blockEnd.push(proc.arrayBlockIndices[i])
+	    }
+	    var newOrder = []
+	    for(var j=0; j<orders[i].length; j++) {
+	      if (loopBegin[i]<=orders[i][j] && orders[i][j]<loopEnd[i]) {
+	        newOrder.push(orders[i][j]-loopBegin[i]) // If this is a loop index, put it in newOrder, subtracting loopBegin, to make sure that all loopOrders are using a common set of indices.
+	      }
+	    }
+	    loopOrders.push(newOrder)
+	  }
+	
+	  //First create arguments for procedure
+	  var arglist = ["SS"] // SS is the overall shape over which we iterate
+	  var code = ["'use strict'"]
+	  var vars = []
+	  
+	  for(var j=0; j<dimension; ++j) {
+	    vars.push(["s", j, "=SS[", j, "]"].join("")) // The limits for each dimension.
+	  }
+	  for(var i=0; i<proc.arrayArgs.length; ++i) {
+	    arglist.push("a"+i) // Actual data array
+	    arglist.push("t"+i) // Strides
+	    arglist.push("p"+i) // Offset in the array at which the data starts (also used for iterating over the data)
+	    
+	    for(var j=0; j<dimension; ++j) { // Unpack the strides into vars for looping
+	      vars.push(["t",i,"p",j,"=t",i,"[",loopBegin[i]+j,"]"].join(""))
+	    }
+	    
+	    for(var j=0; j<Math.abs(proc.arrayBlockIndices[i]); ++j) { // Unpack the strides into vars for block iteration
+	      vars.push(["t",i,"b",j,"=t",i,"[",blockBegin[i]+j,"]"].join(""))
+	    }
+	  }
+	  for(var i=0; i<proc.scalarArgs.length; ++i) {
+	    arglist.push("Y" + i)
+	  }
+	  if(proc.shapeArgs.length > 0) {
+	    vars.push("shape=SS.slice(0)") // Makes the shape over which we iterate available to the user defined functions (so you can use width/height for example)
+	  }
+	  if(proc.indexArgs.length > 0) {
+	    // Prepare an array to keep track of the (logical) indices, initialized to dimension zeroes.
+	    var zeros = new Array(dimension)
+	    for(var i=0; i<dimension; ++i) {
+	      zeros[i] = "0"
+	    }
+	    vars.push(["index=[", zeros.join(","), "]"].join(""))
+	  }
+	  for(var i=0; i<proc.offsetArgs.length; ++i) { // Offset arguments used for stencil operations
+	    var off_arg = proc.offsetArgs[i]
+	    var init_string = []
+	    for(var j=0; j<off_arg.offset.length; ++j) {
+	      if(off_arg.offset[j] === 0) {
+	        continue
+	      } else if(off_arg.offset[j] === 1) {
+	        init_string.push(["t", off_arg.array, "p", j].join(""))      
+	      } else {
+	        init_string.push([off_arg.offset[j], "*t", off_arg.array, "p", j].join(""))
+	      }
+	    }
+	    if(init_string.length === 0) {
+	      vars.push("q" + i + "=0")
+	    } else {
+	      vars.push(["q", i, "=", init_string.join("+")].join(""))
+	    }
+	  }
+	
+	  //Prepare this variables
+	  var thisVars = uniq([].concat(proc.pre.thisVars)
+	                      .concat(proc.body.thisVars)
+	                      .concat(proc.post.thisVars))
+	  vars = vars.concat(thisVars)
+	  code.push("var " + vars.join(","))
+	  for(var i=0; i<proc.arrayArgs.length; ++i) {
+	    code.push("p"+i+"|=0")
+	  }
+	  
+	  //Inline prelude
+	  if(proc.pre.body.length > 3) {
+	    code.push(processBlock(proc.pre, proc, dtypes))
+	  }
+	
+	  //Process body
+	  var body = processBlock(proc.body, proc, dtypes)
+	  var matched = countMatches(loopOrders)
+	  if(matched < dimension) {
+	    code.push(outerFill(matched, loopOrders[0], proc, body)) // TODO: Rather than passing loopOrders[0], it might be interesting to look at passing an order that represents the majority of the arguments for example.
+	  } else {
+	    code.push(innerFill(loopOrders[0], proc, body))
+	  }
+	
+	  //Inline epilog
+	  if(proc.post.body.length > 3) {
+	    code.push(processBlock(proc.post, proc, dtypes))
+	  }
+	  
+	  if(proc.debug) {
+	    console.log("-----Generated cwise routine for ", typesig, ":\n" + code.join("\n") + "\n----------")
+	  }
+	  
+	  var loopName = [(proc.funcName||"unnamed"), "_cwise_loop_", orders[0].join("s"),"m",matched,typeSummary(dtypes)].join("")
+	  var f = new Function(["function ",loopName,"(", arglist.join(","),"){", code.join("\n"),"} return ", loopName].join(""))
+	  return f()
+	}
+	module.exports = generateCWiseOp
+
 
 /***/ },
 /* 10 */
 /***/ function(module, exports) {
 
-	eval("\"use strict\"\n\nfunction unique_pred(list, compare) {\n  var ptr = 1\n    , len = list.length\n    , a=list[0], b=list[0]\n  for(var i=1; i<len; ++i) {\n    b = a\n    a = list[i]\n    if(compare(a, b)) {\n      if(i === ptr) {\n        ptr++\n        continue\n      }\n      list[ptr++] = a\n    }\n  }\n  list.length = ptr\n  return list\n}\n\nfunction unique_eq(list) {\n  var ptr = 1\n    , len = list.length\n    , a=list[0], b = list[0]\n  for(var i=1; i<len; ++i, b=a) {\n    b = a\n    a = list[i]\n    if(a !== b) {\n      if(i === ptr) {\n        ptr++\n        continue\n      }\n      list[ptr++] = a\n    }\n  }\n  list.length = ptr\n  return list\n}\n\nfunction unique(list, compare, sorted) {\n  if(list.length === 0) {\n    return list\n  }\n  if(compare) {\n    if(!sorted) {\n      list.sort(compare)\n    }\n    return unique_pred(list, compare)\n  }\n  if(!sorted) {\n    list.sort()\n  }\n  return unique_eq(list)\n}\n\nmodule.exports = unique\n//# sourceMappingURL=data:application/json;charset=utf-8;base64,eyJ2ZXJzaW9uIjozLCJzb3VyY2VzIjpbIndlYnBhY2s6Ly8vLi4vfi91bmlxL3VuaXEuanM/YzNiYyJdLCJuYW1lcyI6W10sIm1hcHBpbmdzIjoiQUFBQTs7QUFFQTtBQUNBO0FBQ0E7QUFDQTtBQUNBLGNBQWMsT0FBTztBQUNyQjtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTs7QUFFQTtBQUNBO0FBQ0E7QUFDQTtBQUNBLGNBQWMsT0FBTztBQUNyQjtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTs7QUFFQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7O0FBRUEiLCJmaWxlIjoiMTAuanMiLCJzb3VyY2VzQ29udGVudCI6WyJcInVzZSBzdHJpY3RcIlxuXG5mdW5jdGlvbiB1bmlxdWVfcHJlZChsaXN0LCBjb21wYXJlKSB7XG4gIHZhciBwdHIgPSAxXG4gICAgLCBsZW4gPSBsaXN0Lmxlbmd0aFxuICAgICwgYT1saXN0WzBdLCBiPWxpc3RbMF1cbiAgZm9yKHZhciBpPTE7IGk8bGVuOyArK2kpIHtcbiAgICBiID0gYVxuICAgIGEgPSBsaXN0W2ldXG4gICAgaWYoY29tcGFyZShhLCBiKSkge1xuICAgICAgaWYoaSA9PT0gcHRyKSB7XG4gICAgICAgIHB0cisrXG4gICAgICAgIGNvbnRpbnVlXG4gICAgICB9XG4gICAgICBsaXN0W3B0cisrXSA9IGFcbiAgICB9XG4gIH1cbiAgbGlzdC5sZW5ndGggPSBwdHJcbiAgcmV0dXJuIGxpc3Rcbn1cblxuZnVuY3Rpb24gdW5pcXVlX2VxKGxpc3QpIHtcbiAgdmFyIHB0ciA9IDFcbiAgICAsIGxlbiA9IGxpc3QubGVuZ3RoXG4gICAgLCBhPWxpc3RbMF0sIGIgPSBsaXN0WzBdXG4gIGZvcih2YXIgaT0xOyBpPGxlbjsgKytpLCBiPWEpIHtcbiAgICBiID0gYVxuICAgIGEgPSBsaXN0W2ldXG4gICAgaWYoYSAhPT0gYikge1xuICAgICAgaWYoaSA9PT0gcHRyKSB7XG4gICAgICAgIHB0cisrXG4gICAgICAgIGNvbnRpbnVlXG4gICAgICB9XG4gICAgICBsaXN0W3B0cisrXSA9IGFcbiAgICB9XG4gIH1cbiAgbGlzdC5sZW5ndGggPSBwdHJcbiAgcmV0dXJuIGxpc3Rcbn1cblxuZnVuY3Rpb24gdW5pcXVlKGxpc3QsIGNvbXBhcmUsIHNvcnRlZCkge1xuICBpZihsaXN0Lmxlbmd0aCA9PT0gMCkge1xuICAgIHJldHVybiBsaXN0XG4gIH1cbiAgaWYoY29tcGFyZSkge1xuICAgIGlmKCFzb3J0ZWQpIHtcbiAgICAgIGxpc3Quc29ydChjb21wYXJlKVxuICAgIH1cbiAgICByZXR1cm4gdW5pcXVlX3ByZWQobGlzdCwgY29tcGFyZSlcbiAgfVxuICBpZighc29ydGVkKSB7XG4gICAgbGlzdC5zb3J0KClcbiAgfVxuICByZXR1cm4gdW5pcXVlX2VxKGxpc3QpXG59XG5cbm1vZHVsZS5leHBvcnRzID0gdW5pcXVlXG5cblxuXG4vLy8vLy8vLy8vLy8vLy8vLy9cbi8vIFdFQlBBQ0sgRk9PVEVSXG4vLyAuLi9+L3VuaXEvdW5pcS5qc1xuLy8gbW9kdWxlIGlkID0gMTBcbi8vIG1vZHVsZSBjaHVua3MgPSAwIl0sInNvdXJjZVJvb3QiOiIifQ==");
+	"use strict"
+	
+	function unique_pred(list, compare) {
+	  var ptr = 1
+	    , len = list.length
+	    , a=list[0], b=list[0]
+	  for(var i=1; i<len; ++i) {
+	    b = a
+	    a = list[i]
+	    if(compare(a, b)) {
+	      if(i === ptr) {
+	        ptr++
+	        continue
+	      }
+	      list[ptr++] = a
+	    }
+	  }
+	  list.length = ptr
+	  return list
+	}
+	
+	function unique_eq(list) {
+	  var ptr = 1
+	    , len = list.length
+	    , a=list[0], b = list[0]
+	  for(var i=1; i<len; ++i, b=a) {
+	    b = a
+	    a = list[i]
+	    if(a !== b) {
+	      if(i === ptr) {
+	        ptr++
+	        continue
+	      }
+	      list[ptr++] = a
+	    }
+	  }
+	  list.length = ptr
+	  return list
+	}
+	
+	function unique(list, compare, sorted) {
+	  if(list.length === 0) {
+	    return list
+	  }
+	  if(compare) {
+	    if(!sorted) {
+	      list.sort(compare)
+	    }
+	    return unique_pred(list, compare)
+	  }
+	  if(!sorted) {
+	    list.sort()
+	  }
+	  return unique_eq(list)
+	}
+	
+	module.exports = unique
+
 
 /***/ },
 /* 11 */
 /***/ function(module, exports, __webpack_require__) {
 
-	eval("/* WEBPACK VAR INJECTION */(function(global, Buffer) {'use strict'\n\nvar bits = __webpack_require__(16)\nvar dup = __webpack_require__(17)\n\n//Legacy pool support\nif(!global.__TYPEDARRAY_POOL) {\n  global.__TYPEDARRAY_POOL = {\n      UINT8   : dup([32, 0])\n    , UINT16  : dup([32, 0])\n    , UINT32  : dup([32, 0])\n    , INT8    : dup([32, 0])\n    , INT16   : dup([32, 0])\n    , INT32   : dup([32, 0])\n    , FLOAT   : dup([32, 0])\n    , DOUBLE  : dup([32, 0])\n    , DATA    : dup([32, 0])\n    , UINT8C  : dup([32, 0])\n    , BUFFER  : dup([32, 0])\n  }\n}\n\nvar hasUint8C = (typeof Uint8ClampedArray) !== 'undefined'\nvar POOL = global.__TYPEDARRAY_POOL\n\n//Upgrade pool\nif(!POOL.UINT8C) {\n  POOL.UINT8C = dup([32, 0])\n}\nif(!POOL.BUFFER) {\n  POOL.BUFFER = dup([32, 0])\n}\n\n//New technique: Only allocate from ArrayBufferView and Buffer\nvar DATA    = POOL.DATA\n  , BUFFER  = POOL.BUFFER\n\nexports.free = function free(array) {\n  if(Buffer.isBuffer(array)) {\n    BUFFER[bits.log2(array.length)].push(array)\n  } else {\n    if(Object.prototype.toString.call(array) !== '[object ArrayBuffer]') {\n      array = array.buffer\n    }\n    if(!array) {\n      return\n    }\n    var n = array.length || array.byteLength\n    var log_n = bits.log2(n)|0\n    DATA[log_n].push(array)\n  }\n}\n\nfunction freeArrayBuffer(buffer) {\n  if(!buffer) {\n    return\n  }\n  var n = buffer.length || buffer.byteLength\n  var log_n = bits.log2(n)\n  DATA[log_n].push(buffer)\n}\n\nfunction freeTypedArray(array) {\n  freeArrayBuffer(array.buffer)\n}\n\nexports.freeUint8 =\nexports.freeUint16 =\nexports.freeUint32 =\nexports.freeInt8 =\nexports.freeInt16 =\nexports.freeInt32 =\nexports.freeFloat32 = \nexports.freeFloat =\nexports.freeFloat64 = \nexports.freeDouble = \nexports.freeUint8Clamped = \nexports.freeDataView = freeTypedArray\n\nexports.freeArrayBuffer = freeArrayBuffer\n\nexports.freeBuffer = function freeBuffer(array) {\n  BUFFER[bits.log2(array.length)].push(array)\n}\n\nexports.malloc = function malloc(n, dtype) {\n  if(dtype === undefined || dtype === 'arraybuffer') {\n    return mallocArrayBuffer(n)\n  } else {\n    switch(dtype) {\n      case 'uint8':\n        return mallocUint8(n)\n      case 'uint16':\n        return mallocUint16(n)\n      case 'uint32':\n        return mallocUint32(n)\n      case 'int8':\n        return mallocInt8(n)\n      case 'int16':\n        return mallocInt16(n)\n      case 'int32':\n        return mallocInt32(n)\n      case 'float':\n      case 'float32':\n        return mallocFloat(n)\n      case 'double':\n      case 'float64':\n        return mallocDouble(n)\n      case 'uint8_clamped':\n        return mallocUint8Clamped(n)\n      case 'buffer':\n        return mallocBuffer(n)\n      case 'data':\n      case 'dataview':\n        return mallocDataView(n)\n\n      default:\n        return null\n    }\n  }\n  return null\n}\n\nfunction mallocArrayBuffer(n) {\n  var n = bits.nextPow2(n)\n  var log_n = bits.log2(n)\n  var d = DATA[log_n]\n  if(d.length > 0) {\n    return d.pop()\n  }\n  return new ArrayBuffer(n)\n}\nexports.mallocArrayBuffer = mallocArrayBuffer\n\nfunction mallocUint8(n) {\n  return new Uint8Array(mallocArrayBuffer(n), 0, n)\n}\nexports.mallocUint8 = mallocUint8\n\nfunction mallocUint16(n) {\n  return new Uint16Array(mallocArrayBuffer(2*n), 0, n)\n}\nexports.mallocUint16 = mallocUint16\n\nfunction mallocUint32(n) {\n  return new Uint32Array(mallocArrayBuffer(4*n), 0, n)\n}\nexports.mallocUint32 = mallocUint32\n\nfunction mallocInt8(n) {\n  return new Int8Array(mallocArrayBuffer(n), 0, n)\n}\nexports.mallocInt8 = mallocInt8\n\nfunction mallocInt16(n) {\n  return new Int16Array(mallocArrayBuffer(2*n), 0, n)\n}\nexports.mallocInt16 = mallocInt16\n\nfunction mallocInt32(n) {\n  return new Int32Array(mallocArrayBuffer(4*n), 0, n)\n}\nexports.mallocInt32 = mallocInt32\n\nfunction mallocFloat(n) {\n  return new Float32Array(mallocArrayBuffer(4*n), 0, n)\n}\nexports.mallocFloat32 = exports.mallocFloat = mallocFloat\n\nfunction mallocDouble(n) {\n  return new Float64Array(mallocArrayBuffer(8*n), 0, n)\n}\nexports.mallocFloat64 = exports.mallocDouble = mallocDouble\n\nfunction mallocUint8Clamped(n) {\n  if(hasUint8C) {\n    return new Uint8ClampedArray(mallocArrayBuffer(n), 0, n)\n  } else {\n    return mallocUint8(n)\n  }\n}\nexports.mallocUint8Clamped = mallocUint8Clamped\n\nfunction mallocDataView(n) {\n  return new DataView(mallocArrayBuffer(n), 0, n)\n}\nexports.mallocDataView = mallocDataView\n\nfunction mallocBuffer(n) {\n  n = bits.nextPow2(n)\n  var log_n = bits.log2(n)\n  var cache = BUFFER[log_n]\n  if(cache.length > 0) {\n    return cache.pop()\n  }\n  return new Buffer(n)\n}\nexports.mallocBuffer = mallocBuffer\n\nexports.clearCache = function clearCache() {\n  for(var i=0; i<32; ++i) {\n    POOL.UINT8[i].length = 0\n    POOL.UINT16[i].length = 0\n    POOL.UINT32[i].length = 0\n    POOL.INT8[i].length = 0\n    POOL.INT16[i].length = 0\n    POOL.INT32[i].length = 0\n    POOL.FLOAT[i].length = 0\n    POOL.DOUBLE[i].length = 0\n    POOL.UINT8C[i].length = 0\n    DATA[i].length = 0\n    BUFFER[i].length = 0\n  }\n}\n/* WEBPACK VAR INJECTION */}.call(exports, (function() { return this; }()), __webpack_require__(12).Buffer))//# sourceMappingURL=data:application/json;charset=utf-8;base64,eyJ2ZXJzaW9uIjozLCJzb3VyY2VzIjpbIndlYnBhY2s6Ly8vLi4vfi90eXBlZGFycmF5LXBvb2wvcG9vbC5qcz9lMjFhIl0sIm5hbWVzIjpbXSwibWFwcGluZ3MiOiJBQUFBOztBQUVBO0FBQ0E7O0FBRUE7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7O0FBRUE7QUFDQTs7QUFFQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTs7QUFFQTtBQUNBO0FBQ0E7O0FBRUE7QUFDQTtBQUNBO0FBQ0EsR0FBRztBQUNIO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7O0FBRUE7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTs7QUFFQTtBQUNBO0FBQ0E7O0FBRUE7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBOztBQUVBOztBQUVBO0FBQ0E7QUFDQTs7QUFFQTtBQUNBO0FBQ0E7QUFDQSxHQUFHO0FBQ0g7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTs7QUFFQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7O0FBRUE7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7O0FBRUE7QUFDQTtBQUNBO0FBQ0E7O0FBRUE7QUFDQTtBQUNBO0FBQ0E7O0FBRUE7QUFDQTtBQUNBO0FBQ0E7O0FBRUE7QUFDQTtBQUNBO0FBQ0E7O0FBRUE7QUFDQTtBQUNBO0FBQ0E7O0FBRUE7QUFDQTtBQUNBO0FBQ0E7O0FBRUE7QUFDQTtBQUNBO0FBQ0E7O0FBRUE7QUFDQTtBQUNBO0FBQ0E7O0FBRUE7QUFDQTtBQUNBO0FBQ0EsR0FBRztBQUNIO0FBQ0E7QUFDQTtBQUNBOztBQUVBO0FBQ0E7QUFDQTtBQUNBOztBQUVBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBOztBQUVBO0FBQ0EsY0FBYyxNQUFNO0FBQ3BCO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBLEMiLCJmaWxlIjoiMTEuanMiLCJzb3VyY2VzQ29udGVudCI6WyIndXNlIHN0cmljdCdcblxudmFyIGJpdHMgPSByZXF1aXJlKCdiaXQtdHdpZGRsZScpXG52YXIgZHVwID0gcmVxdWlyZSgnZHVwJylcblxuLy9MZWdhY3kgcG9vbCBzdXBwb3J0XG5pZighZ2xvYmFsLl9fVFlQRURBUlJBWV9QT09MKSB7XG4gIGdsb2JhbC5fX1RZUEVEQVJSQVlfUE9PTCA9IHtcbiAgICAgIFVJTlQ4ICAgOiBkdXAoWzMyLCAwXSlcbiAgICAsIFVJTlQxNiAgOiBkdXAoWzMyLCAwXSlcbiAgICAsIFVJTlQzMiAgOiBkdXAoWzMyLCAwXSlcbiAgICAsIElOVDggICAgOiBkdXAoWzMyLCAwXSlcbiAgICAsIElOVDE2ICAgOiBkdXAoWzMyLCAwXSlcbiAgICAsIElOVDMyICAgOiBkdXAoWzMyLCAwXSlcbiAgICAsIEZMT0FUICAgOiBkdXAoWzMyLCAwXSlcbiAgICAsIERPVUJMRSAgOiBkdXAoWzMyLCAwXSlcbiAgICAsIERBVEEgICAgOiBkdXAoWzMyLCAwXSlcbiAgICAsIFVJTlQ4QyAgOiBkdXAoWzMyLCAwXSlcbiAgICAsIEJVRkZFUiAgOiBkdXAoWzMyLCAwXSlcbiAgfVxufVxuXG52YXIgaGFzVWludDhDID0gKHR5cGVvZiBVaW50OENsYW1wZWRBcnJheSkgIT09ICd1bmRlZmluZWQnXG52YXIgUE9PTCA9IGdsb2JhbC5fX1RZUEVEQVJSQVlfUE9PTFxuXG4vL1VwZ3JhZGUgcG9vbFxuaWYoIVBPT0wuVUlOVDhDKSB7XG4gIFBPT0wuVUlOVDhDID0gZHVwKFszMiwgMF0pXG59XG5pZighUE9PTC5CVUZGRVIpIHtcbiAgUE9PTC5CVUZGRVIgPSBkdXAoWzMyLCAwXSlcbn1cblxuLy9OZXcgdGVjaG5pcXVlOiBPbmx5IGFsbG9jYXRlIGZyb20gQXJyYXlCdWZmZXJWaWV3IGFuZCBCdWZmZXJcbnZhciBEQVRBICAgID0gUE9PTC5EQVRBXG4gICwgQlVGRkVSICA9IFBPT0wuQlVGRkVSXG5cbmV4cG9ydHMuZnJlZSA9IGZ1bmN0aW9uIGZyZWUoYXJyYXkpIHtcbiAgaWYoQnVmZmVyLmlzQnVmZmVyKGFycmF5KSkge1xuICAgIEJVRkZFUltiaXRzLmxvZzIoYXJyYXkubGVuZ3RoKV0ucHVzaChhcnJheSlcbiAgfSBlbHNlIHtcbiAgICBpZihPYmplY3QucHJvdG90eXBlLnRvU3RyaW5nLmNhbGwoYXJyYXkpICE9PSAnW29iamVjdCBBcnJheUJ1ZmZlcl0nKSB7XG4gICAgICBhcnJheSA9IGFycmF5LmJ1ZmZlclxuICAgIH1cbiAgICBpZighYXJyYXkpIHtcbiAgICAgIHJldHVyblxuICAgIH1cbiAgICB2YXIgbiA9IGFycmF5Lmxlbmd0aCB8fCBhcnJheS5ieXRlTGVuZ3RoXG4gICAgdmFyIGxvZ19uID0gYml0cy5sb2cyKG4pfDBcbiAgICBEQVRBW2xvZ19uXS5wdXNoKGFycmF5KVxuICB9XG59XG5cbmZ1bmN0aW9uIGZyZWVBcnJheUJ1ZmZlcihidWZmZXIpIHtcbiAgaWYoIWJ1ZmZlcikge1xuICAgIHJldHVyblxuICB9XG4gIHZhciBuID0gYnVmZmVyLmxlbmd0aCB8fCBidWZmZXIuYnl0ZUxlbmd0aFxuICB2YXIgbG9nX24gPSBiaXRzLmxvZzIobilcbiAgREFUQVtsb2dfbl0ucHVzaChidWZmZXIpXG59XG5cbmZ1bmN0aW9uIGZyZWVUeXBlZEFycmF5KGFycmF5KSB7XG4gIGZyZWVBcnJheUJ1ZmZlcihhcnJheS5idWZmZXIpXG59XG5cbmV4cG9ydHMuZnJlZVVpbnQ4ID1cbmV4cG9ydHMuZnJlZVVpbnQxNiA9XG5leHBvcnRzLmZyZWVVaW50MzIgPVxuZXhwb3J0cy5mcmVlSW50OCA9XG5leHBvcnRzLmZyZWVJbnQxNiA9XG5leHBvcnRzLmZyZWVJbnQzMiA9XG5leHBvcnRzLmZyZWVGbG9hdDMyID0gXG5leHBvcnRzLmZyZWVGbG9hdCA9XG5leHBvcnRzLmZyZWVGbG9hdDY0ID0gXG5leHBvcnRzLmZyZWVEb3VibGUgPSBcbmV4cG9ydHMuZnJlZVVpbnQ4Q2xhbXBlZCA9IFxuZXhwb3J0cy5mcmVlRGF0YVZpZXcgPSBmcmVlVHlwZWRBcnJheVxuXG5leHBvcnRzLmZyZWVBcnJheUJ1ZmZlciA9IGZyZWVBcnJheUJ1ZmZlclxuXG5leHBvcnRzLmZyZWVCdWZmZXIgPSBmdW5jdGlvbiBmcmVlQnVmZmVyKGFycmF5KSB7XG4gIEJVRkZFUltiaXRzLmxvZzIoYXJyYXkubGVuZ3RoKV0ucHVzaChhcnJheSlcbn1cblxuZXhwb3J0cy5tYWxsb2MgPSBmdW5jdGlvbiBtYWxsb2MobiwgZHR5cGUpIHtcbiAgaWYoZHR5cGUgPT09IHVuZGVmaW5lZCB8fCBkdHlwZSA9PT0gJ2FycmF5YnVmZmVyJykge1xuICAgIHJldHVybiBtYWxsb2NBcnJheUJ1ZmZlcihuKVxuICB9IGVsc2Uge1xuICAgIHN3aXRjaChkdHlwZSkge1xuICAgICAgY2FzZSAndWludDgnOlxuICAgICAgICByZXR1cm4gbWFsbG9jVWludDgobilcbiAgICAgIGNhc2UgJ3VpbnQxNic6XG4gICAgICAgIHJldHVybiBtYWxsb2NVaW50MTYobilcbiAgICAgIGNhc2UgJ3VpbnQzMic6XG4gICAgICAgIHJldHVybiBtYWxsb2NVaW50MzIobilcbiAgICAgIGNhc2UgJ2ludDgnOlxuICAgICAgICByZXR1cm4gbWFsbG9jSW50OChuKVxuICAgICAgY2FzZSAnaW50MTYnOlxuICAgICAgICByZXR1cm4gbWFsbG9jSW50MTYobilcbiAgICAgIGNhc2UgJ2ludDMyJzpcbiAgICAgICAgcmV0dXJuIG1hbGxvY0ludDMyKG4pXG4gICAgICBjYXNlICdmbG9hdCc6XG4gICAgICBjYXNlICdmbG9hdDMyJzpcbiAgICAgICAgcmV0dXJuIG1hbGxvY0Zsb2F0KG4pXG4gICAgICBjYXNlICdkb3VibGUnOlxuICAgICAgY2FzZSAnZmxvYXQ2NCc6XG4gICAgICAgIHJldHVybiBtYWxsb2NEb3VibGUobilcbiAgICAgIGNhc2UgJ3VpbnQ4X2NsYW1wZWQnOlxuICAgICAgICByZXR1cm4gbWFsbG9jVWludDhDbGFtcGVkKG4pXG4gICAgICBjYXNlICdidWZmZXInOlxuICAgICAgICByZXR1cm4gbWFsbG9jQnVmZmVyKG4pXG4gICAgICBjYXNlICdkYXRhJzpcbiAgICAgIGNhc2UgJ2RhdGF2aWV3JzpcbiAgICAgICAgcmV0dXJuIG1hbGxvY0RhdGFWaWV3KG4pXG5cbiAgICAgIGRlZmF1bHQ6XG4gICAgICAgIHJldHVybiBudWxsXG4gICAgfVxuICB9XG4gIHJldHVybiBudWxsXG59XG5cbmZ1bmN0aW9uIG1hbGxvY0FycmF5QnVmZmVyKG4pIHtcbiAgdmFyIG4gPSBiaXRzLm5leHRQb3cyKG4pXG4gIHZhciBsb2dfbiA9IGJpdHMubG9nMihuKVxuICB2YXIgZCA9IERBVEFbbG9nX25dXG4gIGlmKGQubGVuZ3RoID4gMCkge1xuICAgIHJldHVybiBkLnBvcCgpXG4gIH1cbiAgcmV0dXJuIG5ldyBBcnJheUJ1ZmZlcihuKVxufVxuZXhwb3J0cy5tYWxsb2NBcnJheUJ1ZmZlciA9IG1hbGxvY0FycmF5QnVmZmVyXG5cbmZ1bmN0aW9uIG1hbGxvY1VpbnQ4KG4pIHtcbiAgcmV0dXJuIG5ldyBVaW50OEFycmF5KG1hbGxvY0FycmF5QnVmZmVyKG4pLCAwLCBuKVxufVxuZXhwb3J0cy5tYWxsb2NVaW50OCA9IG1hbGxvY1VpbnQ4XG5cbmZ1bmN0aW9uIG1hbGxvY1VpbnQxNihuKSB7XG4gIHJldHVybiBuZXcgVWludDE2QXJyYXkobWFsbG9jQXJyYXlCdWZmZXIoMipuKSwgMCwgbilcbn1cbmV4cG9ydHMubWFsbG9jVWludDE2ID0gbWFsbG9jVWludDE2XG5cbmZ1bmN0aW9uIG1hbGxvY1VpbnQzMihuKSB7XG4gIHJldHVybiBuZXcgVWludDMyQXJyYXkobWFsbG9jQXJyYXlCdWZmZXIoNCpuKSwgMCwgbilcbn1cbmV4cG9ydHMubWFsbG9jVWludDMyID0gbWFsbG9jVWludDMyXG5cbmZ1bmN0aW9uIG1hbGxvY0ludDgobikge1xuICByZXR1cm4gbmV3IEludDhBcnJheShtYWxsb2NBcnJheUJ1ZmZlcihuKSwgMCwgbilcbn1cbmV4cG9ydHMubWFsbG9jSW50OCA9IG1hbGxvY0ludDhcblxuZnVuY3Rpb24gbWFsbG9jSW50MTYobikge1xuICByZXR1cm4gbmV3IEludDE2QXJyYXkobWFsbG9jQXJyYXlCdWZmZXIoMipuKSwgMCwgbilcbn1cbmV4cG9ydHMubWFsbG9jSW50MTYgPSBtYWxsb2NJbnQxNlxuXG5mdW5jdGlvbiBtYWxsb2NJbnQzMihuKSB7XG4gIHJldHVybiBuZXcgSW50MzJBcnJheShtYWxsb2NBcnJheUJ1ZmZlcig0Km4pLCAwLCBuKVxufVxuZXhwb3J0cy5tYWxsb2NJbnQzMiA9IG1hbGxvY0ludDMyXG5cbmZ1bmN0aW9uIG1hbGxvY0Zsb2F0KG4pIHtcbiAgcmV0dXJuIG5ldyBGbG9hdDMyQXJyYXkobWFsbG9jQXJyYXlCdWZmZXIoNCpuKSwgMCwgbilcbn1cbmV4cG9ydHMubWFsbG9jRmxvYXQzMiA9IGV4cG9ydHMubWFsbG9jRmxvYXQgPSBtYWxsb2NGbG9hdFxuXG5mdW5jdGlvbiBtYWxsb2NEb3VibGUobikge1xuICByZXR1cm4gbmV3IEZsb2F0NjRBcnJheShtYWxsb2NBcnJheUJ1ZmZlcig4Km4pLCAwLCBuKVxufVxuZXhwb3J0cy5tYWxsb2NGbG9hdDY0ID0gZXhwb3J0cy5tYWxsb2NEb3VibGUgPSBtYWxsb2NEb3VibGVcblxuZnVuY3Rpb24gbWFsbG9jVWludDhDbGFtcGVkKG4pIHtcbiAgaWYoaGFzVWludDhDKSB7XG4gICAgcmV0dXJuIG5ldyBVaW50OENsYW1wZWRBcnJheShtYWxsb2NBcnJheUJ1ZmZlcihuKSwgMCwgbilcbiAgfSBlbHNlIHtcbiAgICByZXR1cm4gbWFsbG9jVWludDgobilcbiAgfVxufVxuZXhwb3J0cy5tYWxsb2NVaW50OENsYW1wZWQgPSBtYWxsb2NVaW50OENsYW1wZWRcblxuZnVuY3Rpb24gbWFsbG9jRGF0YVZpZXcobikge1xuICByZXR1cm4gbmV3IERhdGFWaWV3KG1hbGxvY0FycmF5QnVmZmVyKG4pLCAwLCBuKVxufVxuZXhwb3J0cy5tYWxsb2NEYXRhVmlldyA9IG1hbGxvY0RhdGFWaWV3XG5cbmZ1bmN0aW9uIG1hbGxvY0J1ZmZlcihuKSB7XG4gIG4gPSBiaXRzLm5leHRQb3cyKG4pXG4gIHZhciBsb2dfbiA9IGJpdHMubG9nMihuKVxuICB2YXIgY2FjaGUgPSBCVUZGRVJbbG9nX25dXG4gIGlmKGNhY2hlLmxlbmd0aCA+IDApIHtcbiAgICByZXR1cm4gY2FjaGUucG9wKClcbiAgfVxuICByZXR1cm4gbmV3IEJ1ZmZlcihuKVxufVxuZXhwb3J0cy5tYWxsb2NCdWZmZXIgPSBtYWxsb2NCdWZmZXJcblxuZXhwb3J0cy5jbGVhckNhY2hlID0gZnVuY3Rpb24gY2xlYXJDYWNoZSgpIHtcbiAgZm9yKHZhciBpPTA7IGk8MzI7ICsraSkge1xuICAgIFBPT0wuVUlOVDhbaV0ubGVuZ3RoID0gMFxuICAgIFBPT0wuVUlOVDE2W2ldLmxlbmd0aCA9IDBcbiAgICBQT09MLlVJTlQzMltpXS5sZW5ndGggPSAwXG4gICAgUE9PTC5JTlQ4W2ldLmxlbmd0aCA9IDBcbiAgICBQT09MLklOVDE2W2ldLmxlbmd0aCA9IDBcbiAgICBQT09MLklOVDMyW2ldLmxlbmd0aCA9IDBcbiAgICBQT09MLkZMT0FUW2ldLmxlbmd0aCA9IDBcbiAgICBQT09MLkRPVUJMRVtpXS5sZW5ndGggPSAwXG4gICAgUE9PTC5VSU5UOENbaV0ubGVuZ3RoID0gMFxuICAgIERBVEFbaV0ubGVuZ3RoID0gMFxuICAgIEJVRkZFUltpXS5sZW5ndGggPSAwXG4gIH1cbn1cblxuXG4vLy8vLy8vLy8vLy8vLy8vLy9cbi8vIFdFQlBBQ0sgRk9PVEVSXG4vLyAuLi9+L3R5cGVkYXJyYXktcG9vbC9wb29sLmpzXG4vLyBtb2R1bGUgaWQgPSAxMVxuLy8gbW9kdWxlIGNodW5rcyA9IDAiXSwic291cmNlUm9vdCI6IiJ9");
+	/* WEBPACK VAR INJECTION */(function(global, Buffer) {'use strict'
+	
+	var bits = __webpack_require__(16)
+	var dup = __webpack_require__(17)
+	
+	//Legacy pool support
+	if(!global.__TYPEDARRAY_POOL) {
+	  global.__TYPEDARRAY_POOL = {
+	      UINT8   : dup([32, 0])
+	    , UINT16  : dup([32, 0])
+	    , UINT32  : dup([32, 0])
+	    , INT8    : dup([32, 0])
+	    , INT16   : dup([32, 0])
+	    , INT32   : dup([32, 0])
+	    , FLOAT   : dup([32, 0])
+	    , DOUBLE  : dup([32, 0])
+	    , DATA    : dup([32, 0])
+	    , UINT8C  : dup([32, 0])
+	    , BUFFER  : dup([32, 0])
+	  }
+	}
+	
+	var hasUint8C = (typeof Uint8ClampedArray) !== 'undefined'
+	var POOL = global.__TYPEDARRAY_POOL
+	
+	//Upgrade pool
+	if(!POOL.UINT8C) {
+	  POOL.UINT8C = dup([32, 0])
+	}
+	if(!POOL.BUFFER) {
+	  POOL.BUFFER = dup([32, 0])
+	}
+	
+	//New technique: Only allocate from ArrayBufferView and Buffer
+	var DATA    = POOL.DATA
+	  , BUFFER  = POOL.BUFFER
+	
+	exports.free = function free(array) {
+	  if(Buffer.isBuffer(array)) {
+	    BUFFER[bits.log2(array.length)].push(array)
+	  } else {
+	    if(Object.prototype.toString.call(array) !== '[object ArrayBuffer]') {
+	      array = array.buffer
+	    }
+	    if(!array) {
+	      return
+	    }
+	    var n = array.length || array.byteLength
+	    var log_n = bits.log2(n)|0
+	    DATA[log_n].push(array)
+	  }
+	}
+	
+	function freeArrayBuffer(buffer) {
+	  if(!buffer) {
+	    return
+	  }
+	  var n = buffer.length || buffer.byteLength
+	  var log_n = bits.log2(n)
+	  DATA[log_n].push(buffer)
+	}
+	
+	function freeTypedArray(array) {
+	  freeArrayBuffer(array.buffer)
+	}
+	
+	exports.freeUint8 =
+	exports.freeUint16 =
+	exports.freeUint32 =
+	exports.freeInt8 =
+	exports.freeInt16 =
+	exports.freeInt32 =
+	exports.freeFloat32 = 
+	exports.freeFloat =
+	exports.freeFloat64 = 
+	exports.freeDouble = 
+	exports.freeUint8Clamped = 
+	exports.freeDataView = freeTypedArray
+	
+	exports.freeArrayBuffer = freeArrayBuffer
+	
+	exports.freeBuffer = function freeBuffer(array) {
+	  BUFFER[bits.log2(array.length)].push(array)
+	}
+	
+	exports.malloc = function malloc(n, dtype) {
+	  if(dtype === undefined || dtype === 'arraybuffer') {
+	    return mallocArrayBuffer(n)
+	  } else {
+	    switch(dtype) {
+	      case 'uint8':
+	        return mallocUint8(n)
+	      case 'uint16':
+	        return mallocUint16(n)
+	      case 'uint32':
+	        return mallocUint32(n)
+	      case 'int8':
+	        return mallocInt8(n)
+	      case 'int16':
+	        return mallocInt16(n)
+	      case 'int32':
+	        return mallocInt32(n)
+	      case 'float':
+	      case 'float32':
+	        return mallocFloat(n)
+	      case 'double':
+	      case 'float64':
+	        return mallocDouble(n)
+	      case 'uint8_clamped':
+	        return mallocUint8Clamped(n)
+	      case 'buffer':
+	        return mallocBuffer(n)
+	      case 'data':
+	      case 'dataview':
+	        return mallocDataView(n)
+	
+	      default:
+	        return null
+	    }
+	  }
+	  return null
+	}
+	
+	function mallocArrayBuffer(n) {
+	  var n = bits.nextPow2(n)
+	  var log_n = bits.log2(n)
+	  var d = DATA[log_n]
+	  if(d.length > 0) {
+	    return d.pop()
+	  }
+	  return new ArrayBuffer(n)
+	}
+	exports.mallocArrayBuffer = mallocArrayBuffer
+	
+	function mallocUint8(n) {
+	  return new Uint8Array(mallocArrayBuffer(n), 0, n)
+	}
+	exports.mallocUint8 = mallocUint8
+	
+	function mallocUint16(n) {
+	  return new Uint16Array(mallocArrayBuffer(2*n), 0, n)
+	}
+	exports.mallocUint16 = mallocUint16
+	
+	function mallocUint32(n) {
+	  return new Uint32Array(mallocArrayBuffer(4*n), 0, n)
+	}
+	exports.mallocUint32 = mallocUint32
+	
+	function mallocInt8(n) {
+	  return new Int8Array(mallocArrayBuffer(n), 0, n)
+	}
+	exports.mallocInt8 = mallocInt8
+	
+	function mallocInt16(n) {
+	  return new Int16Array(mallocArrayBuffer(2*n), 0, n)
+	}
+	exports.mallocInt16 = mallocInt16
+	
+	function mallocInt32(n) {
+	  return new Int32Array(mallocArrayBuffer(4*n), 0, n)
+	}
+	exports.mallocInt32 = mallocInt32
+	
+	function mallocFloat(n) {
+	  return new Float32Array(mallocArrayBuffer(4*n), 0, n)
+	}
+	exports.mallocFloat32 = exports.mallocFloat = mallocFloat
+	
+	function mallocDouble(n) {
+	  return new Float64Array(mallocArrayBuffer(8*n), 0, n)
+	}
+	exports.mallocFloat64 = exports.mallocDouble = mallocDouble
+	
+	function mallocUint8Clamped(n) {
+	  if(hasUint8C) {
+	    return new Uint8ClampedArray(mallocArrayBuffer(n), 0, n)
+	  } else {
+	    return mallocUint8(n)
+	  }
+	}
+	exports.mallocUint8Clamped = mallocUint8Clamped
+	
+	function mallocDataView(n) {
+	  return new DataView(mallocArrayBuffer(n), 0, n)
+	}
+	exports.mallocDataView = mallocDataView
+	
+	function mallocBuffer(n) {
+	  n = bits.nextPow2(n)
+	  var log_n = bits.log2(n)
+	  var cache = BUFFER[log_n]
+	  if(cache.length > 0) {
+	    return cache.pop()
+	  }
+	  return new Buffer(n)
+	}
+	exports.mallocBuffer = mallocBuffer
+	
+	exports.clearCache = function clearCache() {
+	  for(var i=0; i<32; ++i) {
+	    POOL.UINT8[i].length = 0
+	    POOL.UINT16[i].length = 0
+	    POOL.UINT32[i].length = 0
+	    POOL.INT8[i].length = 0
+	    POOL.INT16[i].length = 0
+	    POOL.INT32[i].length = 0
+	    POOL.FLOAT[i].length = 0
+	    POOL.DOUBLE[i].length = 0
+	    POOL.UINT8C[i].length = 0
+	    DATA[i].length = 0
+	    BUFFER[i].length = 0
+	  }
+	}
+	/* WEBPACK VAR INJECTION */}.call(exports, (function() { return this; }()), __webpack_require__(12).Buffer))
 
 /***/ },
 /* 12 */
 /***/ function(module, exports, __webpack_require__) {
 
-	eval("/* WEBPACK VAR INJECTION */(function(global) {/*!\n * The buffer module from node.js, for the browser.\n *\n * @author   Feross Aboukhadijeh <feross@feross.org> <http://feross.org>\n * @license  MIT\n */\n/* eslint-disable no-proto */\n\n'use strict'\n\nvar base64 = __webpack_require__(13)\nvar ieee754 = __webpack_require__(14)\nvar isArray = __webpack_require__(15)\n\nexports.Buffer = Buffer\nexports.SlowBuffer = SlowBuffer\nexports.INSPECT_MAX_BYTES = 50\n\n/**\n * If `Buffer.TYPED_ARRAY_SUPPORT`:\n *   === true    Use Uint8Array implementation (fastest)\n *   === false   Use Object implementation (most compatible, even IE6)\n *\n * Browsers that support typed arrays are IE 10+, Firefox 4+, Chrome 7+, Safari 5.1+,\n * Opera 11.6+, iOS 4.2+.\n *\n * Due to various browser bugs, sometimes the Object implementation will be used even\n * when the browser supports typed arrays.\n *\n * Note:\n *\n *   - Firefox 4-29 lacks support for adding new properties to `Uint8Array` instances,\n *     See: https://bugzilla.mozilla.org/show_bug.cgi?id=695438.\n *\n *   - Chrome 9-10 is missing the `TypedArray.prototype.subarray` function.\n *\n *   - IE10 has a broken `TypedArray.prototype.subarray` function which returns arrays of\n *     incorrect length in some situations.\n\n * We detect these buggy browsers and set `Buffer.TYPED_ARRAY_SUPPORT` to `false` so they\n * get the Object implementation, which is slower but behaves correctly.\n */\nBuffer.TYPED_ARRAY_SUPPORT = global.TYPED_ARRAY_SUPPORT !== undefined\n  ? global.TYPED_ARRAY_SUPPORT\n  : typedArraySupport()\n\n/*\n * Export kMaxLength after typed array support is determined.\n */\nexports.kMaxLength = kMaxLength()\n\nfunction typedArraySupport () {\n  try {\n    var arr = new Uint8Array(1)\n    arr.__proto__ = {__proto__: Uint8Array.prototype, foo: function () { return 42 }}\n    return arr.foo() === 42 && // typed array instances can be augmented\n        typeof arr.subarray === 'function' && // chrome 9-10 lack `subarray`\n        arr.subarray(1, 1).byteLength === 0 // ie10 has broken `subarray`\n  } catch (e) {\n    return false\n  }\n}\n\nfunction kMaxLength () {\n  return Buffer.TYPED_ARRAY_SUPPORT\n    ? 0x7fffffff\n    : 0x3fffffff\n}\n\nfunction createBuffer (that, length) {\n  if (kMaxLength() < length) {\n    throw new RangeError('Invalid typed array length')\n  }\n  if (Buffer.TYPED_ARRAY_SUPPORT) {\n    // Return an augmented `Uint8Array` instance, for best performance\n    that = new Uint8Array(length)\n    that.__proto__ = Buffer.prototype\n  } else {\n    // Fallback: Return an object instance of the Buffer class\n    if (that === null) {\n      that = new Buffer(length)\n    }\n    that.length = length\n  }\n\n  return that\n}\n\n/**\n * The Buffer constructor returns instances of `Uint8Array` that have their\n * prototype changed to `Buffer.prototype`. Furthermore, `Buffer` is a subclass of\n * `Uint8Array`, so the returned instances will have all the node `Buffer` methods\n * and the `Uint8Array` methods. Square bracket notation works as expected -- it\n * returns a single octet.\n *\n * The `Uint8Array` prototype remains unmodified.\n */\n\nfunction Buffer (arg, encodingOrOffset, length) {\n  if (!Buffer.TYPED_ARRAY_SUPPORT && !(this instanceof Buffer)) {\n    return new Buffer(arg, encodingOrOffset, length)\n  }\n\n  // Common case.\n  if (typeof arg === 'number') {\n    if (typeof encodingOrOffset === 'string') {\n      throw new Error(\n        'If encoding is specified then the first argument must be a string'\n      )\n    }\n    return allocUnsafe(this, arg)\n  }\n  return from(this, arg, encodingOrOffset, length)\n}\n\nBuffer.poolSize = 8192 // not used by this implementation\n\n// TODO: Legacy, not needed anymore. Remove in next major version.\nBuffer._augment = function (arr) {\n  arr.__proto__ = Buffer.prototype\n  return arr\n}\n\nfunction from (that, value, encodingOrOffset, length) {\n  if (typeof value === 'number') {\n    throw new TypeError('\"value\" argument must not be a number')\n  }\n\n  if (typeof ArrayBuffer !== 'undefined' && value instanceof ArrayBuffer) {\n    return fromArrayBuffer(that, value, encodingOrOffset, length)\n  }\n\n  if (typeof value === 'string') {\n    return fromString(that, value, encodingOrOffset)\n  }\n\n  return fromObject(that, value)\n}\n\n/**\n * Functionally equivalent to Buffer(arg, encoding) but throws a TypeError\n * if value is a number.\n * Buffer.from(str[, encoding])\n * Buffer.from(array)\n * Buffer.from(buffer)\n * Buffer.from(arrayBuffer[, byteOffset[, length]])\n **/\nBuffer.from = function (value, encodingOrOffset, length) {\n  return from(null, value, encodingOrOffset, length)\n}\n\nif (Buffer.TYPED_ARRAY_SUPPORT) {\n  Buffer.prototype.__proto__ = Uint8Array.prototype\n  Buffer.__proto__ = Uint8Array\n  if (typeof Symbol !== 'undefined' && Symbol.species &&\n      Buffer[Symbol.species] === Buffer) {\n    // Fix subarray() in ES2016. See: https://github.com/feross/buffer/pull/97\n    Object.defineProperty(Buffer, Symbol.species, {\n      value: null,\n      configurable: true\n    })\n  }\n}\n\nfunction assertSize (size) {\n  if (typeof size !== 'number') {\n    throw new TypeError('\"size\" argument must be a number')\n  } else if (size < 0) {\n    throw new RangeError('\"size\" argument must not be negative')\n  }\n}\n\nfunction alloc (that, size, fill, encoding) {\n  assertSize(size)\n  if (size <= 0) {\n    return createBuffer(that, size)\n  }\n  if (fill !== undefined) {\n    // Only pay attention to encoding if it's a string. This\n    // prevents accidentally sending in a number that would\n    // be interpretted as a start offset.\n    return typeof encoding === 'string'\n      ? createBuffer(that, size).fill(fill, encoding)\n      : createBuffer(that, size).fill(fill)\n  }\n  return createBuffer(that, size)\n}\n\n/**\n * Creates a new filled Buffer instance.\n * alloc(size[, fill[, encoding]])\n **/\nBuffer.alloc = function (size, fill, encoding) {\n  return alloc(null, size, fill, encoding)\n}\n\nfunction allocUnsafe (that, size) {\n  assertSize(size)\n  that = createBuffer(that, size < 0 ? 0 : checked(size) | 0)\n  if (!Buffer.TYPED_ARRAY_SUPPORT) {\n    for (var i = 0; i < size; ++i) {\n      that[i] = 0\n    }\n  }\n  return that\n}\n\n/**\n * Equivalent to Buffer(num), by default creates a non-zero-filled Buffer instance.\n * */\nBuffer.allocUnsafe = function (size) {\n  return allocUnsafe(null, size)\n}\n/**\n * Equivalent to SlowBuffer(num), by default creates a non-zero-filled Buffer instance.\n */\nBuffer.allocUnsafeSlow = function (size) {\n  return allocUnsafe(null, size)\n}\n\nfunction fromString (that, string, encoding) {\n  if (typeof encoding !== 'string' || encoding === '') {\n    encoding = 'utf8'\n  }\n\n  if (!Buffer.isEncoding(encoding)) {\n    throw new TypeError('\"encoding\" must be a valid string encoding')\n  }\n\n  var length = byteLength(string, encoding) | 0\n  that = createBuffer(that, length)\n\n  var actual = that.write(string, encoding)\n\n  if (actual !== length) {\n    // Writing a hex string, for example, that contains invalid characters will\n    // cause everything after the first invalid character to be ignored. (e.g.\n    // 'abxxcd' will be treated as 'ab')\n    that = that.slice(0, actual)\n  }\n\n  return that\n}\n\nfunction fromArrayLike (that, array) {\n  var length = array.length < 0 ? 0 : checked(array.length) | 0\n  that = createBuffer(that, length)\n  for (var i = 0; i < length; i += 1) {\n    that[i] = array[i] & 255\n  }\n  return that\n}\n\nfunction fromArrayBuffer (that, array, byteOffset, length) {\n  array.byteLength // this throws if `array` is not a valid ArrayBuffer\n\n  if (byteOffset < 0 || array.byteLength < byteOffset) {\n    throw new RangeError('\\'offset\\' is out of bounds')\n  }\n\n  if (array.byteLength < byteOffset + (length || 0)) {\n    throw new RangeError('\\'length\\' is out of bounds')\n  }\n\n  if (byteOffset === undefined && length === undefined) {\n    array = new Uint8Array(array)\n  } else if (length === undefined) {\n    array = new Uint8Array(array, byteOffset)\n  } else {\n    array = new Uint8Array(array, byteOffset, length)\n  }\n\n  if (Buffer.TYPED_ARRAY_SUPPORT) {\n    // Return an augmented `Uint8Array` instance, for best performance\n    that = array\n    that.__proto__ = Buffer.prototype\n  } else {\n    // Fallback: Return an object instance of the Buffer class\n    that = fromArrayLike(that, array)\n  }\n  return that\n}\n\nfunction fromObject (that, obj) {\n  if (Buffer.isBuffer(obj)) {\n    var len = checked(obj.length) | 0\n    that = createBuffer(that, len)\n\n    if (that.length === 0) {\n      return that\n    }\n\n    obj.copy(that, 0, 0, len)\n    return that\n  }\n\n  if (obj) {\n    if ((typeof ArrayBuffer !== 'undefined' &&\n        obj.buffer instanceof ArrayBuffer) || 'length' in obj) {\n      if (typeof obj.length !== 'number' || isnan(obj.length)) {\n        return createBuffer(that, 0)\n      }\n      return fromArrayLike(that, obj)\n    }\n\n    if (obj.type === 'Buffer' && isArray(obj.data)) {\n      return fromArrayLike(that, obj.data)\n    }\n  }\n\n  throw new TypeError('First argument must be a string, Buffer, ArrayBuffer, Array, or array-like object.')\n}\n\nfunction checked (length) {\n  // Note: cannot use `length < kMaxLength()` here because that fails when\n  // length is NaN (which is otherwise coerced to zero.)\n  if (length >= kMaxLength()) {\n    throw new RangeError('Attempt to allocate Buffer larger than maximum ' +\n                         'size: 0x' + kMaxLength().toString(16) + ' bytes')\n  }\n  return length | 0\n}\n\nfunction SlowBuffer (length) {\n  if (+length != length) { // eslint-disable-line eqeqeq\n    length = 0\n  }\n  return Buffer.alloc(+length)\n}\n\nBuffer.isBuffer = function isBuffer (b) {\n  return !!(b != null && b._isBuffer)\n}\n\nBuffer.compare = function compare (a, b) {\n  if (!Buffer.isBuffer(a) || !Buffer.isBuffer(b)) {\n    throw new TypeError('Arguments must be Buffers')\n  }\n\n  if (a === b) return 0\n\n  var x = a.length\n  var y = b.length\n\n  for (var i = 0, len = Math.min(x, y); i < len; ++i) {\n    if (a[i] !== b[i]) {\n      x = a[i]\n      y = b[i]\n      break\n    }\n  }\n\n  if (x < y) return -1\n  if (y < x) return 1\n  return 0\n}\n\nBuffer.isEncoding = function isEncoding (encoding) {\n  switch (String(encoding).toLowerCase()) {\n    case 'hex':\n    case 'utf8':\n    case 'utf-8':\n    case 'ascii':\n    case 'latin1':\n    case 'binary':\n    case 'base64':\n    case 'ucs2':\n    case 'ucs-2':\n    case 'utf16le':\n    case 'utf-16le':\n      return true\n    default:\n      return false\n  }\n}\n\nBuffer.concat = function concat (list, length) {\n  if (!isArray(list)) {\n    throw new TypeError('\"list\" argument must be an Array of Buffers')\n  }\n\n  if (list.length === 0) {\n    return Buffer.alloc(0)\n  }\n\n  var i\n  if (length === undefined) {\n    length = 0\n    for (i = 0; i < list.length; ++i) {\n      length += list[i].length\n    }\n  }\n\n  var buffer = Buffer.allocUnsafe(length)\n  var pos = 0\n  for (i = 0; i < list.length; ++i) {\n    var buf = list[i]\n    if (!Buffer.isBuffer(buf)) {\n      throw new TypeError('\"list\" argument must be an Array of Buffers')\n    }\n    buf.copy(buffer, pos)\n    pos += buf.length\n  }\n  return buffer\n}\n\nfunction byteLength (string, encoding) {\n  if (Buffer.isBuffer(string)) {\n    return string.length\n  }\n  if (typeof ArrayBuffer !== 'undefined' && typeof ArrayBuffer.isView === 'function' &&\n      (ArrayBuffer.isView(string) || string instanceof ArrayBuffer)) {\n    return string.byteLength\n  }\n  if (typeof string !== 'string') {\n    string = '' + string\n  }\n\n  var len = string.length\n  if (len === 0) return 0\n\n  // Use a for loop to avoid recursion\n  var loweredCase = false\n  for (;;) {\n    switch (encoding) {\n      case 'ascii':\n      case 'latin1':\n      case 'binary':\n        return len\n      case 'utf8':\n      case 'utf-8':\n      case undefined:\n        return utf8ToBytes(string).length\n      case 'ucs2':\n      case 'ucs-2':\n      case 'utf16le':\n      case 'utf-16le':\n        return len * 2\n      case 'hex':\n        return len >>> 1\n      case 'base64':\n        return base64ToBytes(string).length\n      default:\n        if (loweredCase) return utf8ToBytes(string).length // assume utf8\n        encoding = ('' + encoding).toLowerCase()\n        loweredCase = true\n    }\n  }\n}\nBuffer.byteLength = byteLength\n\nfunction slowToString (encoding, start, end) {\n  var loweredCase = false\n\n  // No need to verify that \"this.length <= MAX_UINT32\" since it's a read-only\n  // property of a typed array.\n\n  // This behaves neither like String nor Uint8Array in that we set start/end\n  // to their upper/lower bounds if the value passed is out of range.\n  // undefined is handled specially as per ECMA-262 6th Edition,\n  // Section 13.3.3.7 Runtime Semantics: KeyedBindingInitialization.\n  if (start === undefined || start < 0) {\n    start = 0\n  }\n  // Return early if start > this.length. Done here to prevent potential uint32\n  // coercion fail below.\n  if (start > this.length) {\n    return ''\n  }\n\n  if (end === undefined || end > this.length) {\n    end = this.length\n  }\n\n  if (end <= 0) {\n    return ''\n  }\n\n  // Force coersion to uint32. This will also coerce falsey/NaN values to 0.\n  end >>>= 0\n  start >>>= 0\n\n  if (end <= start) {\n    return ''\n  }\n\n  if (!encoding) encoding = 'utf8'\n\n  while (true) {\n    switch (encoding) {\n      case 'hex':\n        return hexSlice(this, start, end)\n\n      case 'utf8':\n      case 'utf-8':\n        return utf8Slice(this, start, end)\n\n      case 'ascii':\n        return asciiSlice(this, start, end)\n\n      case 'latin1':\n      case 'binary':\n        return latin1Slice(this, start, end)\n\n      case 'base64':\n        return base64Slice(this, start, end)\n\n      case 'ucs2':\n      case 'ucs-2':\n      case 'utf16le':\n      case 'utf-16le':\n        return utf16leSlice(this, start, end)\n\n      default:\n        if (loweredCase) throw new TypeError('Unknown encoding: ' + encoding)\n        encoding = (encoding + '').toLowerCase()\n        loweredCase = true\n    }\n  }\n}\n\n// The property is used by `Buffer.isBuffer` and `is-buffer` (in Safari 5-7) to detect\n// Buffer instances.\nBuffer.prototype._isBuffer = true\n\nfunction swap (b, n, m) {\n  var i = b[n]\n  b[n] = b[m]\n  b[m] = i\n}\n\nBuffer.prototype.swap16 = function swap16 () {\n  var len = this.length\n  if (len % 2 !== 0) {\n    throw new RangeError('Buffer size must be a multiple of 16-bits')\n  }\n  for (var i = 0; i < len; i += 2) {\n    swap(this, i, i + 1)\n  }\n  return this\n}\n\nBuffer.prototype.swap32 = function swap32 () {\n  var len = this.length\n  if (len % 4 !== 0) {\n    throw new RangeError('Buffer size must be a multiple of 32-bits')\n  }\n  for (var i = 0; i < len; i += 4) {\n    swap(this, i, i + 3)\n    swap(this, i + 1, i + 2)\n  }\n  return this\n}\n\nBuffer.prototype.swap64 = function swap64 () {\n  var len = this.length\n  if (len % 8 !== 0) {\n    throw new RangeError('Buffer size must be a multiple of 64-bits')\n  }\n  for (var i = 0; i < len; i += 8) {\n    swap(this, i, i + 7)\n    swap(this, i + 1, i + 6)\n    swap(this, i + 2, i + 5)\n    swap(this, i + 3, i + 4)\n  }\n  return this\n}\n\nBuffer.prototype.toString = function toString () {\n  var length = this.length | 0\n  if (length === 0) return ''\n  if (arguments.length === 0) return utf8Slice(this, 0, length)\n  return slowToString.apply(this, arguments)\n}\n\nBuffer.prototype.equals = function equals (b) {\n  if (!Buffer.isBuffer(b)) throw new TypeError('Argument must be a Buffer')\n  if (this === b) return true\n  return Buffer.compare(this, b) === 0\n}\n\nBuffer.prototype.inspect = function inspect () {\n  var str = ''\n  var max = exports.INSPECT_MAX_BYTES\n  if (this.length > 0) {\n    str = this.toString('hex', 0, max).match(/.{2}/g).join(' ')\n    if (this.length > max) str += ' ... '\n  }\n  return '<Buffer ' + str + '>'\n}\n\nBuffer.prototype.compare = function compare (target, start, end, thisStart, thisEnd) {\n  if (!Buffer.isBuffer(target)) {\n    throw new TypeError('Argument must be a Buffer')\n  }\n\n  if (start === undefined) {\n    start = 0\n  }\n  if (end === undefined) {\n    end = target ? target.length : 0\n  }\n  if (thisStart === undefined) {\n    thisStart = 0\n  }\n  if (thisEnd === undefined) {\n    thisEnd = this.length\n  }\n\n  if (start < 0 || end > target.length || thisStart < 0 || thisEnd > this.length) {\n    throw new RangeError('out of range index')\n  }\n\n  if (thisStart >= thisEnd && start >= end) {\n    return 0\n  }\n  if (thisStart >= thisEnd) {\n    return -1\n  }\n  if (start >= end) {\n    return 1\n  }\n\n  start >>>= 0\n  end >>>= 0\n  thisStart >>>= 0\n  thisEnd >>>= 0\n\n  if (this === target) return 0\n\n  var x = thisEnd - thisStart\n  var y = end - start\n  var len = Math.min(x, y)\n\n  var thisCopy = this.slice(thisStart, thisEnd)\n  var targetCopy = target.slice(start, end)\n\n  for (var i = 0; i < len; ++i) {\n    if (thisCopy[i] !== targetCopy[i]) {\n      x = thisCopy[i]\n      y = targetCopy[i]\n      break\n    }\n  }\n\n  if (x < y) return -1\n  if (y < x) return 1\n  return 0\n}\n\n// Finds either the first index of `val` in `buffer` at offset >= `byteOffset`,\n// OR the last index of `val` in `buffer` at offset <= `byteOffset`.\n//\n// Arguments:\n// - buffer - a Buffer to search\n// - val - a string, Buffer, or number\n// - byteOffset - an index into `buffer`; will be clamped to an int32\n// - encoding - an optional encoding, relevant is val is a string\n// - dir - true for indexOf, false for lastIndexOf\nfunction bidirectionalIndexOf (buffer, val, byteOffset, encoding, dir) {\n  // Empty buffer means no match\n  if (buffer.length === 0) return -1\n\n  // Normalize byteOffset\n  if (typeof byteOffset === 'string') {\n    encoding = byteOffset\n    byteOffset = 0\n  } else if (byteOffset > 0x7fffffff) {\n    byteOffset = 0x7fffffff\n  } else if (byteOffset < -0x80000000) {\n    byteOffset = -0x80000000\n  }\n  byteOffset = +byteOffset  // Coerce to Number.\n  if (isNaN(byteOffset)) {\n    // byteOffset: it it's undefined, null, NaN, \"foo\", etc, search whole buffer\n    byteOffset = dir ? 0 : (buffer.length - 1)\n  }\n\n  // Normalize byteOffset: negative offsets start from the end of the buffer\n  if (byteOffset < 0) byteOffset = buffer.length + byteOffset\n  if (byteOffset >= buffer.length) {\n    if (dir) return -1\n    else byteOffset = buffer.length - 1\n  } else if (byteOffset < 0) {\n    if (dir) byteOffset = 0\n    else return -1\n  }\n\n  // Normalize val\n  if (typeof val === 'string') {\n    val = Buffer.from(val, encoding)\n  }\n\n  // Finally, search either indexOf (if dir is true) or lastIndexOf\n  if (Buffer.isBuffer(val)) {\n    // Special case: looking for empty string/buffer always fails\n    if (val.length === 0) {\n      return -1\n    }\n    return arrayIndexOf(buffer, val, byteOffset, encoding, dir)\n  } else if (typeof val === 'number') {\n    val = val & 0xFF // Search for a byte value [0-255]\n    if (Buffer.TYPED_ARRAY_SUPPORT &&\n        typeof Uint8Array.prototype.indexOf === 'function') {\n      if (dir) {\n        return Uint8Array.prototype.indexOf.call(buffer, val, byteOffset)\n      } else {\n        return Uint8Array.prototype.lastIndexOf.call(buffer, val, byteOffset)\n      }\n    }\n    return arrayIndexOf(buffer, [ val ], byteOffset, encoding, dir)\n  }\n\n  throw new TypeError('val must be string, number or Buffer')\n}\n\nfunction arrayIndexOf (arr, val, byteOffset, encoding, dir) {\n  var indexSize = 1\n  var arrLength = arr.length\n  var valLength = val.length\n\n  if (encoding !== undefined) {\n    encoding = String(encoding).toLowerCase()\n    if (encoding === 'ucs2' || encoding === 'ucs-2' ||\n        encoding === 'utf16le' || encoding === 'utf-16le') {\n      if (arr.length < 2 || val.length < 2) {\n        return -1\n      }\n      indexSize = 2\n      arrLength /= 2\n      valLength /= 2\n      byteOffset /= 2\n    }\n  }\n\n  function read (buf, i) {\n    if (indexSize === 1) {\n      return buf[i]\n    } else {\n      return buf.readUInt16BE(i * indexSize)\n    }\n  }\n\n  var i\n  if (dir) {\n    var foundIndex = -1\n    for (i = byteOffset; i < arrLength; i++) {\n      if (read(arr, i) === read(val, foundIndex === -1 ? 0 : i - foundIndex)) {\n        if (foundIndex === -1) foundIndex = i\n        if (i - foundIndex + 1 === valLength) return foundIndex * indexSize\n      } else {\n        if (foundIndex !== -1) i -= i - foundIndex\n        foundIndex = -1\n      }\n    }\n  } else {\n    if (byteOffset + valLength > arrLength) byteOffset = arrLength - valLength\n    for (i = byteOffset; i >= 0; i--) {\n      var found = true\n      for (var j = 0; j < valLength; j++) {\n        if (read(arr, i + j) !== read(val, j)) {\n          found = false\n          break\n        }\n      }\n      if (found) return i\n    }\n  }\n\n  return -1\n}\n\nBuffer.prototype.includes = function includes (val, byteOffset, encoding) {\n  return this.indexOf(val, byteOffset, encoding) !== -1\n}\n\nBuffer.prototype.indexOf = function indexOf (val, byteOffset, encoding) {\n  return bidirectionalIndexOf(this, val, byteOffset, encoding, true)\n}\n\nBuffer.prototype.lastIndexOf = function lastIndexOf (val, byteOffset, encoding) {\n  return bidirectionalIndexOf(this, val, byteOffset, encoding, false)\n}\n\nfunction hexWrite (buf, string, offset, length) {\n  offset = Number(offset) || 0\n  var remaining = buf.length - offset\n  if (!length) {\n    length = remaining\n  } else {\n    length = Number(length)\n    if (length > remaining) {\n      length = remaining\n    }\n  }\n\n  // must be an even number of digits\n  var strLen = string.length\n  if (strLen % 2 !== 0) throw new TypeError('Invalid hex string')\n\n  if (length > strLen / 2) {\n    length = strLen / 2\n  }\n  for (var i = 0; i < length; ++i) {\n    var parsed = parseInt(string.substr(i * 2, 2), 16)\n    if (isNaN(parsed)) return i\n    buf[offset + i] = parsed\n  }\n  return i\n}\n\nfunction utf8Write (buf, string, offset, length) {\n  return blitBuffer(utf8ToBytes(string, buf.length - offset), buf, offset, length)\n}\n\nfunction asciiWrite (buf, string, offset, length) {\n  return blitBuffer(asciiToBytes(string), buf, offset, length)\n}\n\nfunction latin1Write (buf, string, offset, length) {\n  return asciiWrite(buf, string, offset, length)\n}\n\nfunction base64Write (buf, string, offset, length) {\n  return blitBuffer(base64ToBytes(string), buf, offset, length)\n}\n\nfunction ucs2Write (buf, string, offset, length) {\n  return blitBuffer(utf16leToBytes(string, buf.length - offset), buf, offset, length)\n}\n\nBuffer.prototype.write = function write (string, offset, length, encoding) {\n  // Buffer#write(string)\n  if (offset === undefined) {\n    encoding = 'utf8'\n    length = this.length\n    offset = 0\n  // Buffer#write(string, encoding)\n  } else if (length === undefined && typeof offset === 'string') {\n    encoding = offset\n    length = this.length\n    offset = 0\n  // Buffer#write(string, offset[, length][, encoding])\n  } else if (isFinite(offset)) {\n    offset = offset | 0\n    if (isFinite(length)) {\n      length = length | 0\n      if (encoding === undefined) encoding = 'utf8'\n    } else {\n      encoding = length\n      length = undefined\n    }\n  // legacy write(string, encoding, offset, length) - remove in v0.13\n  } else {\n    throw new Error(\n      'Buffer.write(string, encoding, offset[, length]) is no longer supported'\n    )\n  }\n\n  var remaining = this.length - offset\n  if (length === undefined || length > remaining) length = remaining\n\n  if ((string.length > 0 && (length < 0 || offset < 0)) || offset > this.length) {\n    throw new RangeError('Attempt to write outside buffer bounds')\n  }\n\n  if (!encoding) encoding = 'utf8'\n\n  var loweredCase = false\n  for (;;) {\n    switch (encoding) {\n      case 'hex':\n        return hexWrite(this, string, offset, length)\n\n      case 'utf8':\n      case 'utf-8':\n        return utf8Write(this, string, offset, length)\n\n      case 'ascii':\n        return asciiWrite(this, string, offset, length)\n\n      case 'latin1':\n      case 'binary':\n        return latin1Write(this, string, offset, length)\n\n      case 'base64':\n        // Warning: maxLength not taken into account in base64Write\n        return base64Write(this, string, offset, length)\n\n      case 'ucs2':\n      case 'ucs-2':\n      case 'utf16le':\n      case 'utf-16le':\n        return ucs2Write(this, string, offset, length)\n\n      default:\n        if (loweredCase) throw new TypeError('Unknown encoding: ' + encoding)\n        encoding = ('' + encoding).toLowerCase()\n        loweredCase = true\n    }\n  }\n}\n\nBuffer.prototype.toJSON = function toJSON () {\n  return {\n    type: 'Buffer',\n    data: Array.prototype.slice.call(this._arr || this, 0)\n  }\n}\n\nfunction base64Slice (buf, start, end) {\n  if (start === 0 && end === buf.length) {\n    return base64.fromByteArray(buf)\n  } else {\n    return base64.fromByteArray(buf.slice(start, end))\n  }\n}\n\nfunction utf8Slice (buf, start, end) {\n  end = Math.min(buf.length, end)\n  var res = []\n\n  var i = start\n  while (i < end) {\n    var firstByte = buf[i]\n    var codePoint = null\n    var bytesPerSequence = (firstByte > 0xEF) ? 4\n      : (firstByte > 0xDF) ? 3\n      : (firstByte > 0xBF) ? 2\n      : 1\n\n    if (i + bytesPerSequence <= end) {\n      var secondByte, thirdByte, fourthByte, tempCodePoint\n\n      switch (bytesPerSequence) {\n        case 1:\n          if (firstByte < 0x80) {\n            codePoint = firstByte\n          }\n          break\n        case 2:\n          secondByte = buf[i + 1]\n          if ((secondByte & 0xC0) === 0x80) {\n            tempCodePoint = (firstByte & 0x1F) << 0x6 | (secondByte & 0x3F)\n            if (tempCodePoint > 0x7F) {\n              codePoint = tempCodePoint\n            }\n          }\n          break\n        case 3:\n          secondByte = buf[i + 1]\n          thirdByte = buf[i + 2]\n          if ((secondByte & 0xC0) === 0x80 && (thirdByte & 0xC0) === 0x80) {\n            tempCodePoint = (firstByte & 0xF) << 0xC | (secondByte & 0x3F) << 0x6 | (thirdByte & 0x3F)\n            if (tempCodePoint > 0x7FF && (tempCodePoint < 0xD800 || tempCodePoint > 0xDFFF)) {\n              codePoint = tempCodePoint\n            }\n          }\n          break\n        case 4:\n          secondByte = buf[i + 1]\n          thirdByte = buf[i + 2]\n          fourthByte = buf[i + 3]\n          if ((secondByte & 0xC0) === 0x80 && (thirdByte & 0xC0) === 0x80 && (fourthByte & 0xC0) === 0x80) {\n            tempCodePoint = (firstByte & 0xF) << 0x12 | (secondByte & 0x3F) << 0xC | (thirdByte & 0x3F) << 0x6 | (fourthByte & 0x3F)\n            if (tempCodePoint > 0xFFFF && tempCodePoint < 0x110000) {\n              codePoint = tempCodePoint\n            }\n          }\n      }\n    }\n\n    if (codePoint === null) {\n      // we did not generate a valid codePoint so insert a\n      // replacement char (U+FFFD) and advance only 1 byte\n      codePoint = 0xFFFD\n      bytesPerSequence = 1\n    } else if (codePoint > 0xFFFF) {\n      // encode to utf16 (surrogate pair dance)\n      codePoint -= 0x10000\n      res.push(codePoint >>> 10 & 0x3FF | 0xD800)\n      codePoint = 0xDC00 | codePoint & 0x3FF\n    }\n\n    res.push(codePoint)\n    i += bytesPerSequence\n  }\n\n  return decodeCodePointsArray(res)\n}\n\n// Based on http://stackoverflow.com/a/22747272/680742, the browser with\n// the lowest limit is Chrome, with 0x10000 args.\n// We go 1 magnitude less, for safety\nvar MAX_ARGUMENTS_LENGTH = 0x1000\n\nfunction decodeCodePointsArray (codePoints) {\n  var len = codePoints.length\n  if (len <= MAX_ARGUMENTS_LENGTH) {\n    return String.fromCharCode.apply(String, codePoints) // avoid extra slice()\n  }\n\n  // Decode in chunks to avoid \"call stack size exceeded\".\n  var res = ''\n  var i = 0\n  while (i < len) {\n    res += String.fromCharCode.apply(\n      String,\n      codePoints.slice(i, i += MAX_ARGUMENTS_LENGTH)\n    )\n  }\n  return res\n}\n\nfunction asciiSlice (buf, start, end) {\n  var ret = ''\n  end = Math.min(buf.length, end)\n\n  for (var i = start; i < end; ++i) {\n    ret += String.fromCharCode(buf[i] & 0x7F)\n  }\n  return ret\n}\n\nfunction latin1Slice (buf, start, end) {\n  var ret = ''\n  end = Math.min(buf.length, end)\n\n  for (var i = start; i < end; ++i) {\n    ret += String.fromCharCode(buf[i])\n  }\n  return ret\n}\n\nfunction hexSlice (buf, start, end) {\n  var len = buf.length\n\n  if (!start || start < 0) start = 0\n  if (!end || end < 0 || end > len) end = len\n\n  var out = ''\n  for (var i = start; i < end; ++i) {\n    out += toHex(buf[i])\n  }\n  return out\n}\n\nfunction utf16leSlice (buf, start, end) {\n  var bytes = buf.slice(start, end)\n  var res = ''\n  for (var i = 0; i < bytes.length; i += 2) {\n    res += String.fromCharCode(bytes[i] + bytes[i + 1] * 256)\n  }\n  return res\n}\n\nBuffer.prototype.slice = function slice (start, end) {\n  var len = this.length\n  start = ~~start\n  end = end === undefined ? len : ~~end\n\n  if (start < 0) {\n    start += len\n    if (start < 0) start = 0\n  } else if (start > len) {\n    start = len\n  }\n\n  if (end < 0) {\n    end += len\n    if (end < 0) end = 0\n  } else if (end > len) {\n    end = len\n  }\n\n  if (end < start) end = start\n\n  var newBuf\n  if (Buffer.TYPED_ARRAY_SUPPORT) {\n    newBuf = this.subarray(start, end)\n    newBuf.__proto__ = Buffer.prototype\n  } else {\n    var sliceLen = end - start\n    newBuf = new Buffer(sliceLen, undefined)\n    for (var i = 0; i < sliceLen; ++i) {\n      newBuf[i] = this[i + start]\n    }\n  }\n\n  return newBuf\n}\n\n/*\n * Need to make sure that buffer isn't trying to write out of bounds.\n */\nfunction checkOffset (offset, ext, length) {\n  if ((offset % 1) !== 0 || offset < 0) throw new RangeError('offset is not uint')\n  if (offset + ext > length) throw new RangeError('Trying to access beyond buffer length')\n}\n\nBuffer.prototype.readUIntLE = function readUIntLE (offset, byteLength, noAssert) {\n  offset = offset | 0\n  byteLength = byteLength | 0\n  if (!noAssert) checkOffset(offset, byteLength, this.length)\n\n  var val = this[offset]\n  var mul = 1\n  var i = 0\n  while (++i < byteLength && (mul *= 0x100)) {\n    val += this[offset + i] * mul\n  }\n\n  return val\n}\n\nBuffer.prototype.readUIntBE = function readUIntBE (offset, byteLength, noAssert) {\n  offset = offset | 0\n  byteLength = byteLength | 0\n  if (!noAssert) {\n    checkOffset(offset, byteLength, this.length)\n  }\n\n  var val = this[offset + --byteLength]\n  var mul = 1\n  while (byteLength > 0 && (mul *= 0x100)) {\n    val += this[offset + --byteLength] * mul\n  }\n\n  return val\n}\n\nBuffer.prototype.readUInt8 = function readUInt8 (offset, noAssert) {\n  if (!noAssert) checkOffset(offset, 1, this.length)\n  return this[offset]\n}\n\nBuffer.prototype.readUInt16LE = function readUInt16LE (offset, noAssert) {\n  if (!noAssert) checkOffset(offset, 2, this.length)\n  return this[offset] | (this[offset + 1] << 8)\n}\n\nBuffer.prototype.readUInt16BE = function readUInt16BE (offset, noAssert) {\n  if (!noAssert) checkOffset(offset, 2, this.length)\n  return (this[offset] << 8) | this[offset + 1]\n}\n\nBuffer.prototype.readUInt32LE = function readUInt32LE (offset, noAssert) {\n  if (!noAssert) checkOffset(offset, 4, this.length)\n\n  return ((this[offset]) |\n      (this[offset + 1] << 8) |\n      (this[offset + 2] << 16)) +\n      (this[offset + 3] * 0x1000000)\n}\n\nBuffer.prototype.readUInt32BE = function readUInt32BE (offset, noAssert) {\n  if (!noAssert) checkOffset(offset, 4, this.length)\n\n  return (this[offset] * 0x1000000) +\n    ((this[offset + 1] << 16) |\n    (this[offset + 2] << 8) |\n    this[offset + 3])\n}\n\nBuffer.prototype.readIntLE = function readIntLE (offset, byteLength, noAssert) {\n  offset = offset | 0\n  byteLength = byteLength | 0\n  if (!noAssert) checkOffset(offset, byteLength, this.length)\n\n  var val = this[offset]\n  var mul = 1\n  var i = 0\n  while (++i < byteLength && (mul *= 0x100)) {\n    val += this[offset + i] * mul\n  }\n  mul *= 0x80\n\n  if (val >= mul) val -= Math.pow(2, 8 * byteLength)\n\n  return val\n}\n\nBuffer.prototype.readIntBE = function readIntBE (offset, byteLength, noAssert) {\n  offset = offset | 0\n  byteLength = byteLength | 0\n  if (!noAssert) checkOffset(offset, byteLength, this.length)\n\n  var i = byteLength\n  var mul = 1\n  var val = this[offset + --i]\n  while (i > 0 && (mul *= 0x100)) {\n    val += this[offset + --i] * mul\n  }\n  mul *= 0x80\n\n  if (val >= mul) val -= Math.pow(2, 8 * byteLength)\n\n  return val\n}\n\nBuffer.prototype.readInt8 = function readInt8 (offset, noAssert) {\n  if (!noAssert) checkOffset(offset, 1, this.length)\n  if (!(this[offset] & 0x80)) return (this[offset])\n  return ((0xff - this[offset] + 1) * -1)\n}\n\nBuffer.prototype.readInt16LE = function readInt16LE (offset, noAssert) {\n  if (!noAssert) checkOffset(offset, 2, this.length)\n  var val = this[offset] | (this[offset + 1] << 8)\n  return (val & 0x8000) ? val | 0xFFFF0000 : val\n}\n\nBuffer.prototype.readInt16BE = function readInt16BE (offset, noAssert) {\n  if (!noAssert) checkOffset(offset, 2, this.length)\n  var val = this[offset + 1] | (this[offset] << 8)\n  return (val & 0x8000) ? val | 0xFFFF0000 : val\n}\n\nBuffer.prototype.readInt32LE = function readInt32LE (offset, noAssert) {\n  if (!noAssert) checkOffset(offset, 4, this.length)\n\n  return (this[offset]) |\n    (this[offset + 1] << 8) |\n    (this[offset + 2] << 16) |\n    (this[offset + 3] << 24)\n}\n\nBuffer.prototype.readInt32BE = function readInt32BE (offset, noAssert) {\n  if (!noAssert) checkOffset(offset, 4, this.length)\n\n  return (this[offset] << 24) |\n    (this[offset + 1] << 16) |\n    (this[offset + 2] << 8) |\n    (this[offset + 3])\n}\n\nBuffer.prototype.readFloatLE = function readFloatLE (offset, noAssert) {\n  if (!noAssert) checkOffset(offset, 4, this.length)\n  return ieee754.read(this, offset, true, 23, 4)\n}\n\nBuffer.prototype.readFloatBE = function readFloatBE (offset, noAssert) {\n  if (!noAssert) checkOffset(offset, 4, this.length)\n  return ieee754.read(this, offset, false, 23, 4)\n}\n\nBuffer.prototype.readDoubleLE = function readDoubleLE (offset, noAssert) {\n  if (!noAssert) checkOffset(offset, 8, this.length)\n  return ieee754.read(this, offset, true, 52, 8)\n}\n\nBuffer.prototype.readDoubleBE = function readDoubleBE (offset, noAssert) {\n  if (!noAssert) checkOffset(offset, 8, this.length)\n  return ieee754.read(this, offset, false, 52, 8)\n}\n\nfunction checkInt (buf, value, offset, ext, max, min) {\n  if (!Buffer.isBuffer(buf)) throw new TypeError('\"buffer\" argument must be a Buffer instance')\n  if (value > max || value < min) throw new RangeError('\"value\" argument is out of bounds')\n  if (offset + ext > buf.length) throw new RangeError('Index out of range')\n}\n\nBuffer.prototype.writeUIntLE = function writeUIntLE (value, offset, byteLength, noAssert) {\n  value = +value\n  offset = offset | 0\n  byteLength = byteLength | 0\n  if (!noAssert) {\n    var maxBytes = Math.pow(2, 8 * byteLength) - 1\n    checkInt(this, value, offset, byteLength, maxBytes, 0)\n  }\n\n  var mul = 1\n  var i = 0\n  this[offset] = value & 0xFF\n  while (++i < byteLength && (mul *= 0x100)) {\n    this[offset + i] = (value / mul) & 0xFF\n  }\n\n  return offset + byteLength\n}\n\nBuffer.prototype.writeUIntBE = function writeUIntBE (value, offset, byteLength, noAssert) {\n  value = +value\n  offset = offset | 0\n  byteLength = byteLength | 0\n  if (!noAssert) {\n    var maxBytes = Math.pow(2, 8 * byteLength) - 1\n    checkInt(this, value, offset, byteLength, maxBytes, 0)\n  }\n\n  var i = byteLength - 1\n  var mul = 1\n  this[offset + i] = value & 0xFF\n  while (--i >= 0 && (mul *= 0x100)) {\n    this[offset + i] = (value / mul) & 0xFF\n  }\n\n  return offset + byteLength\n}\n\nBuffer.prototype.writeUInt8 = function writeUInt8 (value, offset, noAssert) {\n  value = +value\n  offset = offset | 0\n  if (!noAssert) checkInt(this, value, offset, 1, 0xff, 0)\n  if (!Buffer.TYPED_ARRAY_SUPPORT) value = Math.floor(value)\n  this[offset] = (value & 0xff)\n  return offset + 1\n}\n\nfunction objectWriteUInt16 (buf, value, offset, littleEndian) {\n  if (value < 0) value = 0xffff + value + 1\n  for (var i = 0, j = Math.min(buf.length - offset, 2); i < j; ++i) {\n    buf[offset + i] = (value & (0xff << (8 * (littleEndian ? i : 1 - i)))) >>>\n      (littleEndian ? i : 1 - i) * 8\n  }\n}\n\nBuffer.prototype.writeUInt16LE = function writeUInt16LE (value, offset, noAssert) {\n  value = +value\n  offset = offset | 0\n  if (!noAssert) checkInt(this, value, offset, 2, 0xffff, 0)\n  if (Buffer.TYPED_ARRAY_SUPPORT) {\n    this[offset] = (value & 0xff)\n    this[offset + 1] = (value >>> 8)\n  } else {\n    objectWriteUInt16(this, value, offset, true)\n  }\n  return offset + 2\n}\n\nBuffer.prototype.writeUInt16BE = function writeUInt16BE (value, offset, noAssert) {\n  value = +value\n  offset = offset | 0\n  if (!noAssert) checkInt(this, value, offset, 2, 0xffff, 0)\n  if (Buffer.TYPED_ARRAY_SUPPORT) {\n    this[offset] = (value >>> 8)\n    this[offset + 1] = (value & 0xff)\n  } else {\n    objectWriteUInt16(this, value, offset, false)\n  }\n  return offset + 2\n}\n\nfunction objectWriteUInt32 (buf, value, offset, littleEndian) {\n  if (value < 0) value = 0xffffffff + value + 1\n  for (var i = 0, j = Math.min(buf.length - offset, 4); i < j; ++i) {\n    buf[offset + i] = (value >>> (littleEndian ? i : 3 - i) * 8) & 0xff\n  }\n}\n\nBuffer.prototype.writeUInt32LE = function writeUInt32LE (value, offset, noAssert) {\n  value = +value\n  offset = offset | 0\n  if (!noAssert) checkInt(this, value, offset, 4, 0xffffffff, 0)\n  if (Buffer.TYPED_ARRAY_SUPPORT) {\n    this[offset + 3] = (value >>> 24)\n    this[offset + 2] = (value >>> 16)\n    this[offset + 1] = (value >>> 8)\n    this[offset] = (value & 0xff)\n  } else {\n    objectWriteUInt32(this, value, offset, true)\n  }\n  return offset + 4\n}\n\nBuffer.prototype.writeUInt32BE = function writeUInt32BE (value, offset, noAssert) {\n  value = +value\n  offset = offset | 0\n  if (!noAssert) checkInt(this, value, offset, 4, 0xffffffff, 0)\n  if (Buffer.TYPED_ARRAY_SUPPORT) {\n    this[offset] = (value >>> 24)\n    this[offset + 1] = (value >>> 16)\n    this[offset + 2] = (value >>> 8)\n    this[offset + 3] = (value & 0xff)\n  } else {\n    objectWriteUInt32(this, value, offset, false)\n  }\n  return offset + 4\n}\n\nBuffer.prototype.writeIntLE = function writeIntLE (value, offset, byteLength, noAssert) {\n  value = +value\n  offset = offset | 0\n  if (!noAssert) {\n    var limit = Math.pow(2, 8 * byteLength - 1)\n\n    checkInt(this, value, offset, byteLength, limit - 1, -limit)\n  }\n\n  var i = 0\n  var mul = 1\n  var sub = 0\n  this[offset] = value & 0xFF\n  while (++i < byteLength && (mul *= 0x100)) {\n    if (value < 0 && sub === 0 && this[offset + i - 1] !== 0) {\n      sub = 1\n    }\n    this[offset + i] = ((value / mul) >> 0) - sub & 0xFF\n  }\n\n  return offset + byteLength\n}\n\nBuffer.prototype.writeIntBE = function writeIntBE (value, offset, byteLength, noAssert) {\n  value = +value\n  offset = offset | 0\n  if (!noAssert) {\n    var limit = Math.pow(2, 8 * byteLength - 1)\n\n    checkInt(this, value, offset, byteLength, limit - 1, -limit)\n  }\n\n  var i = byteLength - 1\n  var mul = 1\n  var sub = 0\n  this[offset + i] = value & 0xFF\n  while (--i >= 0 && (mul *= 0x100)) {\n    if (value < 0 && sub === 0 && this[offset + i + 1] !== 0) {\n      sub = 1\n    }\n    this[offset + i] = ((value / mul) >> 0) - sub & 0xFF\n  }\n\n  return offset + byteLength\n}\n\nBuffer.prototype.writeInt8 = function writeInt8 (value, offset, noAssert) {\n  value = +value\n  offset = offset | 0\n  if (!noAssert) checkInt(this, value, offset, 1, 0x7f, -0x80)\n  if (!Buffer.TYPED_ARRAY_SUPPORT) value = Math.floor(value)\n  if (value < 0) value = 0xff + value + 1\n  this[offset] = (value & 0xff)\n  return offset + 1\n}\n\nBuffer.prototype.writeInt16LE = function writeInt16LE (value, offset, noAssert) {\n  value = +value\n  offset = offset | 0\n  if (!noAssert) checkInt(this, value, offset, 2, 0x7fff, -0x8000)\n  if (Buffer.TYPED_ARRAY_SUPPORT) {\n    this[offset] = (value & 0xff)\n    this[offset + 1] = (value >>> 8)\n  } else {\n    objectWriteUInt16(this, value, offset, true)\n  }\n  return offset + 2\n}\n\nBuffer.prototype.writeInt16BE = function writeInt16BE (value, offset, noAssert) {\n  value = +value\n  offset = offset | 0\n  if (!noAssert) checkInt(this, value, offset, 2, 0x7fff, -0x8000)\n  if (Buffer.TYPED_ARRAY_SUPPORT) {\n    this[offset] = (value >>> 8)\n    this[offset + 1] = (value & 0xff)\n  } else {\n    objectWriteUInt16(this, value, offset, false)\n  }\n  return offset + 2\n}\n\nBuffer.prototype.writeInt32LE = function writeInt32LE (value, offset, noAssert) {\n  value = +value\n  offset = offset | 0\n  if (!noAssert) checkInt(this, value, offset, 4, 0x7fffffff, -0x80000000)\n  if (Buffer.TYPED_ARRAY_SUPPORT) {\n    this[offset] = (value & 0xff)\n    this[offset + 1] = (value >>> 8)\n    this[offset + 2] = (value >>> 16)\n    this[offset + 3] = (value >>> 24)\n  } else {\n    objectWriteUInt32(this, value, offset, true)\n  }\n  return offset + 4\n}\n\nBuffer.prototype.writeInt32BE = function writeInt32BE (value, offset, noAssert) {\n  value = +value\n  offset = offset | 0\n  if (!noAssert) checkInt(this, value, offset, 4, 0x7fffffff, -0x80000000)\n  if (value < 0) value = 0xffffffff + value + 1\n  if (Buffer.TYPED_ARRAY_SUPPORT) {\n    this[offset] = (value >>> 24)\n    this[offset + 1] = (value >>> 16)\n    this[offset + 2] = (value >>> 8)\n    this[offset + 3] = (value & 0xff)\n  } else {\n    objectWriteUInt32(this, value, offset, false)\n  }\n  return offset + 4\n}\n\nfunction checkIEEE754 (buf, value, offset, ext, max, min) {\n  if (offset + ext > buf.length) throw new RangeError('Index out of range')\n  if (offset < 0) throw new RangeError('Index out of range')\n}\n\nfunction writeFloat (buf, value, offset, littleEndian, noAssert) {\n  if (!noAssert) {\n    checkIEEE754(buf, value, offset, 4, 3.4028234663852886e+38, -3.4028234663852886e+38)\n  }\n  ieee754.write(buf, value, offset, littleEndian, 23, 4)\n  return offset + 4\n}\n\nBuffer.prototype.writeFloatLE = function writeFloatLE (value, offset, noAssert) {\n  return writeFloat(this, value, offset, true, noAssert)\n}\n\nBuffer.prototype.writeFloatBE = function writeFloatBE (value, offset, noAssert) {\n  return writeFloat(this, value, offset, false, noAssert)\n}\n\nfunction writeDouble (buf, value, offset, littleEndian, noAssert) {\n  if (!noAssert) {\n    checkIEEE754(buf, value, offset, 8, 1.7976931348623157E+308, -1.7976931348623157E+308)\n  }\n  ieee754.write(buf, value, offset, littleEndian, 52, 8)\n  return offset + 8\n}\n\nBuffer.prototype.writeDoubleLE = function writeDoubleLE (value, offset, noAssert) {\n  return writeDouble(this, value, offset, true, noAssert)\n}\n\nBuffer.prototype.writeDoubleBE = function writeDoubleBE (value, offset, noAssert) {\n  return writeDouble(this, value, offset, false, noAssert)\n}\n\n// copy(targetBuffer, targetStart=0, sourceStart=0, sourceEnd=buffer.length)\nBuffer.prototype.copy = function copy (target, targetStart, start, end) {\n  if (!start) start = 0\n  if (!end && end !== 0) end = this.length\n  if (targetStart >= target.length) targetStart = target.length\n  if (!targetStart) targetStart = 0\n  if (end > 0 && end < start) end = start\n\n  // Copy 0 bytes; we're done\n  if (end === start) return 0\n  if (target.length === 0 || this.length === 0) return 0\n\n  // Fatal error conditions\n  if (targetStart < 0) {\n    throw new RangeError('targetStart out of bounds')\n  }\n  if (start < 0 || start >= this.length) throw new RangeError('sourceStart out of bounds')\n  if (end < 0) throw new RangeError('sourceEnd out of bounds')\n\n  // Are we oob?\n  if (end > this.length) end = this.length\n  if (target.length - targetStart < end - start) {\n    end = target.length - targetStart + start\n  }\n\n  var len = end - start\n  var i\n\n  if (this === target && start < targetStart && targetStart < end) {\n    // descending copy from end\n    for (i = len - 1; i >= 0; --i) {\n      target[i + targetStart] = this[i + start]\n    }\n  } else if (len < 1000 || !Buffer.TYPED_ARRAY_SUPPORT) {\n    // ascending copy from start\n    for (i = 0; i < len; ++i) {\n      target[i + targetStart] = this[i + start]\n    }\n  } else {\n    Uint8Array.prototype.set.call(\n      target,\n      this.subarray(start, start + len),\n      targetStart\n    )\n  }\n\n  return len\n}\n\n// Usage:\n//    buffer.fill(number[, offset[, end]])\n//    buffer.fill(buffer[, offset[, end]])\n//    buffer.fill(string[, offset[, end]][, encoding])\nBuffer.prototype.fill = function fill (val, start, end, encoding) {\n  // Handle string cases:\n  if (typeof val === 'string') {\n    if (typeof start === 'string') {\n      encoding = start\n      start = 0\n      end = this.length\n    } else if (typeof end === 'string') {\n      encoding = end\n      end = this.length\n    }\n    if (val.length === 1) {\n      var code = val.charCodeAt(0)\n      if (code < 256) {\n        val = code\n      }\n    }\n    if (encoding !== undefined && typeof encoding !== 'string') {\n      throw new TypeError('encoding must be a string')\n    }\n    if (typeof encoding === 'string' && !Buffer.isEncoding(encoding)) {\n      throw new TypeError('Unknown encoding: ' + encoding)\n    }\n  } else if (typeof val === 'number') {\n    val = val & 255\n  }\n\n  // Invalid ranges are not set to a default, so can range check early.\n  if (start < 0 || this.length < start || this.length < end) {\n    throw new RangeError('Out of range index')\n  }\n\n  if (end <= start) {\n    return this\n  }\n\n  start = start >>> 0\n  end = end === undefined ? this.length : end >>> 0\n\n  if (!val) val = 0\n\n  var i\n  if (typeof val === 'number') {\n    for (i = start; i < end; ++i) {\n      this[i] = val\n    }\n  } else {\n    var bytes = Buffer.isBuffer(val)\n      ? val\n      : utf8ToBytes(new Buffer(val, encoding).toString())\n    var len = bytes.length\n    for (i = 0; i < end - start; ++i) {\n      this[i + start] = bytes[i % len]\n    }\n  }\n\n  return this\n}\n\n// HELPER FUNCTIONS\n// ================\n\nvar INVALID_BASE64_RE = /[^+\\/0-9A-Za-z-_]/g\n\nfunction base64clean (str) {\n  // Node strips out invalid characters like \\n and \\t from the string, base64-js does not\n  str = stringtrim(str).replace(INVALID_BASE64_RE, '')\n  // Node converts strings with length < 2 to ''\n  if (str.length < 2) return ''\n  // Node allows for non-padded base64 strings (missing trailing ===), base64-js does not\n  while (str.length % 4 !== 0) {\n    str = str + '='\n  }\n  return str\n}\n\nfunction stringtrim (str) {\n  if (str.trim) return str.trim()\n  return str.replace(/^\\s+|\\s+$/g, '')\n}\n\nfunction toHex (n) {\n  if (n < 16) return '0' + n.toString(16)\n  return n.toString(16)\n}\n\nfunction utf8ToBytes (string, units) {\n  units = units || Infinity\n  var codePoint\n  var length = string.length\n  var leadSurrogate = null\n  var bytes = []\n\n  for (var i = 0; i < length; ++i) {\n    codePoint = string.charCodeAt(i)\n\n    // is surrogate component\n    if (codePoint > 0xD7FF && codePoint < 0xE000) {\n      // last char was a lead\n      if (!leadSurrogate) {\n        // no lead yet\n        if (codePoint > 0xDBFF) {\n          // unexpected trail\n          if ((units -= 3) > -1) bytes.push(0xEF, 0xBF, 0xBD)\n          continue\n        } else if (i + 1 === length) {\n          // unpaired lead\n          if ((units -= 3) > -1) bytes.push(0xEF, 0xBF, 0xBD)\n          continue\n        }\n\n        // valid lead\n        leadSurrogate = codePoint\n\n        continue\n      }\n\n      // 2 leads in a row\n      if (codePoint < 0xDC00) {\n        if ((units -= 3) > -1) bytes.push(0xEF, 0xBF, 0xBD)\n        leadSurrogate = codePoint\n        continue\n      }\n\n      // valid surrogate pair\n      codePoint = (leadSurrogate - 0xD800 << 10 | codePoint - 0xDC00) + 0x10000\n    } else if (leadSurrogate) {\n      // valid bmp char, but last char was a lead\n      if ((units -= 3) > -1) bytes.push(0xEF, 0xBF, 0xBD)\n    }\n\n    leadSurrogate = null\n\n    // encode utf8\n    if (codePoint < 0x80) {\n      if ((units -= 1) < 0) break\n      bytes.push(codePoint)\n    } else if (codePoint < 0x800) {\n      if ((units -= 2) < 0) break\n      bytes.push(\n        codePoint >> 0x6 | 0xC0,\n        codePoint & 0x3F | 0x80\n      )\n    } else if (codePoint < 0x10000) {\n      if ((units -= 3) < 0) break\n      bytes.push(\n        codePoint >> 0xC | 0xE0,\n        codePoint >> 0x6 & 0x3F | 0x80,\n        codePoint & 0x3F | 0x80\n      )\n    } else if (codePoint < 0x110000) {\n      if ((units -= 4) < 0) break\n      bytes.push(\n        codePoint >> 0x12 | 0xF0,\n        codePoint >> 0xC & 0x3F | 0x80,\n        codePoint >> 0x6 & 0x3F | 0x80,\n        codePoint & 0x3F | 0x80\n      )\n    } else {\n      throw new Error('Invalid code point')\n    }\n  }\n\n  return bytes\n}\n\nfunction asciiToBytes (str) {\n  var byteArray = []\n  for (var i = 0; i < str.length; ++i) {\n    // Node's code seems to be doing this and not & 0x7F..\n    byteArray.push(str.charCodeAt(i) & 0xFF)\n  }\n  return byteArray\n}\n\nfunction utf16leToBytes (str, units) {\n  var c, hi, lo\n  var byteArray = []\n  for (var i = 0; i < str.length; ++i) {\n    if ((units -= 2) < 0) break\n\n    c = str.charCodeAt(i)\n    hi = c >> 8\n    lo = c % 256\n    byteArray.push(lo)\n    byteArray.push(hi)\n  }\n\n  return byteArray\n}\n\nfunction base64ToBytes (str) {\n  return base64.toByteArray(base64clean(str))\n}\n\nfunction blitBuffer (src, dst, offset, length) {\n  for (var i = 0; i < length; ++i) {\n    if ((i + offset >= dst.length) || (i >= src.length)) break\n    dst[i + offset] = src[i]\n  }\n  return i\n}\n\nfunction isnan (val) {\n  return val !== val // eslint-disable-line no-self-compare\n}\n\n/* WEBPACK VAR INJECTION */}.call(exports, (function() { return this; }())))//# sourceMappingURL=data:application/json;charset=utf-8;base64,eyJ2ZXJzaW9uIjozLCJzb3VyY2VzIjpbIndlYnBhY2s6Ly8vLi4vfi9idWZmZXIvaW5kZXguanM/OTdjYiJdLCJuYW1lcyI6W10sIm1hcHBpbmdzIjoiQUFBQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTs7QUFFQTs7QUFFQTtBQUNBO0FBQ0E7O0FBRUE7QUFDQTtBQUNBOztBQUVBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7O0FBRUE7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBOztBQUVBO0FBQ0E7QUFDQTtBQUNBOztBQUVBO0FBQ0E7QUFDQTtBQUNBLHFCQUFxQixtREFBbUQ7QUFDeEU7QUFDQTtBQUNBO0FBQ0EsR0FBRztBQUNIO0FBQ0E7QUFDQTs7QUFFQTtBQUNBO0FBQ0E7QUFDQTtBQUNBOztBQUVBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQSxHQUFHO0FBQ0g7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBOztBQUVBO0FBQ0E7O0FBRUE7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBOztBQUVBO0FBQ0E7QUFDQTtBQUNBOztBQUVBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7O0FBRUE7O0FBRUE7QUFDQTtBQUNBO0FBQ0E7QUFDQTs7QUFFQTtBQUNBO0FBQ0E7QUFDQTs7QUFFQTtBQUNBO0FBQ0E7O0FBRUE7QUFDQTtBQUNBOztBQUVBO0FBQ0E7O0FBRUE7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTs7QUFFQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQSxLQUFLO0FBQ0w7QUFDQTs7QUFFQTtBQUNBO0FBQ0E7QUFDQSxHQUFHO0FBQ0g7QUFDQTtBQUNBOztBQUVBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTs7QUFFQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTs7QUFFQTtBQUNBO0FBQ0E7QUFDQTtBQUNBLG1CQUFtQixVQUFVO0FBQzdCO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7O0FBRUE7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBOztBQUVBO0FBQ0E7QUFDQTtBQUNBOztBQUVBO0FBQ0E7QUFDQTs7QUFFQTtBQUNBOztBQUVBOztBQUVBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTs7QUFFQTtBQUNBOztBQUVBO0FBQ0E7QUFDQTtBQUNBLGlCQUFpQixZQUFZO0FBQzdCO0FBQ0E7QUFDQTtBQUNBOztBQUVBO0FBQ0E7O0FBRUE7QUFDQTtBQUNBOztBQUVBO0FBQ0E7QUFDQTs7QUFFQTtBQUNBO0FBQ0EsR0FBRztBQUNIO0FBQ0EsR0FBRztBQUNIO0FBQ0E7O0FBRUE7QUFDQTtBQUNBO0FBQ0E7QUFDQSxHQUFHO0FBQ0g7QUFDQTtBQUNBO0FBQ0E7QUFDQTs7QUFFQTtBQUNBO0FBQ0E7QUFDQTs7QUFFQTtBQUNBO0FBQ0E7O0FBRUE7QUFDQTtBQUNBOztBQUVBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7O0FBRUE7QUFDQTtBQUNBO0FBQ0E7O0FBRUE7QUFDQTs7QUFFQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7O0FBRUE7QUFDQSwwQkFBMEI7QUFDMUI7QUFDQTtBQUNBO0FBQ0E7O0FBRUE7QUFDQTtBQUNBOztBQUVBO0FBQ0E7QUFDQTtBQUNBOztBQUVBOztBQUVBO0FBQ0E7O0FBRUEsdUNBQXVDLFNBQVM7QUFDaEQ7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBOztBQUVBO0FBQ0E7QUFDQTtBQUNBOztBQUVBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTs7QUFFQTtBQUNBO0FBQ0E7QUFDQTs7QUFFQTtBQUNBO0FBQ0E7O0FBRUE7QUFDQTtBQUNBO0FBQ0EsZUFBZSxpQkFBaUI7QUFDaEM7QUFDQTtBQUNBOztBQUVBO0FBQ0E7QUFDQSxhQUFhLGlCQUFpQjtBQUM5QjtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7O0FBRUE7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTs7QUFFQTtBQUNBOztBQUVBO0FBQ0E7QUFDQSxTQUFTO0FBQ1Q7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTs7QUFFQTtBQUNBOztBQUVBO0FBQ0E7O0FBRUE7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBOztBQUVBO0FBQ0E7QUFDQTs7QUFFQTtBQUNBO0FBQ0E7O0FBRUE7QUFDQTtBQUNBOztBQUVBO0FBQ0E7QUFDQTs7QUFFQTs7QUFFQTtBQUNBO0FBQ0E7QUFDQTs7QUFFQTtBQUNBO0FBQ0E7O0FBRUE7QUFDQTs7QUFFQTtBQUNBO0FBQ0E7O0FBRUE7QUFDQTs7QUFFQTtBQUNBO0FBQ0E7QUFDQTtBQUNBOztBQUVBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBOztBQUVBO0FBQ0E7QUFDQTs7QUFFQTtBQUNBO0FBQ0E7QUFDQTtBQUNBOztBQUVBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQSxpQkFBaUIsU0FBUztBQUMxQjtBQUNBO0FBQ0E7QUFDQTs7QUFFQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0EsaUJBQWlCLFNBQVM7QUFDMUI7QUFDQTtBQUNBO0FBQ0E7QUFDQTs7QUFFQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0EsaUJBQWlCLFNBQVM7QUFDMUI7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7O0FBRUE7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBOztBQUVBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7O0FBRUE7QUFDQTtBQUNBO0FBQ0E7QUFDQSxnREFBZ0QsRUFBRTtBQUNsRDtBQUNBO0FBQ0E7QUFDQTs7QUFFQTtBQUNBO0FBQ0E7QUFDQTs7QUFFQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7O0FBRUE7QUFDQTtBQUNBOztBQUVBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTs7QUFFQTtBQUNBO0FBQ0E7QUFDQTs7QUFFQTs7QUFFQTtBQUNBO0FBQ0E7O0FBRUE7QUFDQTs7QUFFQSxpQkFBaUIsU0FBUztBQUMxQjtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7O0FBRUE7QUFDQTtBQUNBO0FBQ0E7O0FBRUE7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0EseUNBQXlDO0FBQ3pDO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7O0FBRUE7QUFDQTtBQUNBO0FBQ0E7QUFDQSxHQUFHO0FBQ0g7QUFDQSxHQUFHO0FBQ0g7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7O0FBRUE7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBLEdBQUc7QUFDSDtBQUNBO0FBQ0E7O0FBRUE7QUFDQTtBQUNBO0FBQ0E7O0FBRUE7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQSxHQUFHO0FBQ0g7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBLE9BQU87QUFDUDtBQUNBO0FBQ0E7QUFDQTtBQUNBOztBQUVBO0FBQ0E7O0FBRUE7QUFDQTtBQUNBO0FBQ0E7O0FBRUE7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7O0FBRUE7QUFDQTtBQUNBO0FBQ0EsS0FBSztBQUNMO0FBQ0E7QUFDQTs7QUFFQTtBQUNBO0FBQ0E7QUFDQSx3QkFBd0IsZUFBZTtBQUN2QztBQUNBO0FBQ0E7QUFDQSxPQUFPO0FBQ1A7QUFDQTtBQUNBO0FBQ0E7QUFDQSxHQUFHO0FBQ0g7QUFDQSx3QkFBd0IsUUFBUTtBQUNoQztBQUNBLHFCQUFxQixlQUFlO0FBQ3BDO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7O0FBRUE7QUFDQTs7QUFFQTtBQUNBO0FBQ0E7O0FBRUE7QUFDQTtBQUNBOztBQUVBO0FBQ0E7QUFDQTs7QUFFQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0EsR0FBRztBQUNIO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7O0FBRUE7QUFDQTtBQUNBOztBQUVBO0FBQ0E7QUFDQTtBQUNBLGlCQUFpQixZQUFZO0FBQzdCO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTs7QUFFQTtBQUNBO0FBQ0E7O0FBRUE7QUFDQTtBQUNBOztBQUVBO0FBQ0E7QUFDQTs7QUFFQTtBQUNBO0FBQ0E7O0FBRUE7QUFDQTtBQUNBOztBQUVBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0EsR0FBRztBQUNIO0FBQ0E7QUFDQTtBQUNBO0FBQ0EsR0FBRztBQUNIO0FBQ0E7QUFDQTtBQUNBO0FBQ0EsS0FBSztBQUNMO0FBQ0E7QUFDQTtBQUNBO0FBQ0EsR0FBRztBQUNIO0FBQ0E7QUFDQTtBQUNBOztBQUVBO0FBQ0E7O0FBRUE7QUFDQTtBQUNBOztBQUVBOztBQUVBO0FBQ0EsU0FBUztBQUNUO0FBQ0E7QUFDQTs7QUFFQTtBQUNBO0FBQ0E7O0FBRUE7QUFDQTs7QUFFQTtBQUNBO0FBQ0E7O0FBRUE7QUFDQTtBQUNBOztBQUVBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7O0FBRUE7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7O0FBRUE7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBOztBQUVBO0FBQ0E7QUFDQTtBQUNBLEdBQUc7QUFDSDtBQUNBO0FBQ0E7O0FBRUE7QUFDQTtBQUNBOztBQUVBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7O0FBRUE7QUFDQTs7QUFFQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTs7QUFFQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0EsS0FBSztBQUNMO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7O0FBRUE7QUFDQTtBQUNBOztBQUVBO0FBQ0E7O0FBRUE7QUFDQTtBQUNBO0FBQ0E7O0FBRUE7QUFDQTtBQUNBO0FBQ0E7QUFDQTs7QUFFQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBOztBQUVBO0FBQ0E7QUFDQTs7QUFFQSxxQkFBcUIsU0FBUztBQUM5QjtBQUNBO0FBQ0E7QUFDQTs7QUFFQTtBQUNBO0FBQ0E7O0FBRUEscUJBQXFCLFNBQVM7QUFDOUI7QUFDQTtBQUNBO0FBQ0E7O0FBRUE7QUFDQTs7QUFFQTtBQUNBOztBQUVBO0FBQ0EscUJBQXFCLFNBQVM7QUFDOUI7QUFDQTtBQUNBO0FBQ0E7O0FBRUE7QUFDQTtBQUNBO0FBQ0EsaUJBQWlCLGtCQUFrQjtBQUNuQztBQUNBO0FBQ0E7QUFDQTs7QUFFQTtBQUNBO0FBQ0E7QUFDQTs7QUFFQTtBQUNBO0FBQ0E7QUFDQSxHQUFHO0FBQ0g7QUFDQTs7QUFFQTtBQUNBO0FBQ0E7QUFDQSxHQUFHO0FBQ0g7QUFDQTs7QUFFQTs7QUFFQTtBQUNBO0FBQ0E7QUFDQTtBQUNBLEdBQUc7QUFDSDtBQUNBO0FBQ0EsbUJBQW1CLGNBQWM7QUFDakM7QUFDQTtBQUNBOztBQUVBO0FBQ0E7O0FBRUE7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7O0FBRUE7QUFDQTtBQUNBO0FBQ0E7O0FBRUE7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBOztBQUVBO0FBQ0E7O0FBRUE7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBOztBQUVBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7O0FBRUE7QUFDQTs7QUFFQTtBQUNBO0FBQ0E7QUFDQTs7QUFFQTtBQUNBO0FBQ0E7QUFDQTs7QUFFQTtBQUNBO0FBQ0E7QUFDQTs7QUFFQTtBQUNBOztBQUVBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7O0FBRUE7QUFDQTs7QUFFQTtBQUNBO0FBQ0E7QUFDQTtBQUNBOztBQUVBO0FBQ0E7QUFDQTtBQUNBOztBQUVBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBOztBQUVBOztBQUVBO0FBQ0E7O0FBRUE7QUFDQTtBQUNBO0FBQ0E7O0FBRUE7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7O0FBRUE7O0FBRUE7QUFDQTs7QUFFQTtBQUNBO0FBQ0E7QUFDQTtBQUNBOztBQUVBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7O0FBRUE7QUFDQTtBQUNBO0FBQ0E7QUFDQTs7QUFFQTtBQUNBOztBQUVBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7O0FBRUE7QUFDQTs7QUFFQTtBQUNBO0FBQ0E7QUFDQTtBQUNBOztBQUVBO0FBQ0E7QUFDQTtBQUNBOztBQUVBO0FBQ0E7QUFDQTtBQUNBOztBQUVBO0FBQ0E7QUFDQTtBQUNBOztBQUVBO0FBQ0E7QUFDQTtBQUNBOztBQUVBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7O0FBRUE7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTs7QUFFQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7O0FBRUE7QUFDQTs7QUFFQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBOztBQUVBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTs7QUFFQTtBQUNBOztBQUVBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7O0FBRUE7QUFDQTtBQUNBLHVEQUF1RCxPQUFPO0FBQzlEO0FBQ0E7QUFDQTtBQUNBOztBQUVBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0EsR0FBRztBQUNIO0FBQ0E7QUFDQTtBQUNBOztBQUVBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0EsR0FBRztBQUNIO0FBQ0E7QUFDQTtBQUNBOztBQUVBO0FBQ0E7QUFDQSx1REFBdUQsT0FBTztBQUM5RDtBQUNBO0FBQ0E7O0FBRUE7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0EsR0FBRztBQUNIO0FBQ0E7QUFDQTtBQUNBOztBQUVBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBLEdBQUc7QUFDSDtBQUNBO0FBQ0E7QUFDQTs7QUFFQTtBQUNBO0FBQ0E7QUFDQTtBQUNBOztBQUVBO0FBQ0E7O0FBRUE7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7O0FBRUE7QUFDQTs7QUFFQTtBQUNBO0FBQ0E7QUFDQTtBQUNBOztBQUVBO0FBQ0E7O0FBRUE7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7O0FBRUE7QUFDQTs7QUFFQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7O0FBRUE7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQSxHQUFHO0FBQ0g7QUFDQTtBQUNBO0FBQ0E7O0FBRUE7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQSxHQUFHO0FBQ0g7QUFDQTtBQUNBO0FBQ0E7O0FBRUE7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0EsR0FBRztBQUNIO0FBQ0E7QUFDQTtBQUNBOztBQUVBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0EsR0FBRztBQUNIO0FBQ0E7QUFDQTtBQUNBOztBQUVBO0FBQ0E7QUFDQTtBQUNBOztBQUVBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBOztBQUVBO0FBQ0E7QUFDQTs7QUFFQTtBQUNBO0FBQ0E7O0FBRUE7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7O0FBRUE7QUFDQTtBQUNBOztBQUVBO0FBQ0E7QUFDQTs7QUFFQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTs7QUFFQSxrQkFBa0I7QUFDbEI7QUFDQTs7QUFFQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7O0FBRUE7QUFDQTtBQUNBO0FBQ0E7QUFDQTs7QUFFQTtBQUNBOztBQUVBO0FBQ0E7QUFDQSxxQkFBcUIsUUFBUTtBQUM3QjtBQUNBO0FBQ0EsR0FBRztBQUNIO0FBQ0EsZUFBZSxTQUFTO0FBQ3hCO0FBQ0E7QUFDQSxHQUFHO0FBQ0g7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBOztBQUVBO0FBQ0E7O0FBRUE7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBLEtBQUs7QUFDTDtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQSxHQUFHO0FBQ0g7QUFDQTs7QUFFQTtBQUNBO0FBQ0E7QUFDQTs7QUFFQTtBQUNBO0FBQ0E7O0FBRUE7QUFDQTs7QUFFQTs7QUFFQTtBQUNBO0FBQ0EsbUJBQW1CLFNBQVM7QUFDNUI7QUFDQTtBQUNBLEdBQUc7QUFDSDtBQUNBO0FBQ0E7QUFDQTtBQUNBLGVBQWUsaUJBQWlCO0FBQ2hDO0FBQ0E7QUFDQTs7QUFFQTtBQUNBOztBQUVBO0FBQ0E7O0FBRUE7O0FBRUE7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTs7QUFFQTtBQUNBO0FBQ0E7QUFDQTs7QUFFQTtBQUNBO0FBQ0E7QUFDQTs7QUFFQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7O0FBRUEsaUJBQWlCLFlBQVk7QUFDN0I7O0FBRUE7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0EsU0FBUztBQUNUO0FBQ0E7QUFDQTtBQUNBOztBQUVBO0FBQ0E7O0FBRUE7QUFDQTs7QUFFQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7O0FBRUE7QUFDQTtBQUNBLEtBQUs7QUFDTDtBQUNBO0FBQ0E7O0FBRUE7O0FBRUE7QUFDQTtBQUNBO0FBQ0E7QUFDQSxLQUFLO0FBQ0w7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBLEtBQUs7QUFDTDtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQSxLQUFLO0FBQ0w7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQSxLQUFLO0FBQ0w7QUFDQTtBQUNBOztBQUVBO0FBQ0E7O0FBRUE7QUFDQTtBQUNBLGlCQUFpQixnQkFBZ0I7QUFDakM7QUFDQTtBQUNBO0FBQ0E7QUFDQTs7QUFFQTtBQUNBO0FBQ0E7QUFDQSxpQkFBaUIsZ0JBQWdCO0FBQ2pDOztBQUVBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTs7QUFFQTtBQUNBOztBQUVBO0FBQ0E7QUFDQTs7QUFFQTtBQUNBLGlCQUFpQixZQUFZO0FBQzdCO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7O0FBRUE7QUFDQTtBQUNBIiwiZmlsZSI6IjEyLmpzIiwic291cmNlc0NvbnRlbnQiOlsiLyohXG4gKiBUaGUgYnVmZmVyIG1vZHVsZSBmcm9tIG5vZGUuanMsIGZvciB0aGUgYnJvd3Nlci5cbiAqXG4gKiBAYXV0aG9yICAgRmVyb3NzIEFib3VraGFkaWplaCA8ZmVyb3NzQGZlcm9zcy5vcmc+IDxodHRwOi8vZmVyb3NzLm9yZz5cbiAqIEBsaWNlbnNlICBNSVRcbiAqL1xuLyogZXNsaW50LWRpc2FibGUgbm8tcHJvdG8gKi9cblxuJ3VzZSBzdHJpY3QnXG5cbnZhciBiYXNlNjQgPSByZXF1aXJlKCdiYXNlNjQtanMnKVxudmFyIGllZWU3NTQgPSByZXF1aXJlKCdpZWVlNzU0JylcbnZhciBpc0FycmF5ID0gcmVxdWlyZSgnaXNhcnJheScpXG5cbmV4cG9ydHMuQnVmZmVyID0gQnVmZmVyXG5leHBvcnRzLlNsb3dCdWZmZXIgPSBTbG93QnVmZmVyXG5leHBvcnRzLklOU1BFQ1RfTUFYX0JZVEVTID0gNTBcblxuLyoqXG4gKiBJZiBgQnVmZmVyLlRZUEVEX0FSUkFZX1NVUFBPUlRgOlxuICogICA9PT0gdHJ1ZSAgICBVc2UgVWludDhBcnJheSBpbXBsZW1lbnRhdGlvbiAoZmFzdGVzdClcbiAqICAgPT09IGZhbHNlICAgVXNlIE9iamVjdCBpbXBsZW1lbnRhdGlvbiAobW9zdCBjb21wYXRpYmxlLCBldmVuIElFNilcbiAqXG4gKiBCcm93c2VycyB0aGF0IHN1cHBvcnQgdHlwZWQgYXJyYXlzIGFyZSBJRSAxMCssIEZpcmVmb3ggNCssIENocm9tZSA3KywgU2FmYXJpIDUuMSssXG4gKiBPcGVyYSAxMS42KywgaU9TIDQuMisuXG4gKlxuICogRHVlIHRvIHZhcmlvdXMgYnJvd3NlciBidWdzLCBzb21ldGltZXMgdGhlIE9iamVjdCBpbXBsZW1lbnRhdGlvbiB3aWxsIGJlIHVzZWQgZXZlblxuICogd2hlbiB0aGUgYnJvd3NlciBzdXBwb3J0cyB0eXBlZCBhcnJheXMuXG4gKlxuICogTm90ZTpcbiAqXG4gKiAgIC0gRmlyZWZveCA0LTI5IGxhY2tzIHN1cHBvcnQgZm9yIGFkZGluZyBuZXcgcHJvcGVydGllcyB0byBgVWludDhBcnJheWAgaW5zdGFuY2VzLFxuICogICAgIFNlZTogaHR0cHM6Ly9idWd6aWxsYS5tb3ppbGxhLm9yZy9zaG93X2J1Zy5jZ2k/aWQ9Njk1NDM4LlxuICpcbiAqICAgLSBDaHJvbWUgOS0xMCBpcyBtaXNzaW5nIHRoZSBgVHlwZWRBcnJheS5wcm90b3R5cGUuc3ViYXJyYXlgIGZ1bmN0aW9uLlxuICpcbiAqICAgLSBJRTEwIGhhcyBhIGJyb2tlbiBgVHlwZWRBcnJheS5wcm90b3R5cGUuc3ViYXJyYXlgIGZ1bmN0aW9uIHdoaWNoIHJldHVybnMgYXJyYXlzIG9mXG4gKiAgICAgaW5jb3JyZWN0IGxlbmd0aCBpbiBzb21lIHNpdHVhdGlvbnMuXG5cbiAqIFdlIGRldGVjdCB0aGVzZSBidWdneSBicm93c2VycyBhbmQgc2V0IGBCdWZmZXIuVFlQRURfQVJSQVlfU1VQUE9SVGAgdG8gYGZhbHNlYCBzbyB0aGV5XG4gKiBnZXQgdGhlIE9iamVjdCBpbXBsZW1lbnRhdGlvbiwgd2hpY2ggaXMgc2xvd2VyIGJ1dCBiZWhhdmVzIGNvcnJlY3RseS5cbiAqL1xuQnVmZmVyLlRZUEVEX0FSUkFZX1NVUFBPUlQgPSBnbG9iYWwuVFlQRURfQVJSQVlfU1VQUE9SVCAhPT0gdW5kZWZpbmVkXG4gID8gZ2xvYmFsLlRZUEVEX0FSUkFZX1NVUFBPUlRcbiAgOiB0eXBlZEFycmF5U3VwcG9ydCgpXG5cbi8qXG4gKiBFeHBvcnQga01heExlbmd0aCBhZnRlciB0eXBlZCBhcnJheSBzdXBwb3J0IGlzIGRldGVybWluZWQuXG4gKi9cbmV4cG9ydHMua01heExlbmd0aCA9IGtNYXhMZW5ndGgoKVxuXG5mdW5jdGlvbiB0eXBlZEFycmF5U3VwcG9ydCAoKSB7XG4gIHRyeSB7XG4gICAgdmFyIGFyciA9IG5ldyBVaW50OEFycmF5KDEpXG4gICAgYXJyLl9fcHJvdG9fXyA9IHtfX3Byb3RvX186IFVpbnQ4QXJyYXkucHJvdG90eXBlLCBmb286IGZ1bmN0aW9uICgpIHsgcmV0dXJuIDQyIH19XG4gICAgcmV0dXJuIGFyci5mb28oKSA9PT0gNDIgJiYgLy8gdHlwZWQgYXJyYXkgaW5zdGFuY2VzIGNhbiBiZSBhdWdtZW50ZWRcbiAgICAgICAgdHlwZW9mIGFyci5zdWJhcnJheSA9PT0gJ2Z1bmN0aW9uJyAmJiAvLyBjaHJvbWUgOS0xMCBsYWNrIGBzdWJhcnJheWBcbiAgICAgICAgYXJyLnN1YmFycmF5KDEsIDEpLmJ5dGVMZW5ndGggPT09IDAgLy8gaWUxMCBoYXMgYnJva2VuIGBzdWJhcnJheWBcbiAgfSBjYXRjaCAoZSkge1xuICAgIHJldHVybiBmYWxzZVxuICB9XG59XG5cbmZ1bmN0aW9uIGtNYXhMZW5ndGggKCkge1xuICByZXR1cm4gQnVmZmVyLlRZUEVEX0FSUkFZX1NVUFBPUlRcbiAgICA/IDB4N2ZmZmZmZmZcbiAgICA6IDB4M2ZmZmZmZmZcbn1cblxuZnVuY3Rpb24gY3JlYXRlQnVmZmVyICh0aGF0LCBsZW5ndGgpIHtcbiAgaWYgKGtNYXhMZW5ndGgoKSA8IGxlbmd0aCkge1xuICAgIHRocm93IG5ldyBSYW5nZUVycm9yKCdJbnZhbGlkIHR5cGVkIGFycmF5IGxlbmd0aCcpXG4gIH1cbiAgaWYgKEJ1ZmZlci5UWVBFRF9BUlJBWV9TVVBQT1JUKSB7XG4gICAgLy8gUmV0dXJuIGFuIGF1Z21lbnRlZCBgVWludDhBcnJheWAgaW5zdGFuY2UsIGZvciBiZXN0IHBlcmZvcm1hbmNlXG4gICAgdGhhdCA9IG5ldyBVaW50OEFycmF5KGxlbmd0aClcbiAgICB0aGF0Ll9fcHJvdG9fXyA9IEJ1ZmZlci5wcm90b3R5cGVcbiAgfSBlbHNlIHtcbiAgICAvLyBGYWxsYmFjazogUmV0dXJuIGFuIG9iamVjdCBpbnN0YW5jZSBvZiB0aGUgQnVmZmVyIGNsYXNzXG4gICAgaWYgKHRoYXQgPT09IG51bGwpIHtcbiAgICAgIHRoYXQgPSBuZXcgQnVmZmVyKGxlbmd0aClcbiAgICB9XG4gICAgdGhhdC5sZW5ndGggPSBsZW5ndGhcbiAgfVxuXG4gIHJldHVybiB0aGF0XG59XG5cbi8qKlxuICogVGhlIEJ1ZmZlciBjb25zdHJ1Y3RvciByZXR1cm5zIGluc3RhbmNlcyBvZiBgVWludDhBcnJheWAgdGhhdCBoYXZlIHRoZWlyXG4gKiBwcm90b3R5cGUgY2hhbmdlZCB0byBgQnVmZmVyLnByb3RvdHlwZWAuIEZ1cnRoZXJtb3JlLCBgQnVmZmVyYCBpcyBhIHN1YmNsYXNzIG9mXG4gKiBgVWludDhBcnJheWAsIHNvIHRoZSByZXR1cm5lZCBpbnN0YW5jZXMgd2lsbCBoYXZlIGFsbCB0aGUgbm9kZSBgQnVmZmVyYCBtZXRob2RzXG4gKiBhbmQgdGhlIGBVaW50OEFycmF5YCBtZXRob2RzLiBTcXVhcmUgYnJhY2tldCBub3RhdGlvbiB3b3JrcyBhcyBleHBlY3RlZCAtLSBpdFxuICogcmV0dXJucyBhIHNpbmdsZSBvY3RldC5cbiAqXG4gKiBUaGUgYFVpbnQ4QXJyYXlgIHByb3RvdHlwZSByZW1haW5zIHVubW9kaWZpZWQuXG4gKi9cblxuZnVuY3Rpb24gQnVmZmVyIChhcmcsIGVuY29kaW5nT3JPZmZzZXQsIGxlbmd0aCkge1xuICBpZiAoIUJ1ZmZlci5UWVBFRF9BUlJBWV9TVVBQT1JUICYmICEodGhpcyBpbnN0YW5jZW9mIEJ1ZmZlcikpIHtcbiAgICByZXR1cm4gbmV3IEJ1ZmZlcihhcmcsIGVuY29kaW5nT3JPZmZzZXQsIGxlbmd0aClcbiAgfVxuXG4gIC8vIENvbW1vbiBjYXNlLlxuICBpZiAodHlwZW9mIGFyZyA9PT0gJ251bWJlcicpIHtcbiAgICBpZiAodHlwZW9mIGVuY29kaW5nT3JPZmZzZXQgPT09ICdzdHJpbmcnKSB7XG4gICAgICB0aHJvdyBuZXcgRXJyb3IoXG4gICAgICAgICdJZiBlbmNvZGluZyBpcyBzcGVjaWZpZWQgdGhlbiB0aGUgZmlyc3QgYXJndW1lbnQgbXVzdCBiZSBhIHN0cmluZydcbiAgICAgIClcbiAgICB9XG4gICAgcmV0dXJuIGFsbG9jVW5zYWZlKHRoaXMsIGFyZylcbiAgfVxuICByZXR1cm4gZnJvbSh0aGlzLCBhcmcsIGVuY29kaW5nT3JPZmZzZXQsIGxlbmd0aClcbn1cblxuQnVmZmVyLnBvb2xTaXplID0gODE5MiAvLyBub3QgdXNlZCBieSB0aGlzIGltcGxlbWVudGF0aW9uXG5cbi8vIFRPRE86IExlZ2FjeSwgbm90IG5lZWRlZCBhbnltb3JlLiBSZW1vdmUgaW4gbmV4dCBtYWpvciB2ZXJzaW9uLlxuQnVmZmVyLl9hdWdtZW50ID0gZnVuY3Rpb24gKGFycikge1xuICBhcnIuX19wcm90b19fID0gQnVmZmVyLnByb3RvdHlwZVxuICByZXR1cm4gYXJyXG59XG5cbmZ1bmN0aW9uIGZyb20gKHRoYXQsIHZhbHVlLCBlbmNvZGluZ09yT2Zmc2V0LCBsZW5ndGgpIHtcbiAgaWYgKHR5cGVvZiB2YWx1ZSA9PT0gJ251bWJlcicpIHtcbiAgICB0aHJvdyBuZXcgVHlwZUVycm9yKCdcInZhbHVlXCIgYXJndW1lbnQgbXVzdCBub3QgYmUgYSBudW1iZXInKVxuICB9XG5cbiAgaWYgKHR5cGVvZiBBcnJheUJ1ZmZlciAhPT0gJ3VuZGVmaW5lZCcgJiYgdmFsdWUgaW5zdGFuY2VvZiBBcnJheUJ1ZmZlcikge1xuICAgIHJldHVybiBmcm9tQXJyYXlCdWZmZXIodGhhdCwgdmFsdWUsIGVuY29kaW5nT3JPZmZzZXQsIGxlbmd0aClcbiAgfVxuXG4gIGlmICh0eXBlb2YgdmFsdWUgPT09ICdzdHJpbmcnKSB7XG4gICAgcmV0dXJuIGZyb21TdHJpbmcodGhhdCwgdmFsdWUsIGVuY29kaW5nT3JPZmZzZXQpXG4gIH1cblxuICByZXR1cm4gZnJvbU9iamVjdCh0aGF0LCB2YWx1ZSlcbn1cblxuLyoqXG4gKiBGdW5jdGlvbmFsbHkgZXF1aXZhbGVudCB0byBCdWZmZXIoYXJnLCBlbmNvZGluZykgYnV0IHRocm93cyBhIFR5cGVFcnJvclxuICogaWYgdmFsdWUgaXMgYSBudW1iZXIuXG4gKiBCdWZmZXIuZnJvbShzdHJbLCBlbmNvZGluZ10pXG4gKiBCdWZmZXIuZnJvbShhcnJheSlcbiAqIEJ1ZmZlci5mcm9tKGJ1ZmZlcilcbiAqIEJ1ZmZlci5mcm9tKGFycmF5QnVmZmVyWywgYnl0ZU9mZnNldFssIGxlbmd0aF1dKVxuICoqL1xuQnVmZmVyLmZyb20gPSBmdW5jdGlvbiAodmFsdWUsIGVuY29kaW5nT3JPZmZzZXQsIGxlbmd0aCkge1xuICByZXR1cm4gZnJvbShudWxsLCB2YWx1ZSwgZW5jb2RpbmdPck9mZnNldCwgbGVuZ3RoKVxufVxuXG5pZiAoQnVmZmVyLlRZUEVEX0FSUkFZX1NVUFBPUlQpIHtcbiAgQnVmZmVyLnByb3RvdHlwZS5fX3Byb3RvX18gPSBVaW50OEFycmF5LnByb3RvdHlwZVxuICBCdWZmZXIuX19wcm90b19fID0gVWludDhBcnJheVxuICBpZiAodHlwZW9mIFN5bWJvbCAhPT0gJ3VuZGVmaW5lZCcgJiYgU3ltYm9sLnNwZWNpZXMgJiZcbiAgICAgIEJ1ZmZlcltTeW1ib2wuc3BlY2llc10gPT09IEJ1ZmZlcikge1xuICAgIC8vIEZpeCBzdWJhcnJheSgpIGluIEVTMjAxNi4gU2VlOiBodHRwczovL2dpdGh1Yi5jb20vZmVyb3NzL2J1ZmZlci9wdWxsLzk3XG4gICAgT2JqZWN0LmRlZmluZVByb3BlcnR5KEJ1ZmZlciwgU3ltYm9sLnNwZWNpZXMsIHtcbiAgICAgIHZhbHVlOiBudWxsLFxuICAgICAgY29uZmlndXJhYmxlOiB0cnVlXG4gICAgfSlcbiAgfVxufVxuXG5mdW5jdGlvbiBhc3NlcnRTaXplIChzaXplKSB7XG4gIGlmICh0eXBlb2Ygc2l6ZSAhPT0gJ251bWJlcicpIHtcbiAgICB0aHJvdyBuZXcgVHlwZUVycm9yKCdcInNpemVcIiBhcmd1bWVudCBtdXN0IGJlIGEgbnVtYmVyJylcbiAgfSBlbHNlIGlmIChzaXplIDwgMCkge1xuICAgIHRocm93IG5ldyBSYW5nZUVycm9yKCdcInNpemVcIiBhcmd1bWVudCBtdXN0IG5vdCBiZSBuZWdhdGl2ZScpXG4gIH1cbn1cblxuZnVuY3Rpb24gYWxsb2MgKHRoYXQsIHNpemUsIGZpbGwsIGVuY29kaW5nKSB7XG4gIGFzc2VydFNpemUoc2l6ZSlcbiAgaWYgKHNpemUgPD0gMCkge1xuICAgIHJldHVybiBjcmVhdGVCdWZmZXIodGhhdCwgc2l6ZSlcbiAgfVxuICBpZiAoZmlsbCAhPT0gdW5kZWZpbmVkKSB7XG4gICAgLy8gT25seSBwYXkgYXR0ZW50aW9uIHRvIGVuY29kaW5nIGlmIGl0J3MgYSBzdHJpbmcuIFRoaXNcbiAgICAvLyBwcmV2ZW50cyBhY2NpZGVudGFsbHkgc2VuZGluZyBpbiBhIG51bWJlciB0aGF0IHdvdWxkXG4gICAgLy8gYmUgaW50ZXJwcmV0dGVkIGFzIGEgc3RhcnQgb2Zmc2V0LlxuICAgIHJldHVybiB0eXBlb2YgZW5jb2RpbmcgPT09ICdzdHJpbmcnXG4gICAgICA/IGNyZWF0ZUJ1ZmZlcih0aGF0LCBzaXplKS5maWxsKGZpbGwsIGVuY29kaW5nKVxuICAgICAgOiBjcmVhdGVCdWZmZXIodGhhdCwgc2l6ZSkuZmlsbChmaWxsKVxuICB9XG4gIHJldHVybiBjcmVhdGVCdWZmZXIodGhhdCwgc2l6ZSlcbn1cblxuLyoqXG4gKiBDcmVhdGVzIGEgbmV3IGZpbGxlZCBCdWZmZXIgaW5zdGFuY2UuXG4gKiBhbGxvYyhzaXplWywgZmlsbFssIGVuY29kaW5nXV0pXG4gKiovXG5CdWZmZXIuYWxsb2MgPSBmdW5jdGlvbiAoc2l6ZSwgZmlsbCwgZW5jb2RpbmcpIHtcbiAgcmV0dXJuIGFsbG9jKG51bGwsIHNpemUsIGZpbGwsIGVuY29kaW5nKVxufVxuXG5mdW5jdGlvbiBhbGxvY1Vuc2FmZSAodGhhdCwgc2l6ZSkge1xuICBhc3NlcnRTaXplKHNpemUpXG4gIHRoYXQgPSBjcmVhdGVCdWZmZXIodGhhdCwgc2l6ZSA8IDAgPyAwIDogY2hlY2tlZChzaXplKSB8IDApXG4gIGlmICghQnVmZmVyLlRZUEVEX0FSUkFZX1NVUFBPUlQpIHtcbiAgICBmb3IgKHZhciBpID0gMDsgaSA8IHNpemU7ICsraSkge1xuICAgICAgdGhhdFtpXSA9IDBcbiAgICB9XG4gIH1cbiAgcmV0dXJuIHRoYXRcbn1cblxuLyoqXG4gKiBFcXVpdmFsZW50IHRvIEJ1ZmZlcihudW0pLCBieSBkZWZhdWx0IGNyZWF0ZXMgYSBub24temVyby1maWxsZWQgQnVmZmVyIGluc3RhbmNlLlxuICogKi9cbkJ1ZmZlci5hbGxvY1Vuc2FmZSA9IGZ1bmN0aW9uIChzaXplKSB7XG4gIHJldHVybiBhbGxvY1Vuc2FmZShudWxsLCBzaXplKVxufVxuLyoqXG4gKiBFcXVpdmFsZW50IHRvIFNsb3dCdWZmZXIobnVtKSwgYnkgZGVmYXVsdCBjcmVhdGVzIGEgbm9uLXplcm8tZmlsbGVkIEJ1ZmZlciBpbnN0YW5jZS5cbiAqL1xuQnVmZmVyLmFsbG9jVW5zYWZlU2xvdyA9IGZ1bmN0aW9uIChzaXplKSB7XG4gIHJldHVybiBhbGxvY1Vuc2FmZShudWxsLCBzaXplKVxufVxuXG5mdW5jdGlvbiBmcm9tU3RyaW5nICh0aGF0LCBzdHJpbmcsIGVuY29kaW5nKSB7XG4gIGlmICh0eXBlb2YgZW5jb2RpbmcgIT09ICdzdHJpbmcnIHx8IGVuY29kaW5nID09PSAnJykge1xuICAgIGVuY29kaW5nID0gJ3V0ZjgnXG4gIH1cblxuICBpZiAoIUJ1ZmZlci5pc0VuY29kaW5nKGVuY29kaW5nKSkge1xuICAgIHRocm93IG5ldyBUeXBlRXJyb3IoJ1wiZW5jb2RpbmdcIiBtdXN0IGJlIGEgdmFsaWQgc3RyaW5nIGVuY29kaW5nJylcbiAgfVxuXG4gIHZhciBsZW5ndGggPSBieXRlTGVuZ3RoKHN0cmluZywgZW5jb2RpbmcpIHwgMFxuICB0aGF0ID0gY3JlYXRlQnVmZmVyKHRoYXQsIGxlbmd0aClcblxuICB2YXIgYWN0dWFsID0gdGhhdC53cml0ZShzdHJpbmcsIGVuY29kaW5nKVxuXG4gIGlmIChhY3R1YWwgIT09IGxlbmd0aCkge1xuICAgIC8vIFdyaXRpbmcgYSBoZXggc3RyaW5nLCBmb3IgZXhhbXBsZSwgdGhhdCBjb250YWlucyBpbnZhbGlkIGNoYXJhY3RlcnMgd2lsbFxuICAgIC8vIGNhdXNlIGV2ZXJ5dGhpbmcgYWZ0ZXIgdGhlIGZpcnN0IGludmFsaWQgY2hhcmFjdGVyIHRvIGJlIGlnbm9yZWQuIChlLmcuXG4gICAgLy8gJ2FieHhjZCcgd2lsbCBiZSB0cmVhdGVkIGFzICdhYicpXG4gICAgdGhhdCA9IHRoYXQuc2xpY2UoMCwgYWN0dWFsKVxuICB9XG5cbiAgcmV0dXJuIHRoYXRcbn1cblxuZnVuY3Rpb24gZnJvbUFycmF5TGlrZSAodGhhdCwgYXJyYXkpIHtcbiAgdmFyIGxlbmd0aCA9IGFycmF5Lmxlbmd0aCA8IDAgPyAwIDogY2hlY2tlZChhcnJheS5sZW5ndGgpIHwgMFxuICB0aGF0ID0gY3JlYXRlQnVmZmVyKHRoYXQsIGxlbmd0aClcbiAgZm9yICh2YXIgaSA9IDA7IGkgPCBsZW5ndGg7IGkgKz0gMSkge1xuICAgIHRoYXRbaV0gPSBhcnJheVtpXSAmIDI1NVxuICB9XG4gIHJldHVybiB0aGF0XG59XG5cbmZ1bmN0aW9uIGZyb21BcnJheUJ1ZmZlciAodGhhdCwgYXJyYXksIGJ5dGVPZmZzZXQsIGxlbmd0aCkge1xuICBhcnJheS5ieXRlTGVuZ3RoIC8vIHRoaXMgdGhyb3dzIGlmIGBhcnJheWAgaXMgbm90IGEgdmFsaWQgQXJyYXlCdWZmZXJcblxuICBpZiAoYnl0ZU9mZnNldCA8IDAgfHwgYXJyYXkuYnl0ZUxlbmd0aCA8IGJ5dGVPZmZzZXQpIHtcbiAgICB0aHJvdyBuZXcgUmFuZ2VFcnJvcignXFwnb2Zmc2V0XFwnIGlzIG91dCBvZiBib3VuZHMnKVxuICB9XG5cbiAgaWYgKGFycmF5LmJ5dGVMZW5ndGggPCBieXRlT2Zmc2V0ICsgKGxlbmd0aCB8fCAwKSkge1xuICAgIHRocm93IG5ldyBSYW5nZUVycm9yKCdcXCdsZW5ndGhcXCcgaXMgb3V0IG9mIGJvdW5kcycpXG4gIH1cblxuICBpZiAoYnl0ZU9mZnNldCA9PT0gdW5kZWZpbmVkICYmIGxlbmd0aCA9PT0gdW5kZWZpbmVkKSB7XG4gICAgYXJyYXkgPSBuZXcgVWludDhBcnJheShhcnJheSlcbiAgfSBlbHNlIGlmIChsZW5ndGggPT09IHVuZGVmaW5lZCkge1xuICAgIGFycmF5ID0gbmV3IFVpbnQ4QXJyYXkoYXJyYXksIGJ5dGVPZmZzZXQpXG4gIH0gZWxzZSB7XG4gICAgYXJyYXkgPSBuZXcgVWludDhBcnJheShhcnJheSwgYnl0ZU9mZnNldCwgbGVuZ3RoKVxuICB9XG5cbiAgaWYgKEJ1ZmZlci5UWVBFRF9BUlJBWV9TVVBQT1JUKSB7XG4gICAgLy8gUmV0dXJuIGFuIGF1Z21lbnRlZCBgVWludDhBcnJheWAgaW5zdGFuY2UsIGZvciBiZXN0IHBlcmZvcm1hbmNlXG4gICAgdGhhdCA9IGFycmF5XG4gICAgdGhhdC5fX3Byb3RvX18gPSBCdWZmZXIucHJvdG90eXBlXG4gIH0gZWxzZSB7XG4gICAgLy8gRmFsbGJhY2s6IFJldHVybiBhbiBvYmplY3QgaW5zdGFuY2Ugb2YgdGhlIEJ1ZmZlciBjbGFzc1xuICAgIHRoYXQgPSBmcm9tQXJyYXlMaWtlKHRoYXQsIGFycmF5KVxuICB9XG4gIHJldHVybiB0aGF0XG59XG5cbmZ1bmN0aW9uIGZyb21PYmplY3QgKHRoYXQsIG9iaikge1xuICBpZiAoQnVmZmVyLmlzQnVmZmVyKG9iaikpIHtcbiAgICB2YXIgbGVuID0gY2hlY2tlZChvYmoubGVuZ3RoKSB8IDBcbiAgICB0aGF0ID0gY3JlYXRlQnVmZmVyKHRoYXQsIGxlbilcblxuICAgIGlmICh0aGF0Lmxlbmd0aCA9PT0gMCkge1xuICAgICAgcmV0dXJuIHRoYXRcbiAgICB9XG5cbiAgICBvYmouY29weSh0aGF0LCAwLCAwLCBsZW4pXG4gICAgcmV0dXJuIHRoYXRcbiAgfVxuXG4gIGlmIChvYmopIHtcbiAgICBpZiAoKHR5cGVvZiBBcnJheUJ1ZmZlciAhPT0gJ3VuZGVmaW5lZCcgJiZcbiAgICAgICAgb2JqLmJ1ZmZlciBpbnN0YW5jZW9mIEFycmF5QnVmZmVyKSB8fCAnbGVuZ3RoJyBpbiBvYmopIHtcbiAgICAgIGlmICh0eXBlb2Ygb2JqLmxlbmd0aCAhPT0gJ251bWJlcicgfHwgaXNuYW4ob2JqLmxlbmd0aCkpIHtcbiAgICAgICAgcmV0dXJuIGNyZWF0ZUJ1ZmZlcih0aGF0LCAwKVxuICAgICAgfVxuICAgICAgcmV0dXJuIGZyb21BcnJheUxpa2UodGhhdCwgb2JqKVxuICAgIH1cblxuICAgIGlmIChvYmoudHlwZSA9PT0gJ0J1ZmZlcicgJiYgaXNBcnJheShvYmouZGF0YSkpIHtcbiAgICAgIHJldHVybiBmcm9tQXJyYXlMaWtlKHRoYXQsIG9iai5kYXRhKVxuICAgIH1cbiAgfVxuXG4gIHRocm93IG5ldyBUeXBlRXJyb3IoJ0ZpcnN0IGFyZ3VtZW50IG11c3QgYmUgYSBzdHJpbmcsIEJ1ZmZlciwgQXJyYXlCdWZmZXIsIEFycmF5LCBvciBhcnJheS1saWtlIG9iamVjdC4nKVxufVxuXG5mdW5jdGlvbiBjaGVja2VkIChsZW5ndGgpIHtcbiAgLy8gTm90ZTogY2Fubm90IHVzZSBgbGVuZ3RoIDwga01heExlbmd0aCgpYCBoZXJlIGJlY2F1c2UgdGhhdCBmYWlscyB3aGVuXG4gIC8vIGxlbmd0aCBpcyBOYU4gKHdoaWNoIGlzIG90aGVyd2lzZSBjb2VyY2VkIHRvIHplcm8uKVxuICBpZiAobGVuZ3RoID49IGtNYXhMZW5ndGgoKSkge1xuICAgIHRocm93IG5ldyBSYW5nZUVycm9yKCdBdHRlbXB0IHRvIGFsbG9jYXRlIEJ1ZmZlciBsYXJnZXIgdGhhbiBtYXhpbXVtICcgK1xuICAgICAgICAgICAgICAgICAgICAgICAgICdzaXplOiAweCcgKyBrTWF4TGVuZ3RoKCkudG9TdHJpbmcoMTYpICsgJyBieXRlcycpXG4gIH1cbiAgcmV0dXJuIGxlbmd0aCB8IDBcbn1cblxuZnVuY3Rpb24gU2xvd0J1ZmZlciAobGVuZ3RoKSB7XG4gIGlmICgrbGVuZ3RoICE9IGxlbmd0aCkgeyAvLyBlc2xpbnQtZGlzYWJsZS1saW5lIGVxZXFlcVxuICAgIGxlbmd0aCA9IDBcbiAgfVxuICByZXR1cm4gQnVmZmVyLmFsbG9jKCtsZW5ndGgpXG59XG5cbkJ1ZmZlci5pc0J1ZmZlciA9IGZ1bmN0aW9uIGlzQnVmZmVyIChiKSB7XG4gIHJldHVybiAhIShiICE9IG51bGwgJiYgYi5faXNCdWZmZXIpXG59XG5cbkJ1ZmZlci5jb21wYXJlID0gZnVuY3Rpb24gY29tcGFyZSAoYSwgYikge1xuICBpZiAoIUJ1ZmZlci5pc0J1ZmZlcihhKSB8fCAhQnVmZmVyLmlzQnVmZmVyKGIpKSB7XG4gICAgdGhyb3cgbmV3IFR5cGVFcnJvcignQXJndW1lbnRzIG11c3QgYmUgQnVmZmVycycpXG4gIH1cblxuICBpZiAoYSA9PT0gYikgcmV0dXJuIDBcblxuICB2YXIgeCA9IGEubGVuZ3RoXG4gIHZhciB5ID0gYi5sZW5ndGhcblxuICBmb3IgKHZhciBpID0gMCwgbGVuID0gTWF0aC5taW4oeCwgeSk7IGkgPCBsZW47ICsraSkge1xuICAgIGlmIChhW2ldICE9PSBiW2ldKSB7XG4gICAgICB4ID0gYVtpXVxuICAgICAgeSA9IGJbaV1cbiAgICAgIGJyZWFrXG4gICAgfVxuICB9XG5cbiAgaWYgKHggPCB5KSByZXR1cm4gLTFcbiAgaWYgKHkgPCB4KSByZXR1cm4gMVxuICByZXR1cm4gMFxufVxuXG5CdWZmZXIuaXNFbmNvZGluZyA9IGZ1bmN0aW9uIGlzRW5jb2RpbmcgKGVuY29kaW5nKSB7XG4gIHN3aXRjaCAoU3RyaW5nKGVuY29kaW5nKS50b0xvd2VyQ2FzZSgpKSB7XG4gICAgY2FzZSAnaGV4JzpcbiAgICBjYXNlICd1dGY4JzpcbiAgICBjYXNlICd1dGYtOCc6XG4gICAgY2FzZSAnYXNjaWknOlxuICAgIGNhc2UgJ2xhdGluMSc6XG4gICAgY2FzZSAnYmluYXJ5JzpcbiAgICBjYXNlICdiYXNlNjQnOlxuICAgIGNhc2UgJ3VjczInOlxuICAgIGNhc2UgJ3Vjcy0yJzpcbiAgICBjYXNlICd1dGYxNmxlJzpcbiAgICBjYXNlICd1dGYtMTZsZSc6XG4gICAgICByZXR1cm4gdHJ1ZVxuICAgIGRlZmF1bHQ6XG4gICAgICByZXR1cm4gZmFsc2VcbiAgfVxufVxuXG5CdWZmZXIuY29uY2F0ID0gZnVuY3Rpb24gY29uY2F0IChsaXN0LCBsZW5ndGgpIHtcbiAgaWYgKCFpc0FycmF5KGxpc3QpKSB7XG4gICAgdGhyb3cgbmV3IFR5cGVFcnJvcignXCJsaXN0XCIgYXJndW1lbnQgbXVzdCBiZSBhbiBBcnJheSBvZiBCdWZmZXJzJylcbiAgfVxuXG4gIGlmIChsaXN0Lmxlbmd0aCA9PT0gMCkge1xuICAgIHJldHVybiBCdWZmZXIuYWxsb2MoMClcbiAgfVxuXG4gIHZhciBpXG4gIGlmIChsZW5ndGggPT09IHVuZGVmaW5lZCkge1xuICAgIGxlbmd0aCA9IDBcbiAgICBmb3IgKGkgPSAwOyBpIDwgbGlzdC5sZW5ndGg7ICsraSkge1xuICAgICAgbGVuZ3RoICs9IGxpc3RbaV0ubGVuZ3RoXG4gICAgfVxuICB9XG5cbiAgdmFyIGJ1ZmZlciA9IEJ1ZmZlci5hbGxvY1Vuc2FmZShsZW5ndGgpXG4gIHZhciBwb3MgPSAwXG4gIGZvciAoaSA9IDA7IGkgPCBsaXN0Lmxlbmd0aDsgKytpKSB7XG4gICAgdmFyIGJ1ZiA9IGxpc3RbaV1cbiAgICBpZiAoIUJ1ZmZlci5pc0J1ZmZlcihidWYpKSB7XG4gICAgICB0aHJvdyBuZXcgVHlwZUVycm9yKCdcImxpc3RcIiBhcmd1bWVudCBtdXN0IGJlIGFuIEFycmF5IG9mIEJ1ZmZlcnMnKVxuICAgIH1cbiAgICBidWYuY29weShidWZmZXIsIHBvcylcbiAgICBwb3MgKz0gYnVmLmxlbmd0aFxuICB9XG4gIHJldHVybiBidWZmZXJcbn1cblxuZnVuY3Rpb24gYnl0ZUxlbmd0aCAoc3RyaW5nLCBlbmNvZGluZykge1xuICBpZiAoQnVmZmVyLmlzQnVmZmVyKHN0cmluZykpIHtcbiAgICByZXR1cm4gc3RyaW5nLmxlbmd0aFxuICB9XG4gIGlmICh0eXBlb2YgQXJyYXlCdWZmZXIgIT09ICd1bmRlZmluZWQnICYmIHR5cGVvZiBBcnJheUJ1ZmZlci5pc1ZpZXcgPT09ICdmdW5jdGlvbicgJiZcbiAgICAgIChBcnJheUJ1ZmZlci5pc1ZpZXcoc3RyaW5nKSB8fCBzdHJpbmcgaW5zdGFuY2VvZiBBcnJheUJ1ZmZlcikpIHtcbiAgICByZXR1cm4gc3RyaW5nLmJ5dGVMZW5ndGhcbiAgfVxuICBpZiAodHlwZW9mIHN0cmluZyAhPT0gJ3N0cmluZycpIHtcbiAgICBzdHJpbmcgPSAnJyArIHN0cmluZ1xuICB9XG5cbiAgdmFyIGxlbiA9IHN0cmluZy5sZW5ndGhcbiAgaWYgKGxlbiA9PT0gMCkgcmV0dXJuIDBcblxuICAvLyBVc2UgYSBmb3IgbG9vcCB0byBhdm9pZCByZWN1cnNpb25cbiAgdmFyIGxvd2VyZWRDYXNlID0gZmFsc2VcbiAgZm9yICg7Oykge1xuICAgIHN3aXRjaCAoZW5jb2RpbmcpIHtcbiAgICAgIGNhc2UgJ2FzY2lpJzpcbiAgICAgIGNhc2UgJ2xhdGluMSc6XG4gICAgICBjYXNlICdiaW5hcnknOlxuICAgICAgICByZXR1cm4gbGVuXG4gICAgICBjYXNlICd1dGY4JzpcbiAgICAgIGNhc2UgJ3V0Zi04JzpcbiAgICAgIGNhc2UgdW5kZWZpbmVkOlxuICAgICAgICByZXR1cm4gdXRmOFRvQnl0ZXMoc3RyaW5nKS5sZW5ndGhcbiAgICAgIGNhc2UgJ3VjczInOlxuICAgICAgY2FzZSAndWNzLTInOlxuICAgICAgY2FzZSAndXRmMTZsZSc6XG4gICAgICBjYXNlICd1dGYtMTZsZSc6XG4gICAgICAgIHJldHVybiBsZW4gKiAyXG4gICAgICBjYXNlICdoZXgnOlxuICAgICAgICByZXR1cm4gbGVuID4+PiAxXG4gICAgICBjYXNlICdiYXNlNjQnOlxuICAgICAgICByZXR1cm4gYmFzZTY0VG9CeXRlcyhzdHJpbmcpLmxlbmd0aFxuICAgICAgZGVmYXVsdDpcbiAgICAgICAgaWYgKGxvd2VyZWRDYXNlKSByZXR1cm4gdXRmOFRvQnl0ZXMoc3RyaW5nKS5sZW5ndGggLy8gYXNzdW1lIHV0ZjhcbiAgICAgICAgZW5jb2RpbmcgPSAoJycgKyBlbmNvZGluZykudG9Mb3dlckNhc2UoKVxuICAgICAgICBsb3dlcmVkQ2FzZSA9IHRydWVcbiAgICB9XG4gIH1cbn1cbkJ1ZmZlci5ieXRlTGVuZ3RoID0gYnl0ZUxlbmd0aFxuXG5mdW5jdGlvbiBzbG93VG9TdHJpbmcgKGVuY29kaW5nLCBzdGFydCwgZW5kKSB7XG4gIHZhciBsb3dlcmVkQ2FzZSA9IGZhbHNlXG5cbiAgLy8gTm8gbmVlZCB0byB2ZXJpZnkgdGhhdCBcInRoaXMubGVuZ3RoIDw9IE1BWF9VSU5UMzJcIiBzaW5jZSBpdCdzIGEgcmVhZC1vbmx5XG4gIC8vIHByb3BlcnR5IG9mIGEgdHlwZWQgYXJyYXkuXG5cbiAgLy8gVGhpcyBiZWhhdmVzIG5laXRoZXIgbGlrZSBTdHJpbmcgbm9yIFVpbnQ4QXJyYXkgaW4gdGhhdCB3ZSBzZXQgc3RhcnQvZW5kXG4gIC8vIHRvIHRoZWlyIHVwcGVyL2xvd2VyIGJvdW5kcyBpZiB0aGUgdmFsdWUgcGFzc2VkIGlzIG91dCBvZiByYW5nZS5cbiAgLy8gdW5kZWZpbmVkIGlzIGhhbmRsZWQgc3BlY2lhbGx5IGFzIHBlciBFQ01BLTI2MiA2dGggRWRpdGlvbixcbiAgLy8gU2VjdGlvbiAxMy4zLjMuNyBSdW50aW1lIFNlbWFudGljczogS2V5ZWRCaW5kaW5nSW5pdGlhbGl6YXRpb24uXG4gIGlmIChzdGFydCA9PT0gdW5kZWZpbmVkIHx8IHN0YXJ0IDwgMCkge1xuICAgIHN0YXJ0ID0gMFxuICB9XG4gIC8vIFJldHVybiBlYXJseSBpZiBzdGFydCA+IHRoaXMubGVuZ3RoLiBEb25lIGhlcmUgdG8gcHJldmVudCBwb3RlbnRpYWwgdWludDMyXG4gIC8vIGNvZXJjaW9uIGZhaWwgYmVsb3cuXG4gIGlmIChzdGFydCA+IHRoaXMubGVuZ3RoKSB7XG4gICAgcmV0dXJuICcnXG4gIH1cblxuICBpZiAoZW5kID09PSB1bmRlZmluZWQgfHwgZW5kID4gdGhpcy5sZW5ndGgpIHtcbiAgICBlbmQgPSB0aGlzLmxlbmd0aFxuICB9XG5cbiAgaWYgKGVuZCA8PSAwKSB7XG4gICAgcmV0dXJuICcnXG4gIH1cblxuICAvLyBGb3JjZSBjb2Vyc2lvbiB0byB1aW50MzIuIFRoaXMgd2lsbCBhbHNvIGNvZXJjZSBmYWxzZXkvTmFOIHZhbHVlcyB0byAwLlxuICBlbmQgPj4+PSAwXG4gIHN0YXJ0ID4+Pj0gMFxuXG4gIGlmIChlbmQgPD0gc3RhcnQpIHtcbiAgICByZXR1cm4gJydcbiAgfVxuXG4gIGlmICghZW5jb2RpbmcpIGVuY29kaW5nID0gJ3V0ZjgnXG5cbiAgd2hpbGUgKHRydWUpIHtcbiAgICBzd2l0Y2ggKGVuY29kaW5nKSB7XG4gICAgICBjYXNlICdoZXgnOlxuICAgICAgICByZXR1cm4gaGV4U2xpY2UodGhpcywgc3RhcnQsIGVuZClcblxuICAgICAgY2FzZSAndXRmOCc6XG4gICAgICBjYXNlICd1dGYtOCc6XG4gICAgICAgIHJldHVybiB1dGY4U2xpY2UodGhpcywgc3RhcnQsIGVuZClcblxuICAgICAgY2FzZSAnYXNjaWknOlxuICAgICAgICByZXR1cm4gYXNjaWlTbGljZSh0aGlzLCBzdGFydCwgZW5kKVxuXG4gICAgICBjYXNlICdsYXRpbjEnOlxuICAgICAgY2FzZSAnYmluYXJ5JzpcbiAgICAgICAgcmV0dXJuIGxhdGluMVNsaWNlKHRoaXMsIHN0YXJ0LCBlbmQpXG5cbiAgICAgIGNhc2UgJ2Jhc2U2NCc6XG4gICAgICAgIHJldHVybiBiYXNlNjRTbGljZSh0aGlzLCBzdGFydCwgZW5kKVxuXG4gICAgICBjYXNlICd1Y3MyJzpcbiAgICAgIGNhc2UgJ3Vjcy0yJzpcbiAgICAgIGNhc2UgJ3V0ZjE2bGUnOlxuICAgICAgY2FzZSAndXRmLTE2bGUnOlxuICAgICAgICByZXR1cm4gdXRmMTZsZVNsaWNlKHRoaXMsIHN0YXJ0LCBlbmQpXG5cbiAgICAgIGRlZmF1bHQ6XG4gICAgICAgIGlmIChsb3dlcmVkQ2FzZSkgdGhyb3cgbmV3IFR5cGVFcnJvcignVW5rbm93biBlbmNvZGluZzogJyArIGVuY29kaW5nKVxuICAgICAgICBlbmNvZGluZyA9IChlbmNvZGluZyArICcnKS50b0xvd2VyQ2FzZSgpXG4gICAgICAgIGxvd2VyZWRDYXNlID0gdHJ1ZVxuICAgIH1cbiAgfVxufVxuXG4vLyBUaGUgcHJvcGVydHkgaXMgdXNlZCBieSBgQnVmZmVyLmlzQnVmZmVyYCBhbmQgYGlzLWJ1ZmZlcmAgKGluIFNhZmFyaSA1LTcpIHRvIGRldGVjdFxuLy8gQnVmZmVyIGluc3RhbmNlcy5cbkJ1ZmZlci5wcm90b3R5cGUuX2lzQnVmZmVyID0gdHJ1ZVxuXG5mdW5jdGlvbiBzd2FwIChiLCBuLCBtKSB7XG4gIHZhciBpID0gYltuXVxuICBiW25dID0gYlttXVxuICBiW21dID0gaVxufVxuXG5CdWZmZXIucHJvdG90eXBlLnN3YXAxNiA9IGZ1bmN0aW9uIHN3YXAxNiAoKSB7XG4gIHZhciBsZW4gPSB0aGlzLmxlbmd0aFxuICBpZiAobGVuICUgMiAhPT0gMCkge1xuICAgIHRocm93IG5ldyBSYW5nZUVycm9yKCdCdWZmZXIgc2l6ZSBtdXN0IGJlIGEgbXVsdGlwbGUgb2YgMTYtYml0cycpXG4gIH1cbiAgZm9yICh2YXIgaSA9IDA7IGkgPCBsZW47IGkgKz0gMikge1xuICAgIHN3YXAodGhpcywgaSwgaSArIDEpXG4gIH1cbiAgcmV0dXJuIHRoaXNcbn1cblxuQnVmZmVyLnByb3RvdHlwZS5zd2FwMzIgPSBmdW5jdGlvbiBzd2FwMzIgKCkge1xuICB2YXIgbGVuID0gdGhpcy5sZW5ndGhcbiAgaWYgKGxlbiAlIDQgIT09IDApIHtcbiAgICB0aHJvdyBuZXcgUmFuZ2VFcnJvcignQnVmZmVyIHNpemUgbXVzdCBiZSBhIG11bHRpcGxlIG9mIDMyLWJpdHMnKVxuICB9XG4gIGZvciAodmFyIGkgPSAwOyBpIDwgbGVuOyBpICs9IDQpIHtcbiAgICBzd2FwKHRoaXMsIGksIGkgKyAzKVxuICAgIHN3YXAodGhpcywgaSArIDEsIGkgKyAyKVxuICB9XG4gIHJldHVybiB0aGlzXG59XG5cbkJ1ZmZlci5wcm90b3R5cGUuc3dhcDY0ID0gZnVuY3Rpb24gc3dhcDY0ICgpIHtcbiAgdmFyIGxlbiA9IHRoaXMubGVuZ3RoXG4gIGlmIChsZW4gJSA4ICE9PSAwKSB7XG4gICAgdGhyb3cgbmV3IFJhbmdlRXJyb3IoJ0J1ZmZlciBzaXplIG11c3QgYmUgYSBtdWx0aXBsZSBvZiA2NC1iaXRzJylcbiAgfVxuICBmb3IgKHZhciBpID0gMDsgaSA8IGxlbjsgaSArPSA4KSB7XG4gICAgc3dhcCh0aGlzLCBpLCBpICsgNylcbiAgICBzd2FwKHRoaXMsIGkgKyAxLCBpICsgNilcbiAgICBzd2FwKHRoaXMsIGkgKyAyLCBpICsgNSlcbiAgICBzd2FwKHRoaXMsIGkgKyAzLCBpICsgNClcbiAgfVxuICByZXR1cm4gdGhpc1xufVxuXG5CdWZmZXIucHJvdG90eXBlLnRvU3RyaW5nID0gZnVuY3Rpb24gdG9TdHJpbmcgKCkge1xuICB2YXIgbGVuZ3RoID0gdGhpcy5sZW5ndGggfCAwXG4gIGlmIChsZW5ndGggPT09IDApIHJldHVybiAnJ1xuICBpZiAoYXJndW1lbnRzLmxlbmd0aCA9PT0gMCkgcmV0dXJuIHV0ZjhTbGljZSh0aGlzLCAwLCBsZW5ndGgpXG4gIHJldHVybiBzbG93VG9TdHJpbmcuYXBwbHkodGhpcywgYXJndW1lbnRzKVxufVxuXG5CdWZmZXIucHJvdG90eXBlLmVxdWFscyA9IGZ1bmN0aW9uIGVxdWFscyAoYikge1xuICBpZiAoIUJ1ZmZlci5pc0J1ZmZlcihiKSkgdGhyb3cgbmV3IFR5cGVFcnJvcignQXJndW1lbnQgbXVzdCBiZSBhIEJ1ZmZlcicpXG4gIGlmICh0aGlzID09PSBiKSByZXR1cm4gdHJ1ZVxuICByZXR1cm4gQnVmZmVyLmNvbXBhcmUodGhpcywgYikgPT09IDBcbn1cblxuQnVmZmVyLnByb3RvdHlwZS5pbnNwZWN0ID0gZnVuY3Rpb24gaW5zcGVjdCAoKSB7XG4gIHZhciBzdHIgPSAnJ1xuICB2YXIgbWF4ID0gZXhwb3J0cy5JTlNQRUNUX01BWF9CWVRFU1xuICBpZiAodGhpcy5sZW5ndGggPiAwKSB7XG4gICAgc3RyID0gdGhpcy50b1N0cmluZygnaGV4JywgMCwgbWF4KS5tYXRjaCgvLnsyfS9nKS5qb2luKCcgJylcbiAgICBpZiAodGhpcy5sZW5ndGggPiBtYXgpIHN0ciArPSAnIC4uLiAnXG4gIH1cbiAgcmV0dXJuICc8QnVmZmVyICcgKyBzdHIgKyAnPidcbn1cblxuQnVmZmVyLnByb3RvdHlwZS5jb21wYXJlID0gZnVuY3Rpb24gY29tcGFyZSAodGFyZ2V0LCBzdGFydCwgZW5kLCB0aGlzU3RhcnQsIHRoaXNFbmQpIHtcbiAgaWYgKCFCdWZmZXIuaXNCdWZmZXIodGFyZ2V0KSkge1xuICAgIHRocm93IG5ldyBUeXBlRXJyb3IoJ0FyZ3VtZW50IG11c3QgYmUgYSBCdWZmZXInKVxuICB9XG5cbiAgaWYgKHN0YXJ0ID09PSB1bmRlZmluZWQpIHtcbiAgICBzdGFydCA9IDBcbiAgfVxuICBpZiAoZW5kID09PSB1bmRlZmluZWQpIHtcbiAgICBlbmQgPSB0YXJnZXQgPyB0YXJnZXQubGVuZ3RoIDogMFxuICB9XG4gIGlmICh0aGlzU3RhcnQgPT09IHVuZGVmaW5lZCkge1xuICAgIHRoaXNTdGFydCA9IDBcbiAgfVxuICBpZiAodGhpc0VuZCA9PT0gdW5kZWZpbmVkKSB7XG4gICAgdGhpc0VuZCA9IHRoaXMubGVuZ3RoXG4gIH1cblxuICBpZiAoc3RhcnQgPCAwIHx8IGVuZCA+IHRhcmdldC5sZW5ndGggfHwgdGhpc1N0YXJ0IDwgMCB8fCB0aGlzRW5kID4gdGhpcy5sZW5ndGgpIHtcbiAgICB0aHJvdyBuZXcgUmFuZ2VFcnJvcignb3V0IG9mIHJhbmdlIGluZGV4JylcbiAgfVxuXG4gIGlmICh0aGlzU3RhcnQgPj0gdGhpc0VuZCAmJiBzdGFydCA+PSBlbmQpIHtcbiAgICByZXR1cm4gMFxuICB9XG4gIGlmICh0aGlzU3RhcnQgPj0gdGhpc0VuZCkge1xuICAgIHJldHVybiAtMVxuICB9XG4gIGlmIChzdGFydCA+PSBlbmQpIHtcbiAgICByZXR1cm4gMVxuICB9XG5cbiAgc3RhcnQgPj4+PSAwXG4gIGVuZCA+Pj49IDBcbiAgdGhpc1N0YXJ0ID4+Pj0gMFxuICB0aGlzRW5kID4+Pj0gMFxuXG4gIGlmICh0aGlzID09PSB0YXJnZXQpIHJldHVybiAwXG5cbiAgdmFyIHggPSB0aGlzRW5kIC0gdGhpc1N0YXJ0XG4gIHZhciB5ID0gZW5kIC0gc3RhcnRcbiAgdmFyIGxlbiA9IE1hdGgubWluKHgsIHkpXG5cbiAgdmFyIHRoaXNDb3B5ID0gdGhpcy5zbGljZSh0aGlzU3RhcnQsIHRoaXNFbmQpXG4gIHZhciB0YXJnZXRDb3B5ID0gdGFyZ2V0LnNsaWNlKHN0YXJ0LCBlbmQpXG5cbiAgZm9yICh2YXIgaSA9IDA7IGkgPCBsZW47ICsraSkge1xuICAgIGlmICh0aGlzQ29weVtpXSAhPT0gdGFyZ2V0Q29weVtpXSkge1xuICAgICAgeCA9IHRoaXNDb3B5W2ldXG4gICAgICB5ID0gdGFyZ2V0Q29weVtpXVxuICAgICAgYnJlYWtcbiAgICB9XG4gIH1cblxuICBpZiAoeCA8IHkpIHJldHVybiAtMVxuICBpZiAoeSA8IHgpIHJldHVybiAxXG4gIHJldHVybiAwXG59XG5cbi8vIEZpbmRzIGVpdGhlciB0aGUgZmlyc3QgaW5kZXggb2YgYHZhbGAgaW4gYGJ1ZmZlcmAgYXQgb2Zmc2V0ID49IGBieXRlT2Zmc2V0YCxcbi8vIE9SIHRoZSBsYXN0IGluZGV4IG9mIGB2YWxgIGluIGBidWZmZXJgIGF0IG9mZnNldCA8PSBgYnl0ZU9mZnNldGAuXG4vL1xuLy8gQXJndW1lbnRzOlxuLy8gLSBidWZmZXIgLSBhIEJ1ZmZlciB0byBzZWFyY2hcbi8vIC0gdmFsIC0gYSBzdHJpbmcsIEJ1ZmZlciwgb3IgbnVtYmVyXG4vLyAtIGJ5dGVPZmZzZXQgLSBhbiBpbmRleCBpbnRvIGBidWZmZXJgOyB3aWxsIGJlIGNsYW1wZWQgdG8gYW4gaW50MzJcbi8vIC0gZW5jb2RpbmcgLSBhbiBvcHRpb25hbCBlbmNvZGluZywgcmVsZXZhbnQgaXMgdmFsIGlzIGEgc3RyaW5nXG4vLyAtIGRpciAtIHRydWUgZm9yIGluZGV4T2YsIGZhbHNlIGZvciBsYXN0SW5kZXhPZlxuZnVuY3Rpb24gYmlkaXJlY3Rpb25hbEluZGV4T2YgKGJ1ZmZlciwgdmFsLCBieXRlT2Zmc2V0LCBlbmNvZGluZywgZGlyKSB7XG4gIC8vIEVtcHR5IGJ1ZmZlciBtZWFucyBubyBtYXRjaFxuICBpZiAoYnVmZmVyLmxlbmd0aCA9PT0gMCkgcmV0dXJuIC0xXG5cbiAgLy8gTm9ybWFsaXplIGJ5dGVPZmZzZXRcbiAgaWYgKHR5cGVvZiBieXRlT2Zmc2V0ID09PSAnc3RyaW5nJykge1xuICAgIGVuY29kaW5nID0gYnl0ZU9mZnNldFxuICAgIGJ5dGVPZmZzZXQgPSAwXG4gIH0gZWxzZSBpZiAoYnl0ZU9mZnNldCA+IDB4N2ZmZmZmZmYpIHtcbiAgICBieXRlT2Zmc2V0ID0gMHg3ZmZmZmZmZlxuICB9IGVsc2UgaWYgKGJ5dGVPZmZzZXQgPCAtMHg4MDAwMDAwMCkge1xuICAgIGJ5dGVPZmZzZXQgPSAtMHg4MDAwMDAwMFxuICB9XG4gIGJ5dGVPZmZzZXQgPSArYnl0ZU9mZnNldCAgLy8gQ29lcmNlIHRvIE51bWJlci5cbiAgaWYgKGlzTmFOKGJ5dGVPZmZzZXQpKSB7XG4gICAgLy8gYnl0ZU9mZnNldDogaXQgaXQncyB1bmRlZmluZWQsIG51bGwsIE5hTiwgXCJmb29cIiwgZXRjLCBzZWFyY2ggd2hvbGUgYnVmZmVyXG4gICAgYnl0ZU9mZnNldCA9IGRpciA/IDAgOiAoYnVmZmVyLmxlbmd0aCAtIDEpXG4gIH1cblxuICAvLyBOb3JtYWxpemUgYnl0ZU9mZnNldDogbmVnYXRpdmUgb2Zmc2V0cyBzdGFydCBmcm9tIHRoZSBlbmQgb2YgdGhlIGJ1ZmZlclxuICBpZiAoYnl0ZU9mZnNldCA8IDApIGJ5dGVPZmZzZXQgPSBidWZmZXIubGVuZ3RoICsgYnl0ZU9mZnNldFxuICBpZiAoYnl0ZU9mZnNldCA+PSBidWZmZXIubGVuZ3RoKSB7XG4gICAgaWYgKGRpcikgcmV0dXJuIC0xXG4gICAgZWxzZSBieXRlT2Zmc2V0ID0gYnVmZmVyLmxlbmd0aCAtIDFcbiAgfSBlbHNlIGlmIChieXRlT2Zmc2V0IDwgMCkge1xuICAgIGlmIChkaXIpIGJ5dGVPZmZzZXQgPSAwXG4gICAgZWxzZSByZXR1cm4gLTFcbiAgfVxuXG4gIC8vIE5vcm1hbGl6ZSB2YWxcbiAgaWYgKHR5cGVvZiB2YWwgPT09ICdzdHJpbmcnKSB7XG4gICAgdmFsID0gQnVmZmVyLmZyb20odmFsLCBlbmNvZGluZylcbiAgfVxuXG4gIC8vIEZpbmFsbHksIHNlYXJjaCBlaXRoZXIgaW5kZXhPZiAoaWYgZGlyIGlzIHRydWUpIG9yIGxhc3RJbmRleE9mXG4gIGlmIChCdWZmZXIuaXNCdWZmZXIodmFsKSkge1xuICAgIC8vIFNwZWNpYWwgY2FzZTogbG9va2luZyBmb3IgZW1wdHkgc3RyaW5nL2J1ZmZlciBhbHdheXMgZmFpbHNcbiAgICBpZiAodmFsLmxlbmd0aCA9PT0gMCkge1xuICAgICAgcmV0dXJuIC0xXG4gICAgfVxuICAgIHJldHVybiBhcnJheUluZGV4T2YoYnVmZmVyLCB2YWwsIGJ5dGVPZmZzZXQsIGVuY29kaW5nLCBkaXIpXG4gIH0gZWxzZSBpZiAodHlwZW9mIHZhbCA9PT0gJ251bWJlcicpIHtcbiAgICB2YWwgPSB2YWwgJiAweEZGIC8vIFNlYXJjaCBmb3IgYSBieXRlIHZhbHVlIFswLTI1NV1cbiAgICBpZiAoQnVmZmVyLlRZUEVEX0FSUkFZX1NVUFBPUlQgJiZcbiAgICAgICAgdHlwZW9mIFVpbnQ4QXJyYXkucHJvdG90eXBlLmluZGV4T2YgPT09ICdmdW5jdGlvbicpIHtcbiAgICAgIGlmIChkaXIpIHtcbiAgICAgICAgcmV0dXJuIFVpbnQ4QXJyYXkucHJvdG90eXBlLmluZGV4T2YuY2FsbChidWZmZXIsIHZhbCwgYnl0ZU9mZnNldClcbiAgICAgIH0gZWxzZSB7XG4gICAgICAgIHJldHVybiBVaW50OEFycmF5LnByb3RvdHlwZS5sYXN0SW5kZXhPZi5jYWxsKGJ1ZmZlciwgdmFsLCBieXRlT2Zmc2V0KVxuICAgICAgfVxuICAgIH1cbiAgICByZXR1cm4gYXJyYXlJbmRleE9mKGJ1ZmZlciwgWyB2YWwgXSwgYnl0ZU9mZnNldCwgZW5jb2RpbmcsIGRpcilcbiAgfVxuXG4gIHRocm93IG5ldyBUeXBlRXJyb3IoJ3ZhbCBtdXN0IGJlIHN0cmluZywgbnVtYmVyIG9yIEJ1ZmZlcicpXG59XG5cbmZ1bmN0aW9uIGFycmF5SW5kZXhPZiAoYXJyLCB2YWwsIGJ5dGVPZmZzZXQsIGVuY29kaW5nLCBkaXIpIHtcbiAgdmFyIGluZGV4U2l6ZSA9IDFcbiAgdmFyIGFyckxlbmd0aCA9IGFyci5sZW5ndGhcbiAgdmFyIHZhbExlbmd0aCA9IHZhbC5sZW5ndGhcblxuICBpZiAoZW5jb2RpbmcgIT09IHVuZGVmaW5lZCkge1xuICAgIGVuY29kaW5nID0gU3RyaW5nKGVuY29kaW5nKS50b0xvd2VyQ2FzZSgpXG4gICAgaWYgKGVuY29kaW5nID09PSAndWNzMicgfHwgZW5jb2RpbmcgPT09ICd1Y3MtMicgfHxcbiAgICAgICAgZW5jb2RpbmcgPT09ICd1dGYxNmxlJyB8fCBlbmNvZGluZyA9PT0gJ3V0Zi0xNmxlJykge1xuICAgICAgaWYgKGFyci5sZW5ndGggPCAyIHx8IHZhbC5sZW5ndGggPCAyKSB7XG4gICAgICAgIHJldHVybiAtMVxuICAgICAgfVxuICAgICAgaW5kZXhTaXplID0gMlxuICAgICAgYXJyTGVuZ3RoIC89IDJcbiAgICAgIHZhbExlbmd0aCAvPSAyXG4gICAgICBieXRlT2Zmc2V0IC89IDJcbiAgICB9XG4gIH1cblxuICBmdW5jdGlvbiByZWFkIChidWYsIGkpIHtcbiAgICBpZiAoaW5kZXhTaXplID09PSAxKSB7XG4gICAgICByZXR1cm4gYnVmW2ldXG4gICAgfSBlbHNlIHtcbiAgICAgIHJldHVybiBidWYucmVhZFVJbnQxNkJFKGkgKiBpbmRleFNpemUpXG4gICAgfVxuICB9XG5cbiAgdmFyIGlcbiAgaWYgKGRpcikge1xuICAgIHZhciBmb3VuZEluZGV4ID0gLTFcbiAgICBmb3IgKGkgPSBieXRlT2Zmc2V0OyBpIDwgYXJyTGVuZ3RoOyBpKyspIHtcbiAgICAgIGlmIChyZWFkKGFyciwgaSkgPT09IHJlYWQodmFsLCBmb3VuZEluZGV4ID09PSAtMSA/IDAgOiBpIC0gZm91bmRJbmRleCkpIHtcbiAgICAgICAgaWYgKGZvdW5kSW5kZXggPT09IC0xKSBmb3VuZEluZGV4ID0gaVxuICAgICAgICBpZiAoaSAtIGZvdW5kSW5kZXggKyAxID09PSB2YWxMZW5ndGgpIHJldHVybiBmb3VuZEluZGV4ICogaW5kZXhTaXplXG4gICAgICB9IGVsc2Uge1xuICAgICAgICBpZiAoZm91bmRJbmRleCAhPT0gLTEpIGkgLT0gaSAtIGZvdW5kSW5kZXhcbiAgICAgICAgZm91bmRJbmRleCA9IC0xXG4gICAgICB9XG4gICAgfVxuICB9IGVsc2Uge1xuICAgIGlmIChieXRlT2Zmc2V0ICsgdmFsTGVuZ3RoID4gYXJyTGVuZ3RoKSBieXRlT2Zmc2V0ID0gYXJyTGVuZ3RoIC0gdmFsTGVuZ3RoXG4gICAgZm9yIChpID0gYnl0ZU9mZnNldDsgaSA+PSAwOyBpLS0pIHtcbiAgICAgIHZhciBmb3VuZCA9IHRydWVcbiAgICAgIGZvciAodmFyIGogPSAwOyBqIDwgdmFsTGVuZ3RoOyBqKyspIHtcbiAgICAgICAgaWYgKHJlYWQoYXJyLCBpICsgaikgIT09IHJlYWQodmFsLCBqKSkge1xuICAgICAgICAgIGZvdW5kID0gZmFsc2VcbiAgICAgICAgICBicmVha1xuICAgICAgICB9XG4gICAgICB9XG4gICAgICBpZiAoZm91bmQpIHJldHVybiBpXG4gICAgfVxuICB9XG5cbiAgcmV0dXJuIC0xXG59XG5cbkJ1ZmZlci5wcm90b3R5cGUuaW5jbHVkZXMgPSBmdW5jdGlvbiBpbmNsdWRlcyAodmFsLCBieXRlT2Zmc2V0LCBlbmNvZGluZykge1xuICByZXR1cm4gdGhpcy5pbmRleE9mKHZhbCwgYnl0ZU9mZnNldCwgZW5jb2RpbmcpICE9PSAtMVxufVxuXG5CdWZmZXIucHJvdG90eXBlLmluZGV4T2YgPSBmdW5jdGlvbiBpbmRleE9mICh2YWwsIGJ5dGVPZmZzZXQsIGVuY29kaW5nKSB7XG4gIHJldHVybiBiaWRpcmVjdGlvbmFsSW5kZXhPZih0aGlzLCB2YWwsIGJ5dGVPZmZzZXQsIGVuY29kaW5nLCB0cnVlKVxufVxuXG5CdWZmZXIucHJvdG90eXBlLmxhc3RJbmRleE9mID0gZnVuY3Rpb24gbGFzdEluZGV4T2YgKHZhbCwgYnl0ZU9mZnNldCwgZW5jb2RpbmcpIHtcbiAgcmV0dXJuIGJpZGlyZWN0aW9uYWxJbmRleE9mKHRoaXMsIHZhbCwgYnl0ZU9mZnNldCwgZW5jb2RpbmcsIGZhbHNlKVxufVxuXG5mdW5jdGlvbiBoZXhXcml0ZSAoYnVmLCBzdHJpbmcsIG9mZnNldCwgbGVuZ3RoKSB7XG4gIG9mZnNldCA9IE51bWJlcihvZmZzZXQpIHx8IDBcbiAgdmFyIHJlbWFpbmluZyA9IGJ1Zi5sZW5ndGggLSBvZmZzZXRcbiAgaWYgKCFsZW5ndGgpIHtcbiAgICBsZW5ndGggPSByZW1haW5pbmdcbiAgfSBlbHNlIHtcbiAgICBsZW5ndGggPSBOdW1iZXIobGVuZ3RoKVxuICAgIGlmIChsZW5ndGggPiByZW1haW5pbmcpIHtcbiAgICAgIGxlbmd0aCA9IHJlbWFpbmluZ1xuICAgIH1cbiAgfVxuXG4gIC8vIG11c3QgYmUgYW4gZXZlbiBudW1iZXIgb2YgZGlnaXRzXG4gIHZhciBzdHJMZW4gPSBzdHJpbmcubGVuZ3RoXG4gIGlmIChzdHJMZW4gJSAyICE9PSAwKSB0aHJvdyBuZXcgVHlwZUVycm9yKCdJbnZhbGlkIGhleCBzdHJpbmcnKVxuXG4gIGlmIChsZW5ndGggPiBzdHJMZW4gLyAyKSB7XG4gICAgbGVuZ3RoID0gc3RyTGVuIC8gMlxuICB9XG4gIGZvciAodmFyIGkgPSAwOyBpIDwgbGVuZ3RoOyArK2kpIHtcbiAgICB2YXIgcGFyc2VkID0gcGFyc2VJbnQoc3RyaW5nLnN1YnN0cihpICogMiwgMiksIDE2KVxuICAgIGlmIChpc05hTihwYXJzZWQpKSByZXR1cm4gaVxuICAgIGJ1ZltvZmZzZXQgKyBpXSA9IHBhcnNlZFxuICB9XG4gIHJldHVybiBpXG59XG5cbmZ1bmN0aW9uIHV0ZjhXcml0ZSAoYnVmLCBzdHJpbmcsIG9mZnNldCwgbGVuZ3RoKSB7XG4gIHJldHVybiBibGl0QnVmZmVyKHV0ZjhUb0J5dGVzKHN0cmluZywgYnVmLmxlbmd0aCAtIG9mZnNldCksIGJ1Ziwgb2Zmc2V0LCBsZW5ndGgpXG59XG5cbmZ1bmN0aW9uIGFzY2lpV3JpdGUgKGJ1Ziwgc3RyaW5nLCBvZmZzZXQsIGxlbmd0aCkge1xuICByZXR1cm4gYmxpdEJ1ZmZlcihhc2NpaVRvQnl0ZXMoc3RyaW5nKSwgYnVmLCBvZmZzZXQsIGxlbmd0aClcbn1cblxuZnVuY3Rpb24gbGF0aW4xV3JpdGUgKGJ1Ziwgc3RyaW5nLCBvZmZzZXQsIGxlbmd0aCkge1xuICByZXR1cm4gYXNjaWlXcml0ZShidWYsIHN0cmluZywgb2Zmc2V0LCBsZW5ndGgpXG59XG5cbmZ1bmN0aW9uIGJhc2U2NFdyaXRlIChidWYsIHN0cmluZywgb2Zmc2V0LCBsZW5ndGgpIHtcbiAgcmV0dXJuIGJsaXRCdWZmZXIoYmFzZTY0VG9CeXRlcyhzdHJpbmcpLCBidWYsIG9mZnNldCwgbGVuZ3RoKVxufVxuXG5mdW5jdGlvbiB1Y3MyV3JpdGUgKGJ1Ziwgc3RyaW5nLCBvZmZzZXQsIGxlbmd0aCkge1xuICByZXR1cm4gYmxpdEJ1ZmZlcih1dGYxNmxlVG9CeXRlcyhzdHJpbmcsIGJ1Zi5sZW5ndGggLSBvZmZzZXQpLCBidWYsIG9mZnNldCwgbGVuZ3RoKVxufVxuXG5CdWZmZXIucHJvdG90eXBlLndyaXRlID0gZnVuY3Rpb24gd3JpdGUgKHN0cmluZywgb2Zmc2V0LCBsZW5ndGgsIGVuY29kaW5nKSB7XG4gIC8vIEJ1ZmZlciN3cml0ZShzdHJpbmcpXG4gIGlmIChvZmZzZXQgPT09IHVuZGVmaW5lZCkge1xuICAgIGVuY29kaW5nID0gJ3V0ZjgnXG4gICAgbGVuZ3RoID0gdGhpcy5sZW5ndGhcbiAgICBvZmZzZXQgPSAwXG4gIC8vIEJ1ZmZlciN3cml0ZShzdHJpbmcsIGVuY29kaW5nKVxuICB9IGVsc2UgaWYgKGxlbmd0aCA9PT0gdW5kZWZpbmVkICYmIHR5cGVvZiBvZmZzZXQgPT09ICdzdHJpbmcnKSB7XG4gICAgZW5jb2RpbmcgPSBvZmZzZXRcbiAgICBsZW5ndGggPSB0aGlzLmxlbmd0aFxuICAgIG9mZnNldCA9IDBcbiAgLy8gQnVmZmVyI3dyaXRlKHN0cmluZywgb2Zmc2V0WywgbGVuZ3RoXVssIGVuY29kaW5nXSlcbiAgfSBlbHNlIGlmIChpc0Zpbml0ZShvZmZzZXQpKSB7XG4gICAgb2Zmc2V0ID0gb2Zmc2V0IHwgMFxuICAgIGlmIChpc0Zpbml0ZShsZW5ndGgpKSB7XG4gICAgICBsZW5ndGggPSBsZW5ndGggfCAwXG4gICAgICBpZiAoZW5jb2RpbmcgPT09IHVuZGVmaW5lZCkgZW5jb2RpbmcgPSAndXRmOCdcbiAgICB9IGVsc2Uge1xuICAgICAgZW5jb2RpbmcgPSBsZW5ndGhcbiAgICAgIGxlbmd0aCA9IHVuZGVmaW5lZFxuICAgIH1cbiAgLy8gbGVnYWN5IHdyaXRlKHN0cmluZywgZW5jb2RpbmcsIG9mZnNldCwgbGVuZ3RoKSAtIHJlbW92ZSBpbiB2MC4xM1xuICB9IGVsc2Uge1xuICAgIHRocm93IG5ldyBFcnJvcihcbiAgICAgICdCdWZmZXIud3JpdGUoc3RyaW5nLCBlbmNvZGluZywgb2Zmc2V0WywgbGVuZ3RoXSkgaXMgbm8gbG9uZ2VyIHN1cHBvcnRlZCdcbiAgICApXG4gIH1cblxuICB2YXIgcmVtYWluaW5nID0gdGhpcy5sZW5ndGggLSBvZmZzZXRcbiAgaWYgKGxlbmd0aCA9PT0gdW5kZWZpbmVkIHx8IGxlbmd0aCA+IHJlbWFpbmluZykgbGVuZ3RoID0gcmVtYWluaW5nXG5cbiAgaWYgKChzdHJpbmcubGVuZ3RoID4gMCAmJiAobGVuZ3RoIDwgMCB8fCBvZmZzZXQgPCAwKSkgfHwgb2Zmc2V0ID4gdGhpcy5sZW5ndGgpIHtcbiAgICB0aHJvdyBuZXcgUmFuZ2VFcnJvcignQXR0ZW1wdCB0byB3cml0ZSBvdXRzaWRlIGJ1ZmZlciBib3VuZHMnKVxuICB9XG5cbiAgaWYgKCFlbmNvZGluZykgZW5jb2RpbmcgPSAndXRmOCdcblxuICB2YXIgbG93ZXJlZENhc2UgPSBmYWxzZVxuICBmb3IgKDs7KSB7XG4gICAgc3dpdGNoIChlbmNvZGluZykge1xuICAgICAgY2FzZSAnaGV4JzpcbiAgICAgICAgcmV0dXJuIGhleFdyaXRlKHRoaXMsIHN0cmluZywgb2Zmc2V0LCBsZW5ndGgpXG5cbiAgICAgIGNhc2UgJ3V0ZjgnOlxuICAgICAgY2FzZSAndXRmLTgnOlxuICAgICAgICByZXR1cm4gdXRmOFdyaXRlKHRoaXMsIHN0cmluZywgb2Zmc2V0LCBsZW5ndGgpXG5cbiAgICAgIGNhc2UgJ2FzY2lpJzpcbiAgICAgICAgcmV0dXJuIGFzY2lpV3JpdGUodGhpcywgc3RyaW5nLCBvZmZzZXQsIGxlbmd0aClcblxuICAgICAgY2FzZSAnbGF0aW4xJzpcbiAgICAgIGNhc2UgJ2JpbmFyeSc6XG4gICAgICAgIHJldHVybiBsYXRpbjFXcml0ZSh0aGlzLCBzdHJpbmcsIG9mZnNldCwgbGVuZ3RoKVxuXG4gICAgICBjYXNlICdiYXNlNjQnOlxuICAgICAgICAvLyBXYXJuaW5nOiBtYXhMZW5ndGggbm90IHRha2VuIGludG8gYWNjb3VudCBpbiBiYXNlNjRXcml0ZVxuICAgICAgICByZXR1cm4gYmFzZTY0V3JpdGUodGhpcywgc3RyaW5nLCBvZmZzZXQsIGxlbmd0aClcblxuICAgICAgY2FzZSAndWNzMic6XG4gICAgICBjYXNlICd1Y3MtMic6XG4gICAgICBjYXNlICd1dGYxNmxlJzpcbiAgICAgIGNhc2UgJ3V0Zi0xNmxlJzpcbiAgICAgICAgcmV0dXJuIHVjczJXcml0ZSh0aGlzLCBzdHJpbmcsIG9mZnNldCwgbGVuZ3RoKVxuXG4gICAgICBkZWZhdWx0OlxuICAgICAgICBpZiAobG93ZXJlZENhc2UpIHRocm93IG5ldyBUeXBlRXJyb3IoJ1Vua25vd24gZW5jb2Rpbmc6ICcgKyBlbmNvZGluZylcbiAgICAgICAgZW5jb2RpbmcgPSAoJycgKyBlbmNvZGluZykudG9Mb3dlckNhc2UoKVxuICAgICAgICBsb3dlcmVkQ2FzZSA9IHRydWVcbiAgICB9XG4gIH1cbn1cblxuQnVmZmVyLnByb3RvdHlwZS50b0pTT04gPSBmdW5jdGlvbiB0b0pTT04gKCkge1xuICByZXR1cm4ge1xuICAgIHR5cGU6ICdCdWZmZXInLFxuICAgIGRhdGE6IEFycmF5LnByb3RvdHlwZS5zbGljZS5jYWxsKHRoaXMuX2FyciB8fCB0aGlzLCAwKVxuICB9XG59XG5cbmZ1bmN0aW9uIGJhc2U2NFNsaWNlIChidWYsIHN0YXJ0LCBlbmQpIHtcbiAgaWYgKHN0YXJ0ID09PSAwICYmIGVuZCA9PT0gYnVmLmxlbmd0aCkge1xuICAgIHJldHVybiBiYXNlNjQuZnJvbUJ5dGVBcnJheShidWYpXG4gIH0gZWxzZSB7XG4gICAgcmV0dXJuIGJhc2U2NC5mcm9tQnl0ZUFycmF5KGJ1Zi5zbGljZShzdGFydCwgZW5kKSlcbiAgfVxufVxuXG5mdW5jdGlvbiB1dGY4U2xpY2UgKGJ1Ziwgc3RhcnQsIGVuZCkge1xuICBlbmQgPSBNYXRoLm1pbihidWYubGVuZ3RoLCBlbmQpXG4gIHZhciByZXMgPSBbXVxuXG4gIHZhciBpID0gc3RhcnRcbiAgd2hpbGUgKGkgPCBlbmQpIHtcbiAgICB2YXIgZmlyc3RCeXRlID0gYnVmW2ldXG4gICAgdmFyIGNvZGVQb2ludCA9IG51bGxcbiAgICB2YXIgYnl0ZXNQZXJTZXF1ZW5jZSA9IChmaXJzdEJ5dGUgPiAweEVGKSA/IDRcbiAgICAgIDogKGZpcnN0Qnl0ZSA+IDB4REYpID8gM1xuICAgICAgOiAoZmlyc3RCeXRlID4gMHhCRikgPyAyXG4gICAgICA6IDFcblxuICAgIGlmIChpICsgYnl0ZXNQZXJTZXF1ZW5jZSA8PSBlbmQpIHtcbiAgICAgIHZhciBzZWNvbmRCeXRlLCB0aGlyZEJ5dGUsIGZvdXJ0aEJ5dGUsIHRlbXBDb2RlUG9pbnRcblxuICAgICAgc3dpdGNoIChieXRlc1BlclNlcXVlbmNlKSB7XG4gICAgICAgIGNhc2UgMTpcbiAgICAgICAgICBpZiAoZmlyc3RCeXRlIDwgMHg4MCkge1xuICAgICAgICAgICAgY29kZVBvaW50ID0gZmlyc3RCeXRlXG4gICAgICAgICAgfVxuICAgICAgICAgIGJyZWFrXG4gICAgICAgIGNhc2UgMjpcbiAgICAgICAgICBzZWNvbmRCeXRlID0gYnVmW2kgKyAxXVxuICAgICAgICAgIGlmICgoc2Vjb25kQnl0ZSAmIDB4QzApID09PSAweDgwKSB7XG4gICAgICAgICAgICB0ZW1wQ29kZVBvaW50ID0gKGZpcnN0Qnl0ZSAmIDB4MUYpIDw8IDB4NiB8IChzZWNvbmRCeXRlICYgMHgzRilcbiAgICAgICAgICAgIGlmICh0ZW1wQ29kZVBvaW50ID4gMHg3Rikge1xuICAgICAgICAgICAgICBjb2RlUG9pbnQgPSB0ZW1wQ29kZVBvaW50XG4gICAgICAgICAgICB9XG4gICAgICAgICAgfVxuICAgICAgICAgIGJyZWFrXG4gICAgICAgIGNhc2UgMzpcbiAgICAgICAgICBzZWNvbmRCeXRlID0gYnVmW2kgKyAxXVxuICAgICAgICAgIHRoaXJkQnl0ZSA9IGJ1ZltpICsgMl1cbiAgICAgICAgICBpZiAoKHNlY29uZEJ5dGUgJiAweEMwKSA9PT0gMHg4MCAmJiAodGhpcmRCeXRlICYgMHhDMCkgPT09IDB4ODApIHtcbiAgICAgICAgICAgIHRlbXBDb2RlUG9pbnQgPSAoZmlyc3RCeXRlICYgMHhGKSA8PCAweEMgfCAoc2Vjb25kQnl0ZSAmIDB4M0YpIDw8IDB4NiB8ICh0aGlyZEJ5dGUgJiAweDNGKVxuICAgICAgICAgICAgaWYgKHRlbXBDb2RlUG9pbnQgPiAweDdGRiAmJiAodGVtcENvZGVQb2ludCA8IDB4RDgwMCB8fCB0ZW1wQ29kZVBvaW50ID4gMHhERkZGKSkge1xuICAgICAgICAgICAgICBjb2RlUG9pbnQgPSB0ZW1wQ29kZVBvaW50XG4gICAgICAgICAgICB9XG4gICAgICAgICAgfVxuICAgICAgICAgIGJyZWFrXG4gICAgICAgIGNhc2UgNDpcbiAgICAgICAgICBzZWNvbmRCeXRlID0gYnVmW2kgKyAxXVxuICAgICAgICAgIHRoaXJkQnl0ZSA9IGJ1ZltpICsgMl1cbiAgICAgICAgICBmb3VydGhCeXRlID0gYnVmW2kgKyAzXVxuICAgICAgICAgIGlmICgoc2Vjb25kQnl0ZSAmIDB4QzApID09PSAweDgwICYmICh0aGlyZEJ5dGUgJiAweEMwKSA9PT0gMHg4MCAmJiAoZm91cnRoQnl0ZSAmIDB4QzApID09PSAweDgwKSB7XG4gICAgICAgICAgICB0ZW1wQ29kZVBvaW50ID0gKGZpcnN0Qnl0ZSAmIDB4RikgPDwgMHgxMiB8IChzZWNvbmRCeXRlICYgMHgzRikgPDwgMHhDIHwgKHRoaXJkQnl0ZSAmIDB4M0YpIDw8IDB4NiB8IChmb3VydGhCeXRlICYgMHgzRilcbiAgICAgICAgICAgIGlmICh0ZW1wQ29kZVBvaW50ID4gMHhGRkZGICYmIHRlbXBDb2RlUG9pbnQgPCAweDExMDAwMCkge1xuICAgICAgICAgICAgICBjb2RlUG9pbnQgPSB0ZW1wQ29kZVBvaW50XG4gICAgICAgICAgICB9XG4gICAgICAgICAgfVxuICAgICAgfVxuICAgIH1cblxuICAgIGlmIChjb2RlUG9pbnQgPT09IG51bGwpIHtcbiAgICAgIC8vIHdlIGRpZCBub3QgZ2VuZXJhdGUgYSB2YWxpZCBjb2RlUG9pbnQgc28gaW5zZXJ0IGFcbiAgICAgIC8vIHJlcGxhY2VtZW50IGNoYXIgKFUrRkZGRCkgYW5kIGFkdmFuY2Ugb25seSAxIGJ5dGVcbiAgICAgIGNvZGVQb2ludCA9IDB4RkZGRFxuICAgICAgYnl0ZXNQZXJTZXF1ZW5jZSA9IDFcbiAgICB9IGVsc2UgaWYgKGNvZGVQb2ludCA+IDB4RkZGRikge1xuICAgICAgLy8gZW5jb2RlIHRvIHV0ZjE2IChzdXJyb2dhdGUgcGFpciBkYW5jZSlcbiAgICAgIGNvZGVQb2ludCAtPSAweDEwMDAwXG4gICAgICByZXMucHVzaChjb2RlUG9pbnQgPj4+IDEwICYgMHgzRkYgfCAweEQ4MDApXG4gICAgICBjb2RlUG9pbnQgPSAweERDMDAgfCBjb2RlUG9pbnQgJiAweDNGRlxuICAgIH1cblxuICAgIHJlcy5wdXNoKGNvZGVQb2ludClcbiAgICBpICs9IGJ5dGVzUGVyU2VxdWVuY2VcbiAgfVxuXG4gIHJldHVybiBkZWNvZGVDb2RlUG9pbnRzQXJyYXkocmVzKVxufVxuXG4vLyBCYXNlZCBvbiBodHRwOi8vc3RhY2tvdmVyZmxvdy5jb20vYS8yMjc0NzI3Mi82ODA3NDIsIHRoZSBicm93c2VyIHdpdGhcbi8vIHRoZSBsb3dlc3QgbGltaXQgaXMgQ2hyb21lLCB3aXRoIDB4MTAwMDAgYXJncy5cbi8vIFdlIGdvIDEgbWFnbml0dWRlIGxlc3MsIGZvciBzYWZldHlcbnZhciBNQVhfQVJHVU1FTlRTX0xFTkdUSCA9IDB4MTAwMFxuXG5mdW5jdGlvbiBkZWNvZGVDb2RlUG9pbnRzQXJyYXkgKGNvZGVQb2ludHMpIHtcbiAgdmFyIGxlbiA9IGNvZGVQb2ludHMubGVuZ3RoXG4gIGlmIChsZW4gPD0gTUFYX0FSR1VNRU5UU19MRU5HVEgpIHtcbiAgICByZXR1cm4gU3RyaW5nLmZyb21DaGFyQ29kZS5hcHBseShTdHJpbmcsIGNvZGVQb2ludHMpIC8vIGF2b2lkIGV4dHJhIHNsaWNlKClcbiAgfVxuXG4gIC8vIERlY29kZSBpbiBjaHVua3MgdG8gYXZvaWQgXCJjYWxsIHN0YWNrIHNpemUgZXhjZWVkZWRcIi5cbiAgdmFyIHJlcyA9ICcnXG4gIHZhciBpID0gMFxuICB3aGlsZSAoaSA8IGxlbikge1xuICAgIHJlcyArPSBTdHJpbmcuZnJvbUNoYXJDb2RlLmFwcGx5KFxuICAgICAgU3RyaW5nLFxuICAgICAgY29kZVBvaW50cy5zbGljZShpLCBpICs9IE1BWF9BUkdVTUVOVFNfTEVOR1RIKVxuICAgIClcbiAgfVxuICByZXR1cm4gcmVzXG59XG5cbmZ1bmN0aW9uIGFzY2lpU2xpY2UgKGJ1Ziwgc3RhcnQsIGVuZCkge1xuICB2YXIgcmV0ID0gJydcbiAgZW5kID0gTWF0aC5taW4oYnVmLmxlbmd0aCwgZW5kKVxuXG4gIGZvciAodmFyIGkgPSBzdGFydDsgaSA8IGVuZDsgKytpKSB7XG4gICAgcmV0ICs9IFN0cmluZy5mcm9tQ2hhckNvZGUoYnVmW2ldICYgMHg3RilcbiAgfVxuICByZXR1cm4gcmV0XG59XG5cbmZ1bmN0aW9uIGxhdGluMVNsaWNlIChidWYsIHN0YXJ0LCBlbmQpIHtcbiAgdmFyIHJldCA9ICcnXG4gIGVuZCA9IE1hdGgubWluKGJ1Zi5sZW5ndGgsIGVuZClcblxuICBmb3IgKHZhciBpID0gc3RhcnQ7IGkgPCBlbmQ7ICsraSkge1xuICAgIHJldCArPSBTdHJpbmcuZnJvbUNoYXJDb2RlKGJ1ZltpXSlcbiAgfVxuICByZXR1cm4gcmV0XG59XG5cbmZ1bmN0aW9uIGhleFNsaWNlIChidWYsIHN0YXJ0LCBlbmQpIHtcbiAgdmFyIGxlbiA9IGJ1Zi5sZW5ndGhcblxuICBpZiAoIXN0YXJ0IHx8IHN0YXJ0IDwgMCkgc3RhcnQgPSAwXG4gIGlmICghZW5kIHx8IGVuZCA8IDAgfHwgZW5kID4gbGVuKSBlbmQgPSBsZW5cblxuICB2YXIgb3V0ID0gJydcbiAgZm9yICh2YXIgaSA9IHN0YXJ0OyBpIDwgZW5kOyArK2kpIHtcbiAgICBvdXQgKz0gdG9IZXgoYnVmW2ldKVxuICB9XG4gIHJldHVybiBvdXRcbn1cblxuZnVuY3Rpb24gdXRmMTZsZVNsaWNlIChidWYsIHN0YXJ0LCBlbmQpIHtcbiAgdmFyIGJ5dGVzID0gYnVmLnNsaWNlKHN0YXJ0LCBlbmQpXG4gIHZhciByZXMgPSAnJ1xuICBmb3IgKHZhciBpID0gMDsgaSA8IGJ5dGVzLmxlbmd0aDsgaSArPSAyKSB7XG4gICAgcmVzICs9IFN0cmluZy5mcm9tQ2hhckNvZGUoYnl0ZXNbaV0gKyBieXRlc1tpICsgMV0gKiAyNTYpXG4gIH1cbiAgcmV0dXJuIHJlc1xufVxuXG5CdWZmZXIucHJvdG90eXBlLnNsaWNlID0gZnVuY3Rpb24gc2xpY2UgKHN0YXJ0LCBlbmQpIHtcbiAgdmFyIGxlbiA9IHRoaXMubGVuZ3RoXG4gIHN0YXJ0ID0gfn5zdGFydFxuICBlbmQgPSBlbmQgPT09IHVuZGVmaW5lZCA/IGxlbiA6IH5+ZW5kXG5cbiAgaWYgKHN0YXJ0IDwgMCkge1xuICAgIHN0YXJ0ICs9IGxlblxuICAgIGlmIChzdGFydCA8IDApIHN0YXJ0ID0gMFxuICB9IGVsc2UgaWYgKHN0YXJ0ID4gbGVuKSB7XG4gICAgc3RhcnQgPSBsZW5cbiAgfVxuXG4gIGlmIChlbmQgPCAwKSB7XG4gICAgZW5kICs9IGxlblxuICAgIGlmIChlbmQgPCAwKSBlbmQgPSAwXG4gIH0gZWxzZSBpZiAoZW5kID4gbGVuKSB7XG4gICAgZW5kID0gbGVuXG4gIH1cblxuICBpZiAoZW5kIDwgc3RhcnQpIGVuZCA9IHN0YXJ0XG5cbiAgdmFyIG5ld0J1ZlxuICBpZiAoQnVmZmVyLlRZUEVEX0FSUkFZX1NVUFBPUlQpIHtcbiAgICBuZXdCdWYgPSB0aGlzLnN1YmFycmF5KHN0YXJ0LCBlbmQpXG4gICAgbmV3QnVmLl9fcHJvdG9fXyA9IEJ1ZmZlci5wcm90b3R5cGVcbiAgfSBlbHNlIHtcbiAgICB2YXIgc2xpY2VMZW4gPSBlbmQgLSBzdGFydFxuICAgIG5ld0J1ZiA9IG5ldyBCdWZmZXIoc2xpY2VMZW4sIHVuZGVmaW5lZClcbiAgICBmb3IgKHZhciBpID0gMDsgaSA8IHNsaWNlTGVuOyArK2kpIHtcbiAgICAgIG5ld0J1ZltpXSA9IHRoaXNbaSArIHN0YXJ0XVxuICAgIH1cbiAgfVxuXG4gIHJldHVybiBuZXdCdWZcbn1cblxuLypcbiAqIE5lZWQgdG8gbWFrZSBzdXJlIHRoYXQgYnVmZmVyIGlzbid0IHRyeWluZyB0byB3cml0ZSBvdXQgb2YgYm91bmRzLlxuICovXG5mdW5jdGlvbiBjaGVja09mZnNldCAob2Zmc2V0LCBleHQsIGxlbmd0aCkge1xuICBpZiAoKG9mZnNldCAlIDEpICE9PSAwIHx8IG9mZnNldCA8IDApIHRocm93IG5ldyBSYW5nZUVycm9yKCdvZmZzZXQgaXMgbm90IHVpbnQnKVxuICBpZiAob2Zmc2V0ICsgZXh0ID4gbGVuZ3RoKSB0aHJvdyBuZXcgUmFuZ2VFcnJvcignVHJ5aW5nIHRvIGFjY2VzcyBiZXlvbmQgYnVmZmVyIGxlbmd0aCcpXG59XG5cbkJ1ZmZlci5wcm90b3R5cGUucmVhZFVJbnRMRSA9IGZ1bmN0aW9uIHJlYWRVSW50TEUgKG9mZnNldCwgYnl0ZUxlbmd0aCwgbm9Bc3NlcnQpIHtcbiAgb2Zmc2V0ID0gb2Zmc2V0IHwgMFxuICBieXRlTGVuZ3RoID0gYnl0ZUxlbmd0aCB8IDBcbiAgaWYgKCFub0Fzc2VydCkgY2hlY2tPZmZzZXQob2Zmc2V0LCBieXRlTGVuZ3RoLCB0aGlzLmxlbmd0aClcblxuICB2YXIgdmFsID0gdGhpc1tvZmZzZXRdXG4gIHZhciBtdWwgPSAxXG4gIHZhciBpID0gMFxuICB3aGlsZSAoKytpIDwgYnl0ZUxlbmd0aCAmJiAobXVsICo9IDB4MTAwKSkge1xuICAgIHZhbCArPSB0aGlzW29mZnNldCArIGldICogbXVsXG4gIH1cblxuICByZXR1cm4gdmFsXG59XG5cbkJ1ZmZlci5wcm90b3R5cGUucmVhZFVJbnRCRSA9IGZ1bmN0aW9uIHJlYWRVSW50QkUgKG9mZnNldCwgYnl0ZUxlbmd0aCwgbm9Bc3NlcnQpIHtcbiAgb2Zmc2V0ID0gb2Zmc2V0IHwgMFxuICBieXRlTGVuZ3RoID0gYnl0ZUxlbmd0aCB8IDBcbiAgaWYgKCFub0Fzc2VydCkge1xuICAgIGNoZWNrT2Zmc2V0KG9mZnNldCwgYnl0ZUxlbmd0aCwgdGhpcy5sZW5ndGgpXG4gIH1cblxuICB2YXIgdmFsID0gdGhpc1tvZmZzZXQgKyAtLWJ5dGVMZW5ndGhdXG4gIHZhciBtdWwgPSAxXG4gIHdoaWxlIChieXRlTGVuZ3RoID4gMCAmJiAobXVsICo9IDB4MTAwKSkge1xuICAgIHZhbCArPSB0aGlzW29mZnNldCArIC0tYnl0ZUxlbmd0aF0gKiBtdWxcbiAgfVxuXG4gIHJldHVybiB2YWxcbn1cblxuQnVmZmVyLnByb3RvdHlwZS5yZWFkVUludDggPSBmdW5jdGlvbiByZWFkVUludDggKG9mZnNldCwgbm9Bc3NlcnQpIHtcbiAgaWYgKCFub0Fzc2VydCkgY2hlY2tPZmZzZXQob2Zmc2V0LCAxLCB0aGlzLmxlbmd0aClcbiAgcmV0dXJuIHRoaXNbb2Zmc2V0XVxufVxuXG5CdWZmZXIucHJvdG90eXBlLnJlYWRVSW50MTZMRSA9IGZ1bmN0aW9uIHJlYWRVSW50MTZMRSAob2Zmc2V0LCBub0Fzc2VydCkge1xuICBpZiAoIW5vQXNzZXJ0KSBjaGVja09mZnNldChvZmZzZXQsIDIsIHRoaXMubGVuZ3RoKVxuICByZXR1cm4gdGhpc1tvZmZzZXRdIHwgKHRoaXNbb2Zmc2V0ICsgMV0gPDwgOClcbn1cblxuQnVmZmVyLnByb3RvdHlwZS5yZWFkVUludDE2QkUgPSBmdW5jdGlvbiByZWFkVUludDE2QkUgKG9mZnNldCwgbm9Bc3NlcnQpIHtcbiAgaWYgKCFub0Fzc2VydCkgY2hlY2tPZmZzZXQob2Zmc2V0LCAyLCB0aGlzLmxlbmd0aClcbiAgcmV0dXJuICh0aGlzW29mZnNldF0gPDwgOCkgfCB0aGlzW29mZnNldCArIDFdXG59XG5cbkJ1ZmZlci5wcm90b3R5cGUucmVhZFVJbnQzMkxFID0gZnVuY3Rpb24gcmVhZFVJbnQzMkxFIChvZmZzZXQsIG5vQXNzZXJ0KSB7XG4gIGlmICghbm9Bc3NlcnQpIGNoZWNrT2Zmc2V0KG9mZnNldCwgNCwgdGhpcy5sZW5ndGgpXG5cbiAgcmV0dXJuICgodGhpc1tvZmZzZXRdKSB8XG4gICAgICAodGhpc1tvZmZzZXQgKyAxXSA8PCA4KSB8XG4gICAgICAodGhpc1tvZmZzZXQgKyAyXSA8PCAxNikpICtcbiAgICAgICh0aGlzW29mZnNldCArIDNdICogMHgxMDAwMDAwKVxufVxuXG5CdWZmZXIucHJvdG90eXBlLnJlYWRVSW50MzJCRSA9IGZ1bmN0aW9uIHJlYWRVSW50MzJCRSAob2Zmc2V0LCBub0Fzc2VydCkge1xuICBpZiAoIW5vQXNzZXJ0KSBjaGVja09mZnNldChvZmZzZXQsIDQsIHRoaXMubGVuZ3RoKVxuXG4gIHJldHVybiAodGhpc1tvZmZzZXRdICogMHgxMDAwMDAwKSArXG4gICAgKCh0aGlzW29mZnNldCArIDFdIDw8IDE2KSB8XG4gICAgKHRoaXNbb2Zmc2V0ICsgMl0gPDwgOCkgfFxuICAgIHRoaXNbb2Zmc2V0ICsgM10pXG59XG5cbkJ1ZmZlci5wcm90b3R5cGUucmVhZEludExFID0gZnVuY3Rpb24gcmVhZEludExFIChvZmZzZXQsIGJ5dGVMZW5ndGgsIG5vQXNzZXJ0KSB7XG4gIG9mZnNldCA9IG9mZnNldCB8IDBcbiAgYnl0ZUxlbmd0aCA9IGJ5dGVMZW5ndGggfCAwXG4gIGlmICghbm9Bc3NlcnQpIGNoZWNrT2Zmc2V0KG9mZnNldCwgYnl0ZUxlbmd0aCwgdGhpcy5sZW5ndGgpXG5cbiAgdmFyIHZhbCA9IHRoaXNbb2Zmc2V0XVxuICB2YXIgbXVsID0gMVxuICB2YXIgaSA9IDBcbiAgd2hpbGUgKCsraSA8IGJ5dGVMZW5ndGggJiYgKG11bCAqPSAweDEwMCkpIHtcbiAgICB2YWwgKz0gdGhpc1tvZmZzZXQgKyBpXSAqIG11bFxuICB9XG4gIG11bCAqPSAweDgwXG5cbiAgaWYgKHZhbCA+PSBtdWwpIHZhbCAtPSBNYXRoLnBvdygyLCA4ICogYnl0ZUxlbmd0aClcblxuICByZXR1cm4gdmFsXG59XG5cbkJ1ZmZlci5wcm90b3R5cGUucmVhZEludEJFID0gZnVuY3Rpb24gcmVhZEludEJFIChvZmZzZXQsIGJ5dGVMZW5ndGgsIG5vQXNzZXJ0KSB7XG4gIG9mZnNldCA9IG9mZnNldCB8IDBcbiAgYnl0ZUxlbmd0aCA9IGJ5dGVMZW5ndGggfCAwXG4gIGlmICghbm9Bc3NlcnQpIGNoZWNrT2Zmc2V0KG9mZnNldCwgYnl0ZUxlbmd0aCwgdGhpcy5sZW5ndGgpXG5cbiAgdmFyIGkgPSBieXRlTGVuZ3RoXG4gIHZhciBtdWwgPSAxXG4gIHZhciB2YWwgPSB0aGlzW29mZnNldCArIC0taV1cbiAgd2hpbGUgKGkgPiAwICYmIChtdWwgKj0gMHgxMDApKSB7XG4gICAgdmFsICs9IHRoaXNbb2Zmc2V0ICsgLS1pXSAqIG11bFxuICB9XG4gIG11bCAqPSAweDgwXG5cbiAgaWYgKHZhbCA+PSBtdWwpIHZhbCAtPSBNYXRoLnBvdygyLCA4ICogYnl0ZUxlbmd0aClcblxuICByZXR1cm4gdmFsXG59XG5cbkJ1ZmZlci5wcm90b3R5cGUucmVhZEludDggPSBmdW5jdGlvbiByZWFkSW50OCAob2Zmc2V0LCBub0Fzc2VydCkge1xuICBpZiAoIW5vQXNzZXJ0KSBjaGVja09mZnNldChvZmZzZXQsIDEsIHRoaXMubGVuZ3RoKVxuICBpZiAoISh0aGlzW29mZnNldF0gJiAweDgwKSkgcmV0dXJuICh0aGlzW29mZnNldF0pXG4gIHJldHVybiAoKDB4ZmYgLSB0aGlzW29mZnNldF0gKyAxKSAqIC0xKVxufVxuXG5CdWZmZXIucHJvdG90eXBlLnJlYWRJbnQxNkxFID0gZnVuY3Rpb24gcmVhZEludDE2TEUgKG9mZnNldCwgbm9Bc3NlcnQpIHtcbiAgaWYgKCFub0Fzc2VydCkgY2hlY2tPZmZzZXQob2Zmc2V0LCAyLCB0aGlzLmxlbmd0aClcbiAgdmFyIHZhbCA9IHRoaXNbb2Zmc2V0XSB8ICh0aGlzW29mZnNldCArIDFdIDw8IDgpXG4gIHJldHVybiAodmFsICYgMHg4MDAwKSA/IHZhbCB8IDB4RkZGRjAwMDAgOiB2YWxcbn1cblxuQnVmZmVyLnByb3RvdHlwZS5yZWFkSW50MTZCRSA9IGZ1bmN0aW9uIHJlYWRJbnQxNkJFIChvZmZzZXQsIG5vQXNzZXJ0KSB7XG4gIGlmICghbm9Bc3NlcnQpIGNoZWNrT2Zmc2V0KG9mZnNldCwgMiwgdGhpcy5sZW5ndGgpXG4gIHZhciB2YWwgPSB0aGlzW29mZnNldCArIDFdIHwgKHRoaXNbb2Zmc2V0XSA8PCA4KVxuICByZXR1cm4gKHZhbCAmIDB4ODAwMCkgPyB2YWwgfCAweEZGRkYwMDAwIDogdmFsXG59XG5cbkJ1ZmZlci5wcm90b3R5cGUucmVhZEludDMyTEUgPSBmdW5jdGlvbiByZWFkSW50MzJMRSAob2Zmc2V0LCBub0Fzc2VydCkge1xuICBpZiAoIW5vQXNzZXJ0KSBjaGVja09mZnNldChvZmZzZXQsIDQsIHRoaXMubGVuZ3RoKVxuXG4gIHJldHVybiAodGhpc1tvZmZzZXRdKSB8XG4gICAgKHRoaXNbb2Zmc2V0ICsgMV0gPDwgOCkgfFxuICAgICh0aGlzW29mZnNldCArIDJdIDw8IDE2KSB8XG4gICAgKHRoaXNbb2Zmc2V0ICsgM10gPDwgMjQpXG59XG5cbkJ1ZmZlci5wcm90b3R5cGUucmVhZEludDMyQkUgPSBmdW5jdGlvbiByZWFkSW50MzJCRSAob2Zmc2V0LCBub0Fzc2VydCkge1xuICBpZiAoIW5vQXNzZXJ0KSBjaGVja09mZnNldChvZmZzZXQsIDQsIHRoaXMubGVuZ3RoKVxuXG4gIHJldHVybiAodGhpc1tvZmZzZXRdIDw8IDI0KSB8XG4gICAgKHRoaXNbb2Zmc2V0ICsgMV0gPDwgMTYpIHxcbiAgICAodGhpc1tvZmZzZXQgKyAyXSA8PCA4KSB8XG4gICAgKHRoaXNbb2Zmc2V0ICsgM10pXG59XG5cbkJ1ZmZlci5wcm90b3R5cGUucmVhZEZsb2F0TEUgPSBmdW5jdGlvbiByZWFkRmxvYXRMRSAob2Zmc2V0LCBub0Fzc2VydCkge1xuICBpZiAoIW5vQXNzZXJ0KSBjaGVja09mZnNldChvZmZzZXQsIDQsIHRoaXMubGVuZ3RoKVxuICByZXR1cm4gaWVlZTc1NC5yZWFkKHRoaXMsIG9mZnNldCwgdHJ1ZSwgMjMsIDQpXG59XG5cbkJ1ZmZlci5wcm90b3R5cGUucmVhZEZsb2F0QkUgPSBmdW5jdGlvbiByZWFkRmxvYXRCRSAob2Zmc2V0LCBub0Fzc2VydCkge1xuICBpZiAoIW5vQXNzZXJ0KSBjaGVja09mZnNldChvZmZzZXQsIDQsIHRoaXMubGVuZ3RoKVxuICByZXR1cm4gaWVlZTc1NC5yZWFkKHRoaXMsIG9mZnNldCwgZmFsc2UsIDIzLCA0KVxufVxuXG5CdWZmZXIucHJvdG90eXBlLnJlYWREb3VibGVMRSA9IGZ1bmN0aW9uIHJlYWREb3VibGVMRSAob2Zmc2V0LCBub0Fzc2VydCkge1xuICBpZiAoIW5vQXNzZXJ0KSBjaGVja09mZnNldChvZmZzZXQsIDgsIHRoaXMubGVuZ3RoKVxuICByZXR1cm4gaWVlZTc1NC5yZWFkKHRoaXMsIG9mZnNldCwgdHJ1ZSwgNTIsIDgpXG59XG5cbkJ1ZmZlci5wcm90b3R5cGUucmVhZERvdWJsZUJFID0gZnVuY3Rpb24gcmVhZERvdWJsZUJFIChvZmZzZXQsIG5vQXNzZXJ0KSB7XG4gIGlmICghbm9Bc3NlcnQpIGNoZWNrT2Zmc2V0KG9mZnNldCwgOCwgdGhpcy5sZW5ndGgpXG4gIHJldHVybiBpZWVlNzU0LnJlYWQodGhpcywgb2Zmc2V0LCBmYWxzZSwgNTIsIDgpXG59XG5cbmZ1bmN0aW9uIGNoZWNrSW50IChidWYsIHZhbHVlLCBvZmZzZXQsIGV4dCwgbWF4LCBtaW4pIHtcbiAgaWYgKCFCdWZmZXIuaXNCdWZmZXIoYnVmKSkgdGhyb3cgbmV3IFR5cGVFcnJvcignXCJidWZmZXJcIiBhcmd1bWVudCBtdXN0IGJlIGEgQnVmZmVyIGluc3RhbmNlJylcbiAgaWYgKHZhbHVlID4gbWF4IHx8IHZhbHVlIDwgbWluKSB0aHJvdyBuZXcgUmFuZ2VFcnJvcignXCJ2YWx1ZVwiIGFyZ3VtZW50IGlzIG91dCBvZiBib3VuZHMnKVxuICBpZiAob2Zmc2V0ICsgZXh0ID4gYnVmLmxlbmd0aCkgdGhyb3cgbmV3IFJhbmdlRXJyb3IoJ0luZGV4IG91dCBvZiByYW5nZScpXG59XG5cbkJ1ZmZlci5wcm90b3R5cGUud3JpdGVVSW50TEUgPSBmdW5jdGlvbiB3cml0ZVVJbnRMRSAodmFsdWUsIG9mZnNldCwgYnl0ZUxlbmd0aCwgbm9Bc3NlcnQpIHtcbiAgdmFsdWUgPSArdmFsdWVcbiAgb2Zmc2V0ID0gb2Zmc2V0IHwgMFxuICBieXRlTGVuZ3RoID0gYnl0ZUxlbmd0aCB8IDBcbiAgaWYgKCFub0Fzc2VydCkge1xuICAgIHZhciBtYXhCeXRlcyA9IE1hdGgucG93KDIsIDggKiBieXRlTGVuZ3RoKSAtIDFcbiAgICBjaGVja0ludCh0aGlzLCB2YWx1ZSwgb2Zmc2V0LCBieXRlTGVuZ3RoLCBtYXhCeXRlcywgMClcbiAgfVxuXG4gIHZhciBtdWwgPSAxXG4gIHZhciBpID0gMFxuICB0aGlzW29mZnNldF0gPSB2YWx1ZSAmIDB4RkZcbiAgd2hpbGUgKCsraSA8IGJ5dGVMZW5ndGggJiYgKG11bCAqPSAweDEwMCkpIHtcbiAgICB0aGlzW29mZnNldCArIGldID0gKHZhbHVlIC8gbXVsKSAmIDB4RkZcbiAgfVxuXG4gIHJldHVybiBvZmZzZXQgKyBieXRlTGVuZ3RoXG59XG5cbkJ1ZmZlci5wcm90b3R5cGUud3JpdGVVSW50QkUgPSBmdW5jdGlvbiB3cml0ZVVJbnRCRSAodmFsdWUsIG9mZnNldCwgYnl0ZUxlbmd0aCwgbm9Bc3NlcnQpIHtcbiAgdmFsdWUgPSArdmFsdWVcbiAgb2Zmc2V0ID0gb2Zmc2V0IHwgMFxuICBieXRlTGVuZ3RoID0gYnl0ZUxlbmd0aCB8IDBcbiAgaWYgKCFub0Fzc2VydCkge1xuICAgIHZhciBtYXhCeXRlcyA9IE1hdGgucG93KDIsIDggKiBieXRlTGVuZ3RoKSAtIDFcbiAgICBjaGVja0ludCh0aGlzLCB2YWx1ZSwgb2Zmc2V0LCBieXRlTGVuZ3RoLCBtYXhCeXRlcywgMClcbiAgfVxuXG4gIHZhciBpID0gYnl0ZUxlbmd0aCAtIDFcbiAgdmFyIG11bCA9IDFcbiAgdGhpc1tvZmZzZXQgKyBpXSA9IHZhbHVlICYgMHhGRlxuICB3aGlsZSAoLS1pID49IDAgJiYgKG11bCAqPSAweDEwMCkpIHtcbiAgICB0aGlzW29mZnNldCArIGldID0gKHZhbHVlIC8gbXVsKSAmIDB4RkZcbiAgfVxuXG4gIHJldHVybiBvZmZzZXQgKyBieXRlTGVuZ3RoXG59XG5cbkJ1ZmZlci5wcm90b3R5cGUud3JpdGVVSW50OCA9IGZ1bmN0aW9uIHdyaXRlVUludDggKHZhbHVlLCBvZmZzZXQsIG5vQXNzZXJ0KSB7XG4gIHZhbHVlID0gK3ZhbHVlXG4gIG9mZnNldCA9IG9mZnNldCB8IDBcbiAgaWYgKCFub0Fzc2VydCkgY2hlY2tJbnQodGhpcywgdmFsdWUsIG9mZnNldCwgMSwgMHhmZiwgMClcbiAgaWYgKCFCdWZmZXIuVFlQRURfQVJSQVlfU1VQUE9SVCkgdmFsdWUgPSBNYXRoLmZsb29yKHZhbHVlKVxuICB0aGlzW29mZnNldF0gPSAodmFsdWUgJiAweGZmKVxuICByZXR1cm4gb2Zmc2V0ICsgMVxufVxuXG5mdW5jdGlvbiBvYmplY3RXcml0ZVVJbnQxNiAoYnVmLCB2YWx1ZSwgb2Zmc2V0LCBsaXR0bGVFbmRpYW4pIHtcbiAgaWYgKHZhbHVlIDwgMCkgdmFsdWUgPSAweGZmZmYgKyB2YWx1ZSArIDFcbiAgZm9yICh2YXIgaSA9IDAsIGogPSBNYXRoLm1pbihidWYubGVuZ3RoIC0gb2Zmc2V0LCAyKTsgaSA8IGo7ICsraSkge1xuICAgIGJ1ZltvZmZzZXQgKyBpXSA9ICh2YWx1ZSAmICgweGZmIDw8ICg4ICogKGxpdHRsZUVuZGlhbiA/IGkgOiAxIC0gaSkpKSkgPj4+XG4gICAgICAobGl0dGxlRW5kaWFuID8gaSA6IDEgLSBpKSAqIDhcbiAgfVxufVxuXG5CdWZmZXIucHJvdG90eXBlLndyaXRlVUludDE2TEUgPSBmdW5jdGlvbiB3cml0ZVVJbnQxNkxFICh2YWx1ZSwgb2Zmc2V0LCBub0Fzc2VydCkge1xuICB2YWx1ZSA9ICt2YWx1ZVxuICBvZmZzZXQgPSBvZmZzZXQgfCAwXG4gIGlmICghbm9Bc3NlcnQpIGNoZWNrSW50KHRoaXMsIHZhbHVlLCBvZmZzZXQsIDIsIDB4ZmZmZiwgMClcbiAgaWYgKEJ1ZmZlci5UWVBFRF9BUlJBWV9TVVBQT1JUKSB7XG4gICAgdGhpc1tvZmZzZXRdID0gKHZhbHVlICYgMHhmZilcbiAgICB0aGlzW29mZnNldCArIDFdID0gKHZhbHVlID4+PiA4KVxuICB9IGVsc2Uge1xuICAgIG9iamVjdFdyaXRlVUludDE2KHRoaXMsIHZhbHVlLCBvZmZzZXQsIHRydWUpXG4gIH1cbiAgcmV0dXJuIG9mZnNldCArIDJcbn1cblxuQnVmZmVyLnByb3RvdHlwZS53cml0ZVVJbnQxNkJFID0gZnVuY3Rpb24gd3JpdGVVSW50MTZCRSAodmFsdWUsIG9mZnNldCwgbm9Bc3NlcnQpIHtcbiAgdmFsdWUgPSArdmFsdWVcbiAgb2Zmc2V0ID0gb2Zmc2V0IHwgMFxuICBpZiAoIW5vQXNzZXJ0KSBjaGVja0ludCh0aGlzLCB2YWx1ZSwgb2Zmc2V0LCAyLCAweGZmZmYsIDApXG4gIGlmIChCdWZmZXIuVFlQRURfQVJSQVlfU1VQUE9SVCkge1xuICAgIHRoaXNbb2Zmc2V0XSA9ICh2YWx1ZSA+Pj4gOClcbiAgICB0aGlzW29mZnNldCArIDFdID0gKHZhbHVlICYgMHhmZilcbiAgfSBlbHNlIHtcbiAgICBvYmplY3RXcml0ZVVJbnQxNih0aGlzLCB2YWx1ZSwgb2Zmc2V0LCBmYWxzZSlcbiAgfVxuICByZXR1cm4gb2Zmc2V0ICsgMlxufVxuXG5mdW5jdGlvbiBvYmplY3RXcml0ZVVJbnQzMiAoYnVmLCB2YWx1ZSwgb2Zmc2V0LCBsaXR0bGVFbmRpYW4pIHtcbiAgaWYgKHZhbHVlIDwgMCkgdmFsdWUgPSAweGZmZmZmZmZmICsgdmFsdWUgKyAxXG4gIGZvciAodmFyIGkgPSAwLCBqID0gTWF0aC5taW4oYnVmLmxlbmd0aCAtIG9mZnNldCwgNCk7IGkgPCBqOyArK2kpIHtcbiAgICBidWZbb2Zmc2V0ICsgaV0gPSAodmFsdWUgPj4+IChsaXR0bGVFbmRpYW4gPyBpIDogMyAtIGkpICogOCkgJiAweGZmXG4gIH1cbn1cblxuQnVmZmVyLnByb3RvdHlwZS53cml0ZVVJbnQzMkxFID0gZnVuY3Rpb24gd3JpdGVVSW50MzJMRSAodmFsdWUsIG9mZnNldCwgbm9Bc3NlcnQpIHtcbiAgdmFsdWUgPSArdmFsdWVcbiAgb2Zmc2V0ID0gb2Zmc2V0IHwgMFxuICBpZiAoIW5vQXNzZXJ0KSBjaGVja0ludCh0aGlzLCB2YWx1ZSwgb2Zmc2V0LCA0LCAweGZmZmZmZmZmLCAwKVxuICBpZiAoQnVmZmVyLlRZUEVEX0FSUkFZX1NVUFBPUlQpIHtcbiAgICB0aGlzW29mZnNldCArIDNdID0gKHZhbHVlID4+PiAyNClcbiAgICB0aGlzW29mZnNldCArIDJdID0gKHZhbHVlID4+PiAxNilcbiAgICB0aGlzW29mZnNldCArIDFdID0gKHZhbHVlID4+PiA4KVxuICAgIHRoaXNbb2Zmc2V0XSA9ICh2YWx1ZSAmIDB4ZmYpXG4gIH0gZWxzZSB7XG4gICAgb2JqZWN0V3JpdGVVSW50MzIodGhpcywgdmFsdWUsIG9mZnNldCwgdHJ1ZSlcbiAgfVxuICByZXR1cm4gb2Zmc2V0ICsgNFxufVxuXG5CdWZmZXIucHJvdG90eXBlLndyaXRlVUludDMyQkUgPSBmdW5jdGlvbiB3cml0ZVVJbnQzMkJFICh2YWx1ZSwgb2Zmc2V0LCBub0Fzc2VydCkge1xuICB2YWx1ZSA9ICt2YWx1ZVxuICBvZmZzZXQgPSBvZmZzZXQgfCAwXG4gIGlmICghbm9Bc3NlcnQpIGNoZWNrSW50KHRoaXMsIHZhbHVlLCBvZmZzZXQsIDQsIDB4ZmZmZmZmZmYsIDApXG4gIGlmIChCdWZmZXIuVFlQRURfQVJSQVlfU1VQUE9SVCkge1xuICAgIHRoaXNbb2Zmc2V0XSA9ICh2YWx1ZSA+Pj4gMjQpXG4gICAgdGhpc1tvZmZzZXQgKyAxXSA9ICh2YWx1ZSA+Pj4gMTYpXG4gICAgdGhpc1tvZmZzZXQgKyAyXSA9ICh2YWx1ZSA+Pj4gOClcbiAgICB0aGlzW29mZnNldCArIDNdID0gKHZhbHVlICYgMHhmZilcbiAgfSBlbHNlIHtcbiAgICBvYmplY3RXcml0ZVVJbnQzMih0aGlzLCB2YWx1ZSwgb2Zmc2V0LCBmYWxzZSlcbiAgfVxuICByZXR1cm4gb2Zmc2V0ICsgNFxufVxuXG5CdWZmZXIucHJvdG90eXBlLndyaXRlSW50TEUgPSBmdW5jdGlvbiB3cml0ZUludExFICh2YWx1ZSwgb2Zmc2V0LCBieXRlTGVuZ3RoLCBub0Fzc2VydCkge1xuICB2YWx1ZSA9ICt2YWx1ZVxuICBvZmZzZXQgPSBvZmZzZXQgfCAwXG4gIGlmICghbm9Bc3NlcnQpIHtcbiAgICB2YXIgbGltaXQgPSBNYXRoLnBvdygyLCA4ICogYnl0ZUxlbmd0aCAtIDEpXG5cbiAgICBjaGVja0ludCh0aGlzLCB2YWx1ZSwgb2Zmc2V0LCBieXRlTGVuZ3RoLCBsaW1pdCAtIDEsIC1saW1pdClcbiAgfVxuXG4gIHZhciBpID0gMFxuICB2YXIgbXVsID0gMVxuICB2YXIgc3ViID0gMFxuICB0aGlzW29mZnNldF0gPSB2YWx1ZSAmIDB4RkZcbiAgd2hpbGUgKCsraSA8IGJ5dGVMZW5ndGggJiYgKG11bCAqPSAweDEwMCkpIHtcbiAgICBpZiAodmFsdWUgPCAwICYmIHN1YiA9PT0gMCAmJiB0aGlzW29mZnNldCArIGkgLSAxXSAhPT0gMCkge1xuICAgICAgc3ViID0gMVxuICAgIH1cbiAgICB0aGlzW29mZnNldCArIGldID0gKCh2YWx1ZSAvIG11bCkgPj4gMCkgLSBzdWIgJiAweEZGXG4gIH1cblxuICByZXR1cm4gb2Zmc2V0ICsgYnl0ZUxlbmd0aFxufVxuXG5CdWZmZXIucHJvdG90eXBlLndyaXRlSW50QkUgPSBmdW5jdGlvbiB3cml0ZUludEJFICh2YWx1ZSwgb2Zmc2V0LCBieXRlTGVuZ3RoLCBub0Fzc2VydCkge1xuICB2YWx1ZSA9ICt2YWx1ZVxuICBvZmZzZXQgPSBvZmZzZXQgfCAwXG4gIGlmICghbm9Bc3NlcnQpIHtcbiAgICB2YXIgbGltaXQgPSBNYXRoLnBvdygyLCA4ICogYnl0ZUxlbmd0aCAtIDEpXG5cbiAgICBjaGVja0ludCh0aGlzLCB2YWx1ZSwgb2Zmc2V0LCBieXRlTGVuZ3RoLCBsaW1pdCAtIDEsIC1saW1pdClcbiAgfVxuXG4gIHZhciBpID0gYnl0ZUxlbmd0aCAtIDFcbiAgdmFyIG11bCA9IDFcbiAgdmFyIHN1YiA9IDBcbiAgdGhpc1tvZmZzZXQgKyBpXSA9IHZhbHVlICYgMHhGRlxuICB3aGlsZSAoLS1pID49IDAgJiYgKG11bCAqPSAweDEwMCkpIHtcbiAgICBpZiAodmFsdWUgPCAwICYmIHN1YiA9PT0gMCAmJiB0aGlzW29mZnNldCArIGkgKyAxXSAhPT0gMCkge1xuICAgICAgc3ViID0gMVxuICAgIH1cbiAgICB0aGlzW29mZnNldCArIGldID0gKCh2YWx1ZSAvIG11bCkgPj4gMCkgLSBzdWIgJiAweEZGXG4gIH1cblxuICByZXR1cm4gb2Zmc2V0ICsgYnl0ZUxlbmd0aFxufVxuXG5CdWZmZXIucHJvdG90eXBlLndyaXRlSW50OCA9IGZ1bmN0aW9uIHdyaXRlSW50OCAodmFsdWUsIG9mZnNldCwgbm9Bc3NlcnQpIHtcbiAgdmFsdWUgPSArdmFsdWVcbiAgb2Zmc2V0ID0gb2Zmc2V0IHwgMFxuICBpZiAoIW5vQXNzZXJ0KSBjaGVja0ludCh0aGlzLCB2YWx1ZSwgb2Zmc2V0LCAxLCAweDdmLCAtMHg4MClcbiAgaWYgKCFCdWZmZXIuVFlQRURfQVJSQVlfU1VQUE9SVCkgdmFsdWUgPSBNYXRoLmZsb29yKHZhbHVlKVxuICBpZiAodmFsdWUgPCAwKSB2YWx1ZSA9IDB4ZmYgKyB2YWx1ZSArIDFcbiAgdGhpc1tvZmZzZXRdID0gKHZhbHVlICYgMHhmZilcbiAgcmV0dXJuIG9mZnNldCArIDFcbn1cblxuQnVmZmVyLnByb3RvdHlwZS53cml0ZUludDE2TEUgPSBmdW5jdGlvbiB3cml0ZUludDE2TEUgKHZhbHVlLCBvZmZzZXQsIG5vQXNzZXJ0KSB7XG4gIHZhbHVlID0gK3ZhbHVlXG4gIG9mZnNldCA9IG9mZnNldCB8IDBcbiAgaWYgKCFub0Fzc2VydCkgY2hlY2tJbnQodGhpcywgdmFsdWUsIG9mZnNldCwgMiwgMHg3ZmZmLCAtMHg4MDAwKVxuICBpZiAoQnVmZmVyLlRZUEVEX0FSUkFZX1NVUFBPUlQpIHtcbiAgICB0aGlzW29mZnNldF0gPSAodmFsdWUgJiAweGZmKVxuICAgIHRoaXNbb2Zmc2V0ICsgMV0gPSAodmFsdWUgPj4+IDgpXG4gIH0gZWxzZSB7XG4gICAgb2JqZWN0V3JpdGVVSW50MTYodGhpcywgdmFsdWUsIG9mZnNldCwgdHJ1ZSlcbiAgfVxuICByZXR1cm4gb2Zmc2V0ICsgMlxufVxuXG5CdWZmZXIucHJvdG90eXBlLndyaXRlSW50MTZCRSA9IGZ1bmN0aW9uIHdyaXRlSW50MTZCRSAodmFsdWUsIG9mZnNldCwgbm9Bc3NlcnQpIHtcbiAgdmFsdWUgPSArdmFsdWVcbiAgb2Zmc2V0ID0gb2Zmc2V0IHwgMFxuICBpZiAoIW5vQXNzZXJ0KSBjaGVja0ludCh0aGlzLCB2YWx1ZSwgb2Zmc2V0LCAyLCAweDdmZmYsIC0weDgwMDApXG4gIGlmIChCdWZmZXIuVFlQRURfQVJSQVlfU1VQUE9SVCkge1xuICAgIHRoaXNbb2Zmc2V0XSA9ICh2YWx1ZSA+Pj4gOClcbiAgICB0aGlzW29mZnNldCArIDFdID0gKHZhbHVlICYgMHhmZilcbiAgfSBlbHNlIHtcbiAgICBvYmplY3RXcml0ZVVJbnQxNih0aGlzLCB2YWx1ZSwgb2Zmc2V0LCBmYWxzZSlcbiAgfVxuICByZXR1cm4gb2Zmc2V0ICsgMlxufVxuXG5CdWZmZXIucHJvdG90eXBlLndyaXRlSW50MzJMRSA9IGZ1bmN0aW9uIHdyaXRlSW50MzJMRSAodmFsdWUsIG9mZnNldCwgbm9Bc3NlcnQpIHtcbiAgdmFsdWUgPSArdmFsdWVcbiAgb2Zmc2V0ID0gb2Zmc2V0IHwgMFxuICBpZiAoIW5vQXNzZXJ0KSBjaGVja0ludCh0aGlzLCB2YWx1ZSwgb2Zmc2V0LCA0LCAweDdmZmZmZmZmLCAtMHg4MDAwMDAwMClcbiAgaWYgKEJ1ZmZlci5UWVBFRF9BUlJBWV9TVVBQT1JUKSB7XG4gICAgdGhpc1tvZmZzZXRdID0gKHZhbHVlICYgMHhmZilcbiAgICB0aGlzW29mZnNldCArIDFdID0gKHZhbHVlID4+PiA4KVxuICAgIHRoaXNbb2Zmc2V0ICsgMl0gPSAodmFsdWUgPj4+IDE2KVxuICAgIHRoaXNbb2Zmc2V0ICsgM10gPSAodmFsdWUgPj4+IDI0KVxuICB9IGVsc2Uge1xuICAgIG9iamVjdFdyaXRlVUludDMyKHRoaXMsIHZhbHVlLCBvZmZzZXQsIHRydWUpXG4gIH1cbiAgcmV0dXJuIG9mZnNldCArIDRcbn1cblxuQnVmZmVyLnByb3RvdHlwZS53cml0ZUludDMyQkUgPSBmdW5jdGlvbiB3cml0ZUludDMyQkUgKHZhbHVlLCBvZmZzZXQsIG5vQXNzZXJ0KSB7XG4gIHZhbHVlID0gK3ZhbHVlXG4gIG9mZnNldCA9IG9mZnNldCB8IDBcbiAgaWYgKCFub0Fzc2VydCkgY2hlY2tJbnQodGhpcywgdmFsdWUsIG9mZnNldCwgNCwgMHg3ZmZmZmZmZiwgLTB4ODAwMDAwMDApXG4gIGlmICh2YWx1ZSA8IDApIHZhbHVlID0gMHhmZmZmZmZmZiArIHZhbHVlICsgMVxuICBpZiAoQnVmZmVyLlRZUEVEX0FSUkFZX1NVUFBPUlQpIHtcbiAgICB0aGlzW29mZnNldF0gPSAodmFsdWUgPj4+IDI0KVxuICAgIHRoaXNbb2Zmc2V0ICsgMV0gPSAodmFsdWUgPj4+IDE2KVxuICAgIHRoaXNbb2Zmc2V0ICsgMl0gPSAodmFsdWUgPj4+IDgpXG4gICAgdGhpc1tvZmZzZXQgKyAzXSA9ICh2YWx1ZSAmIDB4ZmYpXG4gIH0gZWxzZSB7XG4gICAgb2JqZWN0V3JpdGVVSW50MzIodGhpcywgdmFsdWUsIG9mZnNldCwgZmFsc2UpXG4gIH1cbiAgcmV0dXJuIG9mZnNldCArIDRcbn1cblxuZnVuY3Rpb24gY2hlY2tJRUVFNzU0IChidWYsIHZhbHVlLCBvZmZzZXQsIGV4dCwgbWF4LCBtaW4pIHtcbiAgaWYgKG9mZnNldCArIGV4dCA+IGJ1Zi5sZW5ndGgpIHRocm93IG5ldyBSYW5nZUVycm9yKCdJbmRleCBvdXQgb2YgcmFuZ2UnKVxuICBpZiAob2Zmc2V0IDwgMCkgdGhyb3cgbmV3IFJhbmdlRXJyb3IoJ0luZGV4IG91dCBvZiByYW5nZScpXG59XG5cbmZ1bmN0aW9uIHdyaXRlRmxvYXQgKGJ1ZiwgdmFsdWUsIG9mZnNldCwgbGl0dGxlRW5kaWFuLCBub0Fzc2VydCkge1xuICBpZiAoIW5vQXNzZXJ0KSB7XG4gICAgY2hlY2tJRUVFNzU0KGJ1ZiwgdmFsdWUsIG9mZnNldCwgNCwgMy40MDI4MjM0NjYzODUyODg2ZSszOCwgLTMuNDAyODIzNDY2Mzg1Mjg4NmUrMzgpXG4gIH1cbiAgaWVlZTc1NC53cml0ZShidWYsIHZhbHVlLCBvZmZzZXQsIGxpdHRsZUVuZGlhbiwgMjMsIDQpXG4gIHJldHVybiBvZmZzZXQgKyA0XG59XG5cbkJ1ZmZlci5wcm90b3R5cGUud3JpdGVGbG9hdExFID0gZnVuY3Rpb24gd3JpdGVGbG9hdExFICh2YWx1ZSwgb2Zmc2V0LCBub0Fzc2VydCkge1xuICByZXR1cm4gd3JpdGVGbG9hdCh0aGlzLCB2YWx1ZSwgb2Zmc2V0LCB0cnVlLCBub0Fzc2VydClcbn1cblxuQnVmZmVyLnByb3RvdHlwZS53cml0ZUZsb2F0QkUgPSBmdW5jdGlvbiB3cml0ZUZsb2F0QkUgKHZhbHVlLCBvZmZzZXQsIG5vQXNzZXJ0KSB7XG4gIHJldHVybiB3cml0ZUZsb2F0KHRoaXMsIHZhbHVlLCBvZmZzZXQsIGZhbHNlLCBub0Fzc2VydClcbn1cblxuZnVuY3Rpb24gd3JpdGVEb3VibGUgKGJ1ZiwgdmFsdWUsIG9mZnNldCwgbGl0dGxlRW5kaWFuLCBub0Fzc2VydCkge1xuICBpZiAoIW5vQXNzZXJ0KSB7XG4gICAgY2hlY2tJRUVFNzU0KGJ1ZiwgdmFsdWUsIG9mZnNldCwgOCwgMS43OTc2OTMxMzQ4NjIzMTU3RSszMDgsIC0xLjc5NzY5MzEzNDg2MjMxNTdFKzMwOClcbiAgfVxuICBpZWVlNzU0LndyaXRlKGJ1ZiwgdmFsdWUsIG9mZnNldCwgbGl0dGxlRW5kaWFuLCA1MiwgOClcbiAgcmV0dXJuIG9mZnNldCArIDhcbn1cblxuQnVmZmVyLnByb3RvdHlwZS53cml0ZURvdWJsZUxFID0gZnVuY3Rpb24gd3JpdGVEb3VibGVMRSAodmFsdWUsIG9mZnNldCwgbm9Bc3NlcnQpIHtcbiAgcmV0dXJuIHdyaXRlRG91YmxlKHRoaXMsIHZhbHVlLCBvZmZzZXQsIHRydWUsIG5vQXNzZXJ0KVxufVxuXG5CdWZmZXIucHJvdG90eXBlLndyaXRlRG91YmxlQkUgPSBmdW5jdGlvbiB3cml0ZURvdWJsZUJFICh2YWx1ZSwgb2Zmc2V0LCBub0Fzc2VydCkge1xuICByZXR1cm4gd3JpdGVEb3VibGUodGhpcywgdmFsdWUsIG9mZnNldCwgZmFsc2UsIG5vQXNzZXJ0KVxufVxuXG4vLyBjb3B5KHRhcmdldEJ1ZmZlciwgdGFyZ2V0U3RhcnQ9MCwgc291cmNlU3RhcnQ9MCwgc291cmNlRW5kPWJ1ZmZlci5sZW5ndGgpXG5CdWZmZXIucHJvdG90eXBlLmNvcHkgPSBmdW5jdGlvbiBjb3B5ICh0YXJnZXQsIHRhcmdldFN0YXJ0LCBzdGFydCwgZW5kKSB7XG4gIGlmICghc3RhcnQpIHN0YXJ0ID0gMFxuICBpZiAoIWVuZCAmJiBlbmQgIT09IDApIGVuZCA9IHRoaXMubGVuZ3RoXG4gIGlmICh0YXJnZXRTdGFydCA+PSB0YXJnZXQubGVuZ3RoKSB0YXJnZXRTdGFydCA9IHRhcmdldC5sZW5ndGhcbiAgaWYgKCF0YXJnZXRTdGFydCkgdGFyZ2V0U3RhcnQgPSAwXG4gIGlmIChlbmQgPiAwICYmIGVuZCA8IHN0YXJ0KSBlbmQgPSBzdGFydFxuXG4gIC8vIENvcHkgMCBieXRlczsgd2UncmUgZG9uZVxuICBpZiAoZW5kID09PSBzdGFydCkgcmV0dXJuIDBcbiAgaWYgKHRhcmdldC5sZW5ndGggPT09IDAgfHwgdGhpcy5sZW5ndGggPT09IDApIHJldHVybiAwXG5cbiAgLy8gRmF0YWwgZXJyb3IgY29uZGl0aW9uc1xuICBpZiAodGFyZ2V0U3RhcnQgPCAwKSB7XG4gICAgdGhyb3cgbmV3IFJhbmdlRXJyb3IoJ3RhcmdldFN0YXJ0IG91dCBvZiBib3VuZHMnKVxuICB9XG4gIGlmIChzdGFydCA8IDAgfHwgc3RhcnQgPj0gdGhpcy5sZW5ndGgpIHRocm93IG5ldyBSYW5nZUVycm9yKCdzb3VyY2VTdGFydCBvdXQgb2YgYm91bmRzJylcbiAgaWYgKGVuZCA8IDApIHRocm93IG5ldyBSYW5nZUVycm9yKCdzb3VyY2VFbmQgb3V0IG9mIGJvdW5kcycpXG5cbiAgLy8gQXJlIHdlIG9vYj9cbiAgaWYgKGVuZCA+IHRoaXMubGVuZ3RoKSBlbmQgPSB0aGlzLmxlbmd0aFxuICBpZiAodGFyZ2V0Lmxlbmd0aCAtIHRhcmdldFN0YXJ0IDwgZW5kIC0gc3RhcnQpIHtcbiAgICBlbmQgPSB0YXJnZXQubGVuZ3RoIC0gdGFyZ2V0U3RhcnQgKyBzdGFydFxuICB9XG5cbiAgdmFyIGxlbiA9IGVuZCAtIHN0YXJ0XG4gIHZhciBpXG5cbiAgaWYgKHRoaXMgPT09IHRhcmdldCAmJiBzdGFydCA8IHRhcmdldFN0YXJ0ICYmIHRhcmdldFN0YXJ0IDwgZW5kKSB7XG4gICAgLy8gZGVzY2VuZGluZyBjb3B5IGZyb20gZW5kXG4gICAgZm9yIChpID0gbGVuIC0gMTsgaSA+PSAwOyAtLWkpIHtcbiAgICAgIHRhcmdldFtpICsgdGFyZ2V0U3RhcnRdID0gdGhpc1tpICsgc3RhcnRdXG4gICAgfVxuICB9IGVsc2UgaWYgKGxlbiA8IDEwMDAgfHwgIUJ1ZmZlci5UWVBFRF9BUlJBWV9TVVBQT1JUKSB7XG4gICAgLy8gYXNjZW5kaW5nIGNvcHkgZnJvbSBzdGFydFxuICAgIGZvciAoaSA9IDA7IGkgPCBsZW47ICsraSkge1xuICAgICAgdGFyZ2V0W2kgKyB0YXJnZXRTdGFydF0gPSB0aGlzW2kgKyBzdGFydF1cbiAgICB9XG4gIH0gZWxzZSB7XG4gICAgVWludDhBcnJheS5wcm90b3R5cGUuc2V0LmNhbGwoXG4gICAgICB0YXJnZXQsXG4gICAgICB0aGlzLnN1YmFycmF5KHN0YXJ0LCBzdGFydCArIGxlbiksXG4gICAgICB0YXJnZXRTdGFydFxuICAgIClcbiAgfVxuXG4gIHJldHVybiBsZW5cbn1cblxuLy8gVXNhZ2U6XG4vLyAgICBidWZmZXIuZmlsbChudW1iZXJbLCBvZmZzZXRbLCBlbmRdXSlcbi8vICAgIGJ1ZmZlci5maWxsKGJ1ZmZlclssIG9mZnNldFssIGVuZF1dKVxuLy8gICAgYnVmZmVyLmZpbGwoc3RyaW5nWywgb2Zmc2V0WywgZW5kXV1bLCBlbmNvZGluZ10pXG5CdWZmZXIucHJvdG90eXBlLmZpbGwgPSBmdW5jdGlvbiBmaWxsICh2YWwsIHN0YXJ0LCBlbmQsIGVuY29kaW5nKSB7XG4gIC8vIEhhbmRsZSBzdHJpbmcgY2FzZXM6XG4gIGlmICh0eXBlb2YgdmFsID09PSAnc3RyaW5nJykge1xuICAgIGlmICh0eXBlb2Ygc3RhcnQgPT09ICdzdHJpbmcnKSB7XG4gICAgICBlbmNvZGluZyA9IHN0YXJ0XG4gICAgICBzdGFydCA9IDBcbiAgICAgIGVuZCA9IHRoaXMubGVuZ3RoXG4gICAgfSBlbHNlIGlmICh0eXBlb2YgZW5kID09PSAnc3RyaW5nJykge1xuICAgICAgZW5jb2RpbmcgPSBlbmRcbiAgICAgIGVuZCA9IHRoaXMubGVuZ3RoXG4gICAgfVxuICAgIGlmICh2YWwubGVuZ3RoID09PSAxKSB7XG4gICAgICB2YXIgY29kZSA9IHZhbC5jaGFyQ29kZUF0KDApXG4gICAgICBpZiAoY29kZSA8IDI1Nikge1xuICAgICAgICB2YWwgPSBjb2RlXG4gICAgICB9XG4gICAgfVxuICAgIGlmIChlbmNvZGluZyAhPT0gdW5kZWZpbmVkICYmIHR5cGVvZiBlbmNvZGluZyAhPT0gJ3N0cmluZycpIHtcbiAgICAgIHRocm93IG5ldyBUeXBlRXJyb3IoJ2VuY29kaW5nIG11c3QgYmUgYSBzdHJpbmcnKVxuICAgIH1cbiAgICBpZiAodHlwZW9mIGVuY29kaW5nID09PSAnc3RyaW5nJyAmJiAhQnVmZmVyLmlzRW5jb2RpbmcoZW5jb2RpbmcpKSB7XG4gICAgICB0aHJvdyBuZXcgVHlwZUVycm9yKCdVbmtub3duIGVuY29kaW5nOiAnICsgZW5jb2RpbmcpXG4gICAgfVxuICB9IGVsc2UgaWYgKHR5cGVvZiB2YWwgPT09ICdudW1iZXInKSB7XG4gICAgdmFsID0gdmFsICYgMjU1XG4gIH1cblxuICAvLyBJbnZhbGlkIHJhbmdlcyBhcmUgbm90IHNldCB0byBhIGRlZmF1bHQsIHNvIGNhbiByYW5nZSBjaGVjayBlYXJseS5cbiAgaWYgKHN0YXJ0IDwgMCB8fCB0aGlzLmxlbmd0aCA8IHN0YXJ0IHx8IHRoaXMubGVuZ3RoIDwgZW5kKSB7XG4gICAgdGhyb3cgbmV3IFJhbmdlRXJyb3IoJ091dCBvZiByYW5nZSBpbmRleCcpXG4gIH1cblxuICBpZiAoZW5kIDw9IHN0YXJ0KSB7XG4gICAgcmV0dXJuIHRoaXNcbiAgfVxuXG4gIHN0YXJ0ID0gc3RhcnQgPj4+IDBcbiAgZW5kID0gZW5kID09PSB1bmRlZmluZWQgPyB0aGlzLmxlbmd0aCA6IGVuZCA+Pj4gMFxuXG4gIGlmICghdmFsKSB2YWwgPSAwXG5cbiAgdmFyIGlcbiAgaWYgKHR5cGVvZiB2YWwgPT09ICdudW1iZXInKSB7XG4gICAgZm9yIChpID0gc3RhcnQ7IGkgPCBlbmQ7ICsraSkge1xuICAgICAgdGhpc1tpXSA9IHZhbFxuICAgIH1cbiAgfSBlbHNlIHtcbiAgICB2YXIgYnl0ZXMgPSBCdWZmZXIuaXNCdWZmZXIodmFsKVxuICAgICAgPyB2YWxcbiAgICAgIDogdXRmOFRvQnl0ZXMobmV3IEJ1ZmZlcih2YWwsIGVuY29kaW5nKS50b1N0cmluZygpKVxuICAgIHZhciBsZW4gPSBieXRlcy5sZW5ndGhcbiAgICBmb3IgKGkgPSAwOyBpIDwgZW5kIC0gc3RhcnQ7ICsraSkge1xuICAgICAgdGhpc1tpICsgc3RhcnRdID0gYnl0ZXNbaSAlIGxlbl1cbiAgICB9XG4gIH1cblxuICByZXR1cm4gdGhpc1xufVxuXG4vLyBIRUxQRVIgRlVOQ1RJT05TXG4vLyA9PT09PT09PT09PT09PT09XG5cbnZhciBJTlZBTElEX0JBU0U2NF9SRSA9IC9bXitcXC8wLTlBLVphLXotX10vZ1xuXG5mdW5jdGlvbiBiYXNlNjRjbGVhbiAoc3RyKSB7XG4gIC8vIE5vZGUgc3RyaXBzIG91dCBpbnZhbGlkIGNoYXJhY3RlcnMgbGlrZSBcXG4gYW5kIFxcdCBmcm9tIHRoZSBzdHJpbmcsIGJhc2U2NC1qcyBkb2VzIG5vdFxuICBzdHIgPSBzdHJpbmd0cmltKHN0cikucmVwbGFjZShJTlZBTElEX0JBU0U2NF9SRSwgJycpXG4gIC8vIE5vZGUgY29udmVydHMgc3RyaW5ncyB3aXRoIGxlbmd0aCA8IDIgdG8gJydcbiAgaWYgKHN0ci5sZW5ndGggPCAyKSByZXR1cm4gJydcbiAgLy8gTm9kZSBhbGxvd3MgZm9yIG5vbi1wYWRkZWQgYmFzZTY0IHN0cmluZ3MgKG1pc3NpbmcgdHJhaWxpbmcgPT09KSwgYmFzZTY0LWpzIGRvZXMgbm90XG4gIHdoaWxlIChzdHIubGVuZ3RoICUgNCAhPT0gMCkge1xuICAgIHN0ciA9IHN0ciArICc9J1xuICB9XG4gIHJldHVybiBzdHJcbn1cblxuZnVuY3Rpb24gc3RyaW5ndHJpbSAoc3RyKSB7XG4gIGlmIChzdHIudHJpbSkgcmV0dXJuIHN0ci50cmltKClcbiAgcmV0dXJuIHN0ci5yZXBsYWNlKC9eXFxzK3xcXHMrJC9nLCAnJylcbn1cblxuZnVuY3Rpb24gdG9IZXggKG4pIHtcbiAgaWYgKG4gPCAxNikgcmV0dXJuICcwJyArIG4udG9TdHJpbmcoMTYpXG4gIHJldHVybiBuLnRvU3RyaW5nKDE2KVxufVxuXG5mdW5jdGlvbiB1dGY4VG9CeXRlcyAoc3RyaW5nLCB1bml0cykge1xuICB1bml0cyA9IHVuaXRzIHx8IEluZmluaXR5XG4gIHZhciBjb2RlUG9pbnRcbiAgdmFyIGxlbmd0aCA9IHN0cmluZy5sZW5ndGhcbiAgdmFyIGxlYWRTdXJyb2dhdGUgPSBudWxsXG4gIHZhciBieXRlcyA9IFtdXG5cbiAgZm9yICh2YXIgaSA9IDA7IGkgPCBsZW5ndGg7ICsraSkge1xuICAgIGNvZGVQb2ludCA9IHN0cmluZy5jaGFyQ29kZUF0KGkpXG5cbiAgICAvLyBpcyBzdXJyb2dhdGUgY29tcG9uZW50XG4gICAgaWYgKGNvZGVQb2ludCA+IDB4RDdGRiAmJiBjb2RlUG9pbnQgPCAweEUwMDApIHtcbiAgICAgIC8vIGxhc3QgY2hhciB3YXMgYSBsZWFkXG4gICAgICBpZiAoIWxlYWRTdXJyb2dhdGUpIHtcbiAgICAgICAgLy8gbm8gbGVhZCB5ZXRcbiAgICAgICAgaWYgKGNvZGVQb2ludCA+IDB4REJGRikge1xuICAgICAgICAgIC8vIHVuZXhwZWN0ZWQgdHJhaWxcbiAgICAgICAgICBpZiAoKHVuaXRzIC09IDMpID4gLTEpIGJ5dGVzLnB1c2goMHhFRiwgMHhCRiwgMHhCRClcbiAgICAgICAgICBjb250aW51ZVxuICAgICAgICB9IGVsc2UgaWYgKGkgKyAxID09PSBsZW5ndGgpIHtcbiAgICAgICAgICAvLyB1bnBhaXJlZCBsZWFkXG4gICAgICAgICAgaWYgKCh1bml0cyAtPSAzKSA+IC0xKSBieXRlcy5wdXNoKDB4RUYsIDB4QkYsIDB4QkQpXG4gICAgICAgICAgY29udGludWVcbiAgICAgICAgfVxuXG4gICAgICAgIC8vIHZhbGlkIGxlYWRcbiAgICAgICAgbGVhZFN1cnJvZ2F0ZSA9IGNvZGVQb2ludFxuXG4gICAgICAgIGNvbnRpbnVlXG4gICAgICB9XG5cbiAgICAgIC8vIDIgbGVhZHMgaW4gYSByb3dcbiAgICAgIGlmIChjb2RlUG9pbnQgPCAweERDMDApIHtcbiAgICAgICAgaWYgKCh1bml0cyAtPSAzKSA+IC0xKSBieXRlcy5wdXNoKDB4RUYsIDB4QkYsIDB4QkQpXG4gICAgICAgIGxlYWRTdXJyb2dhdGUgPSBjb2RlUG9pbnRcbiAgICAgICAgY29udGludWVcbiAgICAgIH1cblxuICAgICAgLy8gdmFsaWQgc3Vycm9nYXRlIHBhaXJcbiAgICAgIGNvZGVQb2ludCA9IChsZWFkU3Vycm9nYXRlIC0gMHhEODAwIDw8IDEwIHwgY29kZVBvaW50IC0gMHhEQzAwKSArIDB4MTAwMDBcbiAgICB9IGVsc2UgaWYgKGxlYWRTdXJyb2dhdGUpIHtcbiAgICAgIC8vIHZhbGlkIGJtcCBjaGFyLCBidXQgbGFzdCBjaGFyIHdhcyBhIGxlYWRcbiAgICAgIGlmICgodW5pdHMgLT0gMykgPiAtMSkgYnl0ZXMucHVzaCgweEVGLCAweEJGLCAweEJEKVxuICAgIH1cblxuICAgIGxlYWRTdXJyb2dhdGUgPSBudWxsXG5cbiAgICAvLyBlbmNvZGUgdXRmOFxuICAgIGlmIChjb2RlUG9pbnQgPCAweDgwKSB7XG4gICAgICBpZiAoKHVuaXRzIC09IDEpIDwgMCkgYnJlYWtcbiAgICAgIGJ5dGVzLnB1c2goY29kZVBvaW50KVxuICAgIH0gZWxzZSBpZiAoY29kZVBvaW50IDwgMHg4MDApIHtcbiAgICAgIGlmICgodW5pdHMgLT0gMikgPCAwKSBicmVha1xuICAgICAgYnl0ZXMucHVzaChcbiAgICAgICAgY29kZVBvaW50ID4+IDB4NiB8IDB4QzAsXG4gICAgICAgIGNvZGVQb2ludCAmIDB4M0YgfCAweDgwXG4gICAgICApXG4gICAgfSBlbHNlIGlmIChjb2RlUG9pbnQgPCAweDEwMDAwKSB7XG4gICAgICBpZiAoKHVuaXRzIC09IDMpIDwgMCkgYnJlYWtcbiAgICAgIGJ5dGVzLnB1c2goXG4gICAgICAgIGNvZGVQb2ludCA+PiAweEMgfCAweEUwLFxuICAgICAgICBjb2RlUG9pbnQgPj4gMHg2ICYgMHgzRiB8IDB4ODAsXG4gICAgICAgIGNvZGVQb2ludCAmIDB4M0YgfCAweDgwXG4gICAgICApXG4gICAgfSBlbHNlIGlmIChjb2RlUG9pbnQgPCAweDExMDAwMCkge1xuICAgICAgaWYgKCh1bml0cyAtPSA0KSA8IDApIGJyZWFrXG4gICAgICBieXRlcy5wdXNoKFxuICAgICAgICBjb2RlUG9pbnQgPj4gMHgxMiB8IDB4RjAsXG4gICAgICAgIGNvZGVQb2ludCA+PiAweEMgJiAweDNGIHwgMHg4MCxcbiAgICAgICAgY29kZVBvaW50ID4+IDB4NiAmIDB4M0YgfCAweDgwLFxuICAgICAgICBjb2RlUG9pbnQgJiAweDNGIHwgMHg4MFxuICAgICAgKVxuICAgIH0gZWxzZSB7XG4gICAgICB0aHJvdyBuZXcgRXJyb3IoJ0ludmFsaWQgY29kZSBwb2ludCcpXG4gICAgfVxuICB9XG5cbiAgcmV0dXJuIGJ5dGVzXG59XG5cbmZ1bmN0aW9uIGFzY2lpVG9CeXRlcyAoc3RyKSB7XG4gIHZhciBieXRlQXJyYXkgPSBbXVxuICBmb3IgKHZhciBpID0gMDsgaSA8IHN0ci5sZW5ndGg7ICsraSkge1xuICAgIC8vIE5vZGUncyBjb2RlIHNlZW1zIHRvIGJlIGRvaW5nIHRoaXMgYW5kIG5vdCAmIDB4N0YuLlxuICAgIGJ5dGVBcnJheS5wdXNoKHN0ci5jaGFyQ29kZUF0KGkpICYgMHhGRilcbiAgfVxuICByZXR1cm4gYnl0ZUFycmF5XG59XG5cbmZ1bmN0aW9uIHV0ZjE2bGVUb0J5dGVzIChzdHIsIHVuaXRzKSB7XG4gIHZhciBjLCBoaSwgbG9cbiAgdmFyIGJ5dGVBcnJheSA9IFtdXG4gIGZvciAodmFyIGkgPSAwOyBpIDwgc3RyLmxlbmd0aDsgKytpKSB7XG4gICAgaWYgKCh1bml0cyAtPSAyKSA8IDApIGJyZWFrXG5cbiAgICBjID0gc3RyLmNoYXJDb2RlQXQoaSlcbiAgICBoaSA9IGMgPj4gOFxuICAgIGxvID0gYyAlIDI1NlxuICAgIGJ5dGVBcnJheS5wdXNoKGxvKVxuICAgIGJ5dGVBcnJheS5wdXNoKGhpKVxuICB9XG5cbiAgcmV0dXJuIGJ5dGVBcnJheVxufVxuXG5mdW5jdGlvbiBiYXNlNjRUb0J5dGVzIChzdHIpIHtcbiAgcmV0dXJuIGJhc2U2NC50b0J5dGVBcnJheShiYXNlNjRjbGVhbihzdHIpKVxufVxuXG5mdW5jdGlvbiBibGl0QnVmZmVyIChzcmMsIGRzdCwgb2Zmc2V0LCBsZW5ndGgpIHtcbiAgZm9yICh2YXIgaSA9IDA7IGkgPCBsZW5ndGg7ICsraSkge1xuICAgIGlmICgoaSArIG9mZnNldCA+PSBkc3QubGVuZ3RoKSB8fCAoaSA+PSBzcmMubGVuZ3RoKSkgYnJlYWtcbiAgICBkc3RbaSArIG9mZnNldF0gPSBzcmNbaV1cbiAgfVxuICByZXR1cm4gaVxufVxuXG5mdW5jdGlvbiBpc25hbiAodmFsKSB7XG4gIHJldHVybiB2YWwgIT09IHZhbCAvLyBlc2xpbnQtZGlzYWJsZS1saW5lIG5vLXNlbGYtY29tcGFyZVxufVxuXG5cblxuLy8vLy8vLy8vLy8vLy8vLy8vXG4vLyBXRUJQQUNLIEZPT1RFUlxuLy8gLi4vfi9idWZmZXIvaW5kZXguanNcbi8vIG1vZHVsZSBpZCA9IDEyXG4vLyBtb2R1bGUgY2h1bmtzID0gMCJdLCJzb3VyY2VSb290IjoiIn0=");
+	/* WEBPACK VAR INJECTION */(function(global) {/*!
+	 * The buffer module from node.js, for the browser.
+	 *
+	 * @author   Feross Aboukhadijeh <feross@feross.org> <http://feross.org>
+	 * @license  MIT
+	 */
+	/* eslint-disable no-proto */
+	
+	'use strict'
+	
+	var base64 = __webpack_require__(13)
+	var ieee754 = __webpack_require__(14)
+	var isArray = __webpack_require__(15)
+	
+	exports.Buffer = Buffer
+	exports.SlowBuffer = SlowBuffer
+	exports.INSPECT_MAX_BYTES = 50
+	
+	/**
+	 * If `Buffer.TYPED_ARRAY_SUPPORT`:
+	 *   === true    Use Uint8Array implementation (fastest)
+	 *   === false   Use Object implementation (most compatible, even IE6)
+	 *
+	 * Browsers that support typed arrays are IE 10+, Firefox 4+, Chrome 7+, Safari 5.1+,
+	 * Opera 11.6+, iOS 4.2+.
+	 *
+	 * Due to various browser bugs, sometimes the Object implementation will be used even
+	 * when the browser supports typed arrays.
+	 *
+	 * Note:
+	 *
+	 *   - Firefox 4-29 lacks support for adding new properties to `Uint8Array` instances,
+	 *     See: https://bugzilla.mozilla.org/show_bug.cgi?id=695438.
+	 *
+	 *   - Chrome 9-10 is missing the `TypedArray.prototype.subarray` function.
+	 *
+	 *   - IE10 has a broken `TypedArray.prototype.subarray` function which returns arrays of
+	 *     incorrect length in some situations.
+	
+	 * We detect these buggy browsers and set `Buffer.TYPED_ARRAY_SUPPORT` to `false` so they
+	 * get the Object implementation, which is slower but behaves correctly.
+	 */
+	Buffer.TYPED_ARRAY_SUPPORT = global.TYPED_ARRAY_SUPPORT !== undefined
+	  ? global.TYPED_ARRAY_SUPPORT
+	  : typedArraySupport()
+	
+	/*
+	 * Export kMaxLength after typed array support is determined.
+	 */
+	exports.kMaxLength = kMaxLength()
+	
+	function typedArraySupport () {
+	  try {
+	    var arr = new Uint8Array(1)
+	    arr.__proto__ = {__proto__: Uint8Array.prototype, foo: function () { return 42 }}
+	    return arr.foo() === 42 && // typed array instances can be augmented
+	        typeof arr.subarray === 'function' && // chrome 9-10 lack `subarray`
+	        arr.subarray(1, 1).byteLength === 0 // ie10 has broken `subarray`
+	  } catch (e) {
+	    return false
+	  }
+	}
+	
+	function kMaxLength () {
+	  return Buffer.TYPED_ARRAY_SUPPORT
+	    ? 0x7fffffff
+	    : 0x3fffffff
+	}
+	
+	function createBuffer (that, length) {
+	  if (kMaxLength() < length) {
+	    throw new RangeError('Invalid typed array length')
+	  }
+	  if (Buffer.TYPED_ARRAY_SUPPORT) {
+	    // Return an augmented `Uint8Array` instance, for best performance
+	    that = new Uint8Array(length)
+	    that.__proto__ = Buffer.prototype
+	  } else {
+	    // Fallback: Return an object instance of the Buffer class
+	    if (that === null) {
+	      that = new Buffer(length)
+	    }
+	    that.length = length
+	  }
+	
+	  return that
+	}
+	
+	/**
+	 * The Buffer constructor returns instances of `Uint8Array` that have their
+	 * prototype changed to `Buffer.prototype`. Furthermore, `Buffer` is a subclass of
+	 * `Uint8Array`, so the returned instances will have all the node `Buffer` methods
+	 * and the `Uint8Array` methods. Square bracket notation works as expected -- it
+	 * returns a single octet.
+	 *
+	 * The `Uint8Array` prototype remains unmodified.
+	 */
+	
+	function Buffer (arg, encodingOrOffset, length) {
+	  if (!Buffer.TYPED_ARRAY_SUPPORT && !(this instanceof Buffer)) {
+	    return new Buffer(arg, encodingOrOffset, length)
+	  }
+	
+	  // Common case.
+	  if (typeof arg === 'number') {
+	    if (typeof encodingOrOffset === 'string') {
+	      throw new Error(
+	        'If encoding is specified then the first argument must be a string'
+	      )
+	    }
+	    return allocUnsafe(this, arg)
+	  }
+	  return from(this, arg, encodingOrOffset, length)
+	}
+	
+	Buffer.poolSize = 8192 // not used by this implementation
+	
+	// TODO: Legacy, not needed anymore. Remove in next major version.
+	Buffer._augment = function (arr) {
+	  arr.__proto__ = Buffer.prototype
+	  return arr
+	}
+	
+	function from (that, value, encodingOrOffset, length) {
+	  if (typeof value === 'number') {
+	    throw new TypeError('"value" argument must not be a number')
+	  }
+	
+	  if (typeof ArrayBuffer !== 'undefined' && value instanceof ArrayBuffer) {
+	    return fromArrayBuffer(that, value, encodingOrOffset, length)
+	  }
+	
+	  if (typeof value === 'string') {
+	    return fromString(that, value, encodingOrOffset)
+	  }
+	
+	  return fromObject(that, value)
+	}
+	
+	/**
+	 * Functionally equivalent to Buffer(arg, encoding) but throws a TypeError
+	 * if value is a number.
+	 * Buffer.from(str[, encoding])
+	 * Buffer.from(array)
+	 * Buffer.from(buffer)
+	 * Buffer.from(arrayBuffer[, byteOffset[, length]])
+	 **/
+	Buffer.from = function (value, encodingOrOffset, length) {
+	  return from(null, value, encodingOrOffset, length)
+	}
+	
+	if (Buffer.TYPED_ARRAY_SUPPORT) {
+	  Buffer.prototype.__proto__ = Uint8Array.prototype
+	  Buffer.__proto__ = Uint8Array
+	  if (typeof Symbol !== 'undefined' && Symbol.species &&
+	      Buffer[Symbol.species] === Buffer) {
+	    // Fix subarray() in ES2016. See: https://github.com/feross/buffer/pull/97
+	    Object.defineProperty(Buffer, Symbol.species, {
+	      value: null,
+	      configurable: true
+	    })
+	  }
+	}
+	
+	function assertSize (size) {
+	  if (typeof size !== 'number') {
+	    throw new TypeError('"size" argument must be a number')
+	  } else if (size < 0) {
+	    throw new RangeError('"size" argument must not be negative')
+	  }
+	}
+	
+	function alloc (that, size, fill, encoding) {
+	  assertSize(size)
+	  if (size <= 0) {
+	    return createBuffer(that, size)
+	  }
+	  if (fill !== undefined) {
+	    // Only pay attention to encoding if it's a string. This
+	    // prevents accidentally sending in a number that would
+	    // be interpretted as a start offset.
+	    return typeof encoding === 'string'
+	      ? createBuffer(that, size).fill(fill, encoding)
+	      : createBuffer(that, size).fill(fill)
+	  }
+	  return createBuffer(that, size)
+	}
+	
+	/**
+	 * Creates a new filled Buffer instance.
+	 * alloc(size[, fill[, encoding]])
+	 **/
+	Buffer.alloc = function (size, fill, encoding) {
+	  return alloc(null, size, fill, encoding)
+	}
+	
+	function allocUnsafe (that, size) {
+	  assertSize(size)
+	  that = createBuffer(that, size < 0 ? 0 : checked(size) | 0)
+	  if (!Buffer.TYPED_ARRAY_SUPPORT) {
+	    for (var i = 0; i < size; ++i) {
+	      that[i] = 0
+	    }
+	  }
+	  return that
+	}
+	
+	/**
+	 * Equivalent to Buffer(num), by default creates a non-zero-filled Buffer instance.
+	 * */
+	Buffer.allocUnsafe = function (size) {
+	  return allocUnsafe(null, size)
+	}
+	/**
+	 * Equivalent to SlowBuffer(num), by default creates a non-zero-filled Buffer instance.
+	 */
+	Buffer.allocUnsafeSlow = function (size) {
+	  return allocUnsafe(null, size)
+	}
+	
+	function fromString (that, string, encoding) {
+	  if (typeof encoding !== 'string' || encoding === '') {
+	    encoding = 'utf8'
+	  }
+	
+	  if (!Buffer.isEncoding(encoding)) {
+	    throw new TypeError('"encoding" must be a valid string encoding')
+	  }
+	
+	  var length = byteLength(string, encoding) | 0
+	  that = createBuffer(that, length)
+	
+	  var actual = that.write(string, encoding)
+	
+	  if (actual !== length) {
+	    // Writing a hex string, for example, that contains invalid characters will
+	    // cause everything after the first invalid character to be ignored. (e.g.
+	    // 'abxxcd' will be treated as 'ab')
+	    that = that.slice(0, actual)
+	  }
+	
+	  return that
+	}
+	
+	function fromArrayLike (that, array) {
+	  var length = array.length < 0 ? 0 : checked(array.length) | 0
+	  that = createBuffer(that, length)
+	  for (var i = 0; i < length; i += 1) {
+	    that[i] = array[i] & 255
+	  }
+	  return that
+	}
+	
+	function fromArrayBuffer (that, array, byteOffset, length) {
+	  array.byteLength // this throws if `array` is not a valid ArrayBuffer
+	
+	  if (byteOffset < 0 || array.byteLength < byteOffset) {
+	    throw new RangeError('\'offset\' is out of bounds')
+	  }
+	
+	  if (array.byteLength < byteOffset + (length || 0)) {
+	    throw new RangeError('\'length\' is out of bounds')
+	  }
+	
+	  if (byteOffset === undefined && length === undefined) {
+	    array = new Uint8Array(array)
+	  } else if (length === undefined) {
+	    array = new Uint8Array(array, byteOffset)
+	  } else {
+	    array = new Uint8Array(array, byteOffset, length)
+	  }
+	
+	  if (Buffer.TYPED_ARRAY_SUPPORT) {
+	    // Return an augmented `Uint8Array` instance, for best performance
+	    that = array
+	    that.__proto__ = Buffer.prototype
+	  } else {
+	    // Fallback: Return an object instance of the Buffer class
+	    that = fromArrayLike(that, array)
+	  }
+	  return that
+	}
+	
+	function fromObject (that, obj) {
+	  if (Buffer.isBuffer(obj)) {
+	    var len = checked(obj.length) | 0
+	    that = createBuffer(that, len)
+	
+	    if (that.length === 0) {
+	      return that
+	    }
+	
+	    obj.copy(that, 0, 0, len)
+	    return that
+	  }
+	
+	  if (obj) {
+	    if ((typeof ArrayBuffer !== 'undefined' &&
+	        obj.buffer instanceof ArrayBuffer) || 'length' in obj) {
+	      if (typeof obj.length !== 'number' || isnan(obj.length)) {
+	        return createBuffer(that, 0)
+	      }
+	      return fromArrayLike(that, obj)
+	    }
+	
+	    if (obj.type === 'Buffer' && isArray(obj.data)) {
+	      return fromArrayLike(that, obj.data)
+	    }
+	  }
+	
+	  throw new TypeError('First argument must be a string, Buffer, ArrayBuffer, Array, or array-like object.')
+	}
+	
+	function checked (length) {
+	  // Note: cannot use `length < kMaxLength()` here because that fails when
+	  // length is NaN (which is otherwise coerced to zero.)
+	  if (length >= kMaxLength()) {
+	    throw new RangeError('Attempt to allocate Buffer larger than maximum ' +
+	                         'size: 0x' + kMaxLength().toString(16) + ' bytes')
+	  }
+	  return length | 0
+	}
+	
+	function SlowBuffer (length) {
+	  if (+length != length) { // eslint-disable-line eqeqeq
+	    length = 0
+	  }
+	  return Buffer.alloc(+length)
+	}
+	
+	Buffer.isBuffer = function isBuffer (b) {
+	  return !!(b != null && b._isBuffer)
+	}
+	
+	Buffer.compare = function compare (a, b) {
+	  if (!Buffer.isBuffer(a) || !Buffer.isBuffer(b)) {
+	    throw new TypeError('Arguments must be Buffers')
+	  }
+	
+	  if (a === b) return 0
+	
+	  var x = a.length
+	  var y = b.length
+	
+	  for (var i = 0, len = Math.min(x, y); i < len; ++i) {
+	    if (a[i] !== b[i]) {
+	      x = a[i]
+	      y = b[i]
+	      break
+	    }
+	  }
+	
+	  if (x < y) return -1
+	  if (y < x) return 1
+	  return 0
+	}
+	
+	Buffer.isEncoding = function isEncoding (encoding) {
+	  switch (String(encoding).toLowerCase()) {
+	    case 'hex':
+	    case 'utf8':
+	    case 'utf-8':
+	    case 'ascii':
+	    case 'latin1':
+	    case 'binary':
+	    case 'base64':
+	    case 'ucs2':
+	    case 'ucs-2':
+	    case 'utf16le':
+	    case 'utf-16le':
+	      return true
+	    default:
+	      return false
+	  }
+	}
+	
+	Buffer.concat = function concat (list, length) {
+	  if (!isArray(list)) {
+	    throw new TypeError('"list" argument must be an Array of Buffers')
+	  }
+	
+	  if (list.length === 0) {
+	    return Buffer.alloc(0)
+	  }
+	
+	  var i
+	  if (length === undefined) {
+	    length = 0
+	    for (i = 0; i < list.length; ++i) {
+	      length += list[i].length
+	    }
+	  }
+	
+	  var buffer = Buffer.allocUnsafe(length)
+	  var pos = 0
+	  for (i = 0; i < list.length; ++i) {
+	    var buf = list[i]
+	    if (!Buffer.isBuffer(buf)) {
+	      throw new TypeError('"list" argument must be an Array of Buffers')
+	    }
+	    buf.copy(buffer, pos)
+	    pos += buf.length
+	  }
+	  return buffer
+	}
+	
+	function byteLength (string, encoding) {
+	  if (Buffer.isBuffer(string)) {
+	    return string.length
+	  }
+	  if (typeof ArrayBuffer !== 'undefined' && typeof ArrayBuffer.isView === 'function' &&
+	      (ArrayBuffer.isView(string) || string instanceof ArrayBuffer)) {
+	    return string.byteLength
+	  }
+	  if (typeof string !== 'string') {
+	    string = '' + string
+	  }
+	
+	  var len = string.length
+	  if (len === 0) return 0
+	
+	  // Use a for loop to avoid recursion
+	  var loweredCase = false
+	  for (;;) {
+	    switch (encoding) {
+	      case 'ascii':
+	      case 'latin1':
+	      case 'binary':
+	        return len
+	      case 'utf8':
+	      case 'utf-8':
+	      case undefined:
+	        return utf8ToBytes(string).length
+	      case 'ucs2':
+	      case 'ucs-2':
+	      case 'utf16le':
+	      case 'utf-16le':
+	        return len * 2
+	      case 'hex':
+	        return len >>> 1
+	      case 'base64':
+	        return base64ToBytes(string).length
+	      default:
+	        if (loweredCase) return utf8ToBytes(string).length // assume utf8
+	        encoding = ('' + encoding).toLowerCase()
+	        loweredCase = true
+	    }
+	  }
+	}
+	Buffer.byteLength = byteLength
+	
+	function slowToString (encoding, start, end) {
+	  var loweredCase = false
+	
+	  // No need to verify that "this.length <= MAX_UINT32" since it's a read-only
+	  // property of a typed array.
+	
+	  // This behaves neither like String nor Uint8Array in that we set start/end
+	  // to their upper/lower bounds if the value passed is out of range.
+	  // undefined is handled specially as per ECMA-262 6th Edition,
+	  // Section 13.3.3.7 Runtime Semantics: KeyedBindingInitialization.
+	  if (start === undefined || start < 0) {
+	    start = 0
+	  }
+	  // Return early if start > this.length. Done here to prevent potential uint32
+	  // coercion fail below.
+	  if (start > this.length) {
+	    return ''
+	  }
+	
+	  if (end === undefined || end > this.length) {
+	    end = this.length
+	  }
+	
+	  if (end <= 0) {
+	    return ''
+	  }
+	
+	  // Force coersion to uint32. This will also coerce falsey/NaN values to 0.
+	  end >>>= 0
+	  start >>>= 0
+	
+	  if (end <= start) {
+	    return ''
+	  }
+	
+	  if (!encoding) encoding = 'utf8'
+	
+	  while (true) {
+	    switch (encoding) {
+	      case 'hex':
+	        return hexSlice(this, start, end)
+	
+	      case 'utf8':
+	      case 'utf-8':
+	        return utf8Slice(this, start, end)
+	
+	      case 'ascii':
+	        return asciiSlice(this, start, end)
+	
+	      case 'latin1':
+	      case 'binary':
+	        return latin1Slice(this, start, end)
+	
+	      case 'base64':
+	        return base64Slice(this, start, end)
+	
+	      case 'ucs2':
+	      case 'ucs-2':
+	      case 'utf16le':
+	      case 'utf-16le':
+	        return utf16leSlice(this, start, end)
+	
+	      default:
+	        if (loweredCase) throw new TypeError('Unknown encoding: ' + encoding)
+	        encoding = (encoding + '').toLowerCase()
+	        loweredCase = true
+	    }
+	  }
+	}
+	
+	// The property is used by `Buffer.isBuffer` and `is-buffer` (in Safari 5-7) to detect
+	// Buffer instances.
+	Buffer.prototype._isBuffer = true
+	
+	function swap (b, n, m) {
+	  var i = b[n]
+	  b[n] = b[m]
+	  b[m] = i
+	}
+	
+	Buffer.prototype.swap16 = function swap16 () {
+	  var len = this.length
+	  if (len % 2 !== 0) {
+	    throw new RangeError('Buffer size must be a multiple of 16-bits')
+	  }
+	  for (var i = 0; i < len; i += 2) {
+	    swap(this, i, i + 1)
+	  }
+	  return this
+	}
+	
+	Buffer.prototype.swap32 = function swap32 () {
+	  var len = this.length
+	  if (len % 4 !== 0) {
+	    throw new RangeError('Buffer size must be a multiple of 32-bits')
+	  }
+	  for (var i = 0; i < len; i += 4) {
+	    swap(this, i, i + 3)
+	    swap(this, i + 1, i + 2)
+	  }
+	  return this
+	}
+	
+	Buffer.prototype.swap64 = function swap64 () {
+	  var len = this.length
+	  if (len % 8 !== 0) {
+	    throw new RangeError('Buffer size must be a multiple of 64-bits')
+	  }
+	  for (var i = 0; i < len; i += 8) {
+	    swap(this, i, i + 7)
+	    swap(this, i + 1, i + 6)
+	    swap(this, i + 2, i + 5)
+	    swap(this, i + 3, i + 4)
+	  }
+	  return this
+	}
+	
+	Buffer.prototype.toString = function toString () {
+	  var length = this.length | 0
+	  if (length === 0) return ''
+	  if (arguments.length === 0) return utf8Slice(this, 0, length)
+	  return slowToString.apply(this, arguments)
+	}
+	
+	Buffer.prototype.equals = function equals (b) {
+	  if (!Buffer.isBuffer(b)) throw new TypeError('Argument must be a Buffer')
+	  if (this === b) return true
+	  return Buffer.compare(this, b) === 0
+	}
+	
+	Buffer.prototype.inspect = function inspect () {
+	  var str = ''
+	  var max = exports.INSPECT_MAX_BYTES
+	  if (this.length > 0) {
+	    str = this.toString('hex', 0, max).match(/.{2}/g).join(' ')
+	    if (this.length > max) str += ' ... '
+	  }
+	  return '<Buffer ' + str + '>'
+	}
+	
+	Buffer.prototype.compare = function compare (target, start, end, thisStart, thisEnd) {
+	  if (!Buffer.isBuffer(target)) {
+	    throw new TypeError('Argument must be a Buffer')
+	  }
+	
+	  if (start === undefined) {
+	    start = 0
+	  }
+	  if (end === undefined) {
+	    end = target ? target.length : 0
+	  }
+	  if (thisStart === undefined) {
+	    thisStart = 0
+	  }
+	  if (thisEnd === undefined) {
+	    thisEnd = this.length
+	  }
+	
+	  if (start < 0 || end > target.length || thisStart < 0 || thisEnd > this.length) {
+	    throw new RangeError('out of range index')
+	  }
+	
+	  if (thisStart >= thisEnd && start >= end) {
+	    return 0
+	  }
+	  if (thisStart >= thisEnd) {
+	    return -1
+	  }
+	  if (start >= end) {
+	    return 1
+	  }
+	
+	  start >>>= 0
+	  end >>>= 0
+	  thisStart >>>= 0
+	  thisEnd >>>= 0
+	
+	  if (this === target) return 0
+	
+	  var x = thisEnd - thisStart
+	  var y = end - start
+	  var len = Math.min(x, y)
+	
+	  var thisCopy = this.slice(thisStart, thisEnd)
+	  var targetCopy = target.slice(start, end)
+	
+	  for (var i = 0; i < len; ++i) {
+	    if (thisCopy[i] !== targetCopy[i]) {
+	      x = thisCopy[i]
+	      y = targetCopy[i]
+	      break
+	    }
+	  }
+	
+	  if (x < y) return -1
+	  if (y < x) return 1
+	  return 0
+	}
+	
+	// Finds either the first index of `val` in `buffer` at offset >= `byteOffset`,
+	// OR the last index of `val` in `buffer` at offset <= `byteOffset`.
+	//
+	// Arguments:
+	// - buffer - a Buffer to search
+	// - val - a string, Buffer, or number
+	// - byteOffset - an index into `buffer`; will be clamped to an int32
+	// - encoding - an optional encoding, relevant is val is a string
+	// - dir - true for indexOf, false for lastIndexOf
+	function bidirectionalIndexOf (buffer, val, byteOffset, encoding, dir) {
+	  // Empty buffer means no match
+	  if (buffer.length === 0) return -1
+	
+	  // Normalize byteOffset
+	  if (typeof byteOffset === 'string') {
+	    encoding = byteOffset
+	    byteOffset = 0
+	  } else if (byteOffset > 0x7fffffff) {
+	    byteOffset = 0x7fffffff
+	  } else if (byteOffset < -0x80000000) {
+	    byteOffset = -0x80000000
+	  }
+	  byteOffset = +byteOffset  // Coerce to Number.
+	  if (isNaN(byteOffset)) {
+	    // byteOffset: it it's undefined, null, NaN, "foo", etc, search whole buffer
+	    byteOffset = dir ? 0 : (buffer.length - 1)
+	  }
+	
+	  // Normalize byteOffset: negative offsets start from the end of the buffer
+	  if (byteOffset < 0) byteOffset = buffer.length + byteOffset
+	  if (byteOffset >= buffer.length) {
+	    if (dir) return -1
+	    else byteOffset = buffer.length - 1
+	  } else if (byteOffset < 0) {
+	    if (dir) byteOffset = 0
+	    else return -1
+	  }
+	
+	  // Normalize val
+	  if (typeof val === 'string') {
+	    val = Buffer.from(val, encoding)
+	  }
+	
+	  // Finally, search either indexOf (if dir is true) or lastIndexOf
+	  if (Buffer.isBuffer(val)) {
+	    // Special case: looking for empty string/buffer always fails
+	    if (val.length === 0) {
+	      return -1
+	    }
+	    return arrayIndexOf(buffer, val, byteOffset, encoding, dir)
+	  } else if (typeof val === 'number') {
+	    val = val & 0xFF // Search for a byte value [0-255]
+	    if (Buffer.TYPED_ARRAY_SUPPORT &&
+	        typeof Uint8Array.prototype.indexOf === 'function') {
+	      if (dir) {
+	        return Uint8Array.prototype.indexOf.call(buffer, val, byteOffset)
+	      } else {
+	        return Uint8Array.prototype.lastIndexOf.call(buffer, val, byteOffset)
+	      }
+	    }
+	    return arrayIndexOf(buffer, [ val ], byteOffset, encoding, dir)
+	  }
+	
+	  throw new TypeError('val must be string, number or Buffer')
+	}
+	
+	function arrayIndexOf (arr, val, byteOffset, encoding, dir) {
+	  var indexSize = 1
+	  var arrLength = arr.length
+	  var valLength = val.length
+	
+	  if (encoding !== undefined) {
+	    encoding = String(encoding).toLowerCase()
+	    if (encoding === 'ucs2' || encoding === 'ucs-2' ||
+	        encoding === 'utf16le' || encoding === 'utf-16le') {
+	      if (arr.length < 2 || val.length < 2) {
+	        return -1
+	      }
+	      indexSize = 2
+	      arrLength /= 2
+	      valLength /= 2
+	      byteOffset /= 2
+	    }
+	  }
+	
+	  function read (buf, i) {
+	    if (indexSize === 1) {
+	      return buf[i]
+	    } else {
+	      return buf.readUInt16BE(i * indexSize)
+	    }
+	  }
+	
+	  var i
+	  if (dir) {
+	    var foundIndex = -1
+	    for (i = byteOffset; i < arrLength; i++) {
+	      if (read(arr, i) === read(val, foundIndex === -1 ? 0 : i - foundIndex)) {
+	        if (foundIndex === -1) foundIndex = i
+	        if (i - foundIndex + 1 === valLength) return foundIndex * indexSize
+	      } else {
+	        if (foundIndex !== -1) i -= i - foundIndex
+	        foundIndex = -1
+	      }
+	    }
+	  } else {
+	    if (byteOffset + valLength > arrLength) byteOffset = arrLength - valLength
+	    for (i = byteOffset; i >= 0; i--) {
+	      var found = true
+	      for (var j = 0; j < valLength; j++) {
+	        if (read(arr, i + j) !== read(val, j)) {
+	          found = false
+	          break
+	        }
+	      }
+	      if (found) return i
+	    }
+	  }
+	
+	  return -1
+	}
+	
+	Buffer.prototype.includes = function includes (val, byteOffset, encoding) {
+	  return this.indexOf(val, byteOffset, encoding) !== -1
+	}
+	
+	Buffer.prototype.indexOf = function indexOf (val, byteOffset, encoding) {
+	  return bidirectionalIndexOf(this, val, byteOffset, encoding, true)
+	}
+	
+	Buffer.prototype.lastIndexOf = function lastIndexOf (val, byteOffset, encoding) {
+	  return bidirectionalIndexOf(this, val, byteOffset, encoding, false)
+	}
+	
+	function hexWrite (buf, string, offset, length) {
+	  offset = Number(offset) || 0
+	  var remaining = buf.length - offset
+	  if (!length) {
+	    length = remaining
+	  } else {
+	    length = Number(length)
+	    if (length > remaining) {
+	      length = remaining
+	    }
+	  }
+	
+	  // must be an even number of digits
+	  var strLen = string.length
+	  if (strLen % 2 !== 0) throw new TypeError('Invalid hex string')
+	
+	  if (length > strLen / 2) {
+	    length = strLen / 2
+	  }
+	  for (var i = 0; i < length; ++i) {
+	    var parsed = parseInt(string.substr(i * 2, 2), 16)
+	    if (isNaN(parsed)) return i
+	    buf[offset + i] = parsed
+	  }
+	  return i
+	}
+	
+	function utf8Write (buf, string, offset, length) {
+	  return blitBuffer(utf8ToBytes(string, buf.length - offset), buf, offset, length)
+	}
+	
+	function asciiWrite (buf, string, offset, length) {
+	  return blitBuffer(asciiToBytes(string), buf, offset, length)
+	}
+	
+	function latin1Write (buf, string, offset, length) {
+	  return asciiWrite(buf, string, offset, length)
+	}
+	
+	function base64Write (buf, string, offset, length) {
+	  return blitBuffer(base64ToBytes(string), buf, offset, length)
+	}
+	
+	function ucs2Write (buf, string, offset, length) {
+	  return blitBuffer(utf16leToBytes(string, buf.length - offset), buf, offset, length)
+	}
+	
+	Buffer.prototype.write = function write (string, offset, length, encoding) {
+	  // Buffer#write(string)
+	  if (offset === undefined) {
+	    encoding = 'utf8'
+	    length = this.length
+	    offset = 0
+	  // Buffer#write(string, encoding)
+	  } else if (length === undefined && typeof offset === 'string') {
+	    encoding = offset
+	    length = this.length
+	    offset = 0
+	  // Buffer#write(string, offset[, length][, encoding])
+	  } else if (isFinite(offset)) {
+	    offset = offset | 0
+	    if (isFinite(length)) {
+	      length = length | 0
+	      if (encoding === undefined) encoding = 'utf8'
+	    } else {
+	      encoding = length
+	      length = undefined
+	    }
+	  // legacy write(string, encoding, offset, length) - remove in v0.13
+	  } else {
+	    throw new Error(
+	      'Buffer.write(string, encoding, offset[, length]) is no longer supported'
+	    )
+	  }
+	
+	  var remaining = this.length - offset
+	  if (length === undefined || length > remaining) length = remaining
+	
+	  if ((string.length > 0 && (length < 0 || offset < 0)) || offset > this.length) {
+	    throw new RangeError('Attempt to write outside buffer bounds')
+	  }
+	
+	  if (!encoding) encoding = 'utf8'
+	
+	  var loweredCase = false
+	  for (;;) {
+	    switch (encoding) {
+	      case 'hex':
+	        return hexWrite(this, string, offset, length)
+	
+	      case 'utf8':
+	      case 'utf-8':
+	        return utf8Write(this, string, offset, length)
+	
+	      case 'ascii':
+	        return asciiWrite(this, string, offset, length)
+	
+	      case 'latin1':
+	      case 'binary':
+	        return latin1Write(this, string, offset, length)
+	
+	      case 'base64':
+	        // Warning: maxLength not taken into account in base64Write
+	        return base64Write(this, string, offset, length)
+	
+	      case 'ucs2':
+	      case 'ucs-2':
+	      case 'utf16le':
+	      case 'utf-16le':
+	        return ucs2Write(this, string, offset, length)
+	
+	      default:
+	        if (loweredCase) throw new TypeError('Unknown encoding: ' + encoding)
+	        encoding = ('' + encoding).toLowerCase()
+	        loweredCase = true
+	    }
+	  }
+	}
+	
+	Buffer.prototype.toJSON = function toJSON () {
+	  return {
+	    type: 'Buffer',
+	    data: Array.prototype.slice.call(this._arr || this, 0)
+	  }
+	}
+	
+	function base64Slice (buf, start, end) {
+	  if (start === 0 && end === buf.length) {
+	    return base64.fromByteArray(buf)
+	  } else {
+	    return base64.fromByteArray(buf.slice(start, end))
+	  }
+	}
+	
+	function utf8Slice (buf, start, end) {
+	  end = Math.min(buf.length, end)
+	  var res = []
+	
+	  var i = start
+	  while (i < end) {
+	    var firstByte = buf[i]
+	    var codePoint = null
+	    var bytesPerSequence = (firstByte > 0xEF) ? 4
+	      : (firstByte > 0xDF) ? 3
+	      : (firstByte > 0xBF) ? 2
+	      : 1
+	
+	    if (i + bytesPerSequence <= end) {
+	      var secondByte, thirdByte, fourthByte, tempCodePoint
+	
+	      switch (bytesPerSequence) {
+	        case 1:
+	          if (firstByte < 0x80) {
+	            codePoint = firstByte
+	          }
+	          break
+	        case 2:
+	          secondByte = buf[i + 1]
+	          if ((secondByte & 0xC0) === 0x80) {
+	            tempCodePoint = (firstByte & 0x1F) << 0x6 | (secondByte & 0x3F)
+	            if (tempCodePoint > 0x7F) {
+	              codePoint = tempCodePoint
+	            }
+	          }
+	          break
+	        case 3:
+	          secondByte = buf[i + 1]
+	          thirdByte = buf[i + 2]
+	          if ((secondByte & 0xC0) === 0x80 && (thirdByte & 0xC0) === 0x80) {
+	            tempCodePoint = (firstByte & 0xF) << 0xC | (secondByte & 0x3F) << 0x6 | (thirdByte & 0x3F)
+	            if (tempCodePoint > 0x7FF && (tempCodePoint < 0xD800 || tempCodePoint > 0xDFFF)) {
+	              codePoint = tempCodePoint
+	            }
+	          }
+	          break
+	        case 4:
+	          secondByte = buf[i + 1]
+	          thirdByte = buf[i + 2]
+	          fourthByte = buf[i + 3]
+	          if ((secondByte & 0xC0) === 0x80 && (thirdByte & 0xC0) === 0x80 && (fourthByte & 0xC0) === 0x80) {
+	            tempCodePoint = (firstByte & 0xF) << 0x12 | (secondByte & 0x3F) << 0xC | (thirdByte & 0x3F) << 0x6 | (fourthByte & 0x3F)
+	            if (tempCodePoint > 0xFFFF && tempCodePoint < 0x110000) {
+	              codePoint = tempCodePoint
+	            }
+	          }
+	      }
+	    }
+	
+	    if (codePoint === null) {
+	      // we did not generate a valid codePoint so insert a
+	      // replacement char (U+FFFD) and advance only 1 byte
+	      codePoint = 0xFFFD
+	      bytesPerSequence = 1
+	    } else if (codePoint > 0xFFFF) {
+	      // encode to utf16 (surrogate pair dance)
+	      codePoint -= 0x10000
+	      res.push(codePoint >>> 10 & 0x3FF | 0xD800)
+	      codePoint = 0xDC00 | codePoint & 0x3FF
+	    }
+	
+	    res.push(codePoint)
+	    i += bytesPerSequence
+	  }
+	
+	  return decodeCodePointsArray(res)
+	}
+	
+	// Based on http://stackoverflow.com/a/22747272/680742, the browser with
+	// the lowest limit is Chrome, with 0x10000 args.
+	// We go 1 magnitude less, for safety
+	var MAX_ARGUMENTS_LENGTH = 0x1000
+	
+	function decodeCodePointsArray (codePoints) {
+	  var len = codePoints.length
+	  if (len <= MAX_ARGUMENTS_LENGTH) {
+	    return String.fromCharCode.apply(String, codePoints) // avoid extra slice()
+	  }
+	
+	  // Decode in chunks to avoid "call stack size exceeded".
+	  var res = ''
+	  var i = 0
+	  while (i < len) {
+	    res += String.fromCharCode.apply(
+	      String,
+	      codePoints.slice(i, i += MAX_ARGUMENTS_LENGTH)
+	    )
+	  }
+	  return res
+	}
+	
+	function asciiSlice (buf, start, end) {
+	  var ret = ''
+	  end = Math.min(buf.length, end)
+	
+	  for (var i = start; i < end; ++i) {
+	    ret += String.fromCharCode(buf[i] & 0x7F)
+	  }
+	  return ret
+	}
+	
+	function latin1Slice (buf, start, end) {
+	  var ret = ''
+	  end = Math.min(buf.length, end)
+	
+	  for (var i = start; i < end; ++i) {
+	    ret += String.fromCharCode(buf[i])
+	  }
+	  return ret
+	}
+	
+	function hexSlice (buf, start, end) {
+	  var len = buf.length
+	
+	  if (!start || start < 0) start = 0
+	  if (!end || end < 0 || end > len) end = len
+	
+	  var out = ''
+	  for (var i = start; i < end; ++i) {
+	    out += toHex(buf[i])
+	  }
+	  return out
+	}
+	
+	function utf16leSlice (buf, start, end) {
+	  var bytes = buf.slice(start, end)
+	  var res = ''
+	  for (var i = 0; i < bytes.length; i += 2) {
+	    res += String.fromCharCode(bytes[i] + bytes[i + 1] * 256)
+	  }
+	  return res
+	}
+	
+	Buffer.prototype.slice = function slice (start, end) {
+	  var len = this.length
+	  start = ~~start
+	  end = end === undefined ? len : ~~end
+	
+	  if (start < 0) {
+	    start += len
+	    if (start < 0) start = 0
+	  } else if (start > len) {
+	    start = len
+	  }
+	
+	  if (end < 0) {
+	    end += len
+	    if (end < 0) end = 0
+	  } else if (end > len) {
+	    end = len
+	  }
+	
+	  if (end < start) end = start
+	
+	  var newBuf
+	  if (Buffer.TYPED_ARRAY_SUPPORT) {
+	    newBuf = this.subarray(start, end)
+	    newBuf.__proto__ = Buffer.prototype
+	  } else {
+	    var sliceLen = end - start
+	    newBuf = new Buffer(sliceLen, undefined)
+	    for (var i = 0; i < sliceLen; ++i) {
+	      newBuf[i] = this[i + start]
+	    }
+	  }
+	
+	  return newBuf
+	}
+	
+	/*
+	 * Need to make sure that buffer isn't trying to write out of bounds.
+	 */
+	function checkOffset (offset, ext, length) {
+	  if ((offset % 1) !== 0 || offset < 0) throw new RangeError('offset is not uint')
+	  if (offset + ext > length) throw new RangeError('Trying to access beyond buffer length')
+	}
+	
+	Buffer.prototype.readUIntLE = function readUIntLE (offset, byteLength, noAssert) {
+	  offset = offset | 0
+	  byteLength = byteLength | 0
+	  if (!noAssert) checkOffset(offset, byteLength, this.length)
+	
+	  var val = this[offset]
+	  var mul = 1
+	  var i = 0
+	  while (++i < byteLength && (mul *= 0x100)) {
+	    val += this[offset + i] * mul
+	  }
+	
+	  return val
+	}
+	
+	Buffer.prototype.readUIntBE = function readUIntBE (offset, byteLength, noAssert) {
+	  offset = offset | 0
+	  byteLength = byteLength | 0
+	  if (!noAssert) {
+	    checkOffset(offset, byteLength, this.length)
+	  }
+	
+	  var val = this[offset + --byteLength]
+	  var mul = 1
+	  while (byteLength > 0 && (mul *= 0x100)) {
+	    val += this[offset + --byteLength] * mul
+	  }
+	
+	  return val
+	}
+	
+	Buffer.prototype.readUInt8 = function readUInt8 (offset, noAssert) {
+	  if (!noAssert) checkOffset(offset, 1, this.length)
+	  return this[offset]
+	}
+	
+	Buffer.prototype.readUInt16LE = function readUInt16LE (offset, noAssert) {
+	  if (!noAssert) checkOffset(offset, 2, this.length)
+	  return this[offset] | (this[offset + 1] << 8)
+	}
+	
+	Buffer.prototype.readUInt16BE = function readUInt16BE (offset, noAssert) {
+	  if (!noAssert) checkOffset(offset, 2, this.length)
+	  return (this[offset] << 8) | this[offset + 1]
+	}
+	
+	Buffer.prototype.readUInt32LE = function readUInt32LE (offset, noAssert) {
+	  if (!noAssert) checkOffset(offset, 4, this.length)
+	
+	  return ((this[offset]) |
+	      (this[offset + 1] << 8) |
+	      (this[offset + 2] << 16)) +
+	      (this[offset + 3] * 0x1000000)
+	}
+	
+	Buffer.prototype.readUInt32BE = function readUInt32BE (offset, noAssert) {
+	  if (!noAssert) checkOffset(offset, 4, this.length)
+	
+	  return (this[offset] * 0x1000000) +
+	    ((this[offset + 1] << 16) |
+	    (this[offset + 2] << 8) |
+	    this[offset + 3])
+	}
+	
+	Buffer.prototype.readIntLE = function readIntLE (offset, byteLength, noAssert) {
+	  offset = offset | 0
+	  byteLength = byteLength | 0
+	  if (!noAssert) checkOffset(offset, byteLength, this.length)
+	
+	  var val = this[offset]
+	  var mul = 1
+	  var i = 0
+	  while (++i < byteLength && (mul *= 0x100)) {
+	    val += this[offset + i] * mul
+	  }
+	  mul *= 0x80
+	
+	  if (val >= mul) val -= Math.pow(2, 8 * byteLength)
+	
+	  return val
+	}
+	
+	Buffer.prototype.readIntBE = function readIntBE (offset, byteLength, noAssert) {
+	  offset = offset | 0
+	  byteLength = byteLength | 0
+	  if (!noAssert) checkOffset(offset, byteLength, this.length)
+	
+	  var i = byteLength
+	  var mul = 1
+	  var val = this[offset + --i]
+	  while (i > 0 && (mul *= 0x100)) {
+	    val += this[offset + --i] * mul
+	  }
+	  mul *= 0x80
+	
+	  if (val >= mul) val -= Math.pow(2, 8 * byteLength)
+	
+	  return val
+	}
+	
+	Buffer.prototype.readInt8 = function readInt8 (offset, noAssert) {
+	  if (!noAssert) checkOffset(offset, 1, this.length)
+	  if (!(this[offset] & 0x80)) return (this[offset])
+	  return ((0xff - this[offset] + 1) * -1)
+	}
+	
+	Buffer.prototype.readInt16LE = function readInt16LE (offset, noAssert) {
+	  if (!noAssert) checkOffset(offset, 2, this.length)
+	  var val = this[offset] | (this[offset + 1] << 8)
+	  return (val & 0x8000) ? val | 0xFFFF0000 : val
+	}
+	
+	Buffer.prototype.readInt16BE = function readInt16BE (offset, noAssert) {
+	  if (!noAssert) checkOffset(offset, 2, this.length)
+	  var val = this[offset + 1] | (this[offset] << 8)
+	  return (val & 0x8000) ? val | 0xFFFF0000 : val
+	}
+	
+	Buffer.prototype.readInt32LE = function readInt32LE (offset, noAssert) {
+	  if (!noAssert) checkOffset(offset, 4, this.length)
+	
+	  return (this[offset]) |
+	    (this[offset + 1] << 8) |
+	    (this[offset + 2] << 16) |
+	    (this[offset + 3] << 24)
+	}
+	
+	Buffer.prototype.readInt32BE = function readInt32BE (offset, noAssert) {
+	  if (!noAssert) checkOffset(offset, 4, this.length)
+	
+	  return (this[offset] << 24) |
+	    (this[offset + 1] << 16) |
+	    (this[offset + 2] << 8) |
+	    (this[offset + 3])
+	}
+	
+	Buffer.prototype.readFloatLE = function readFloatLE (offset, noAssert) {
+	  if (!noAssert) checkOffset(offset, 4, this.length)
+	  return ieee754.read(this, offset, true, 23, 4)
+	}
+	
+	Buffer.prototype.readFloatBE = function readFloatBE (offset, noAssert) {
+	  if (!noAssert) checkOffset(offset, 4, this.length)
+	  return ieee754.read(this, offset, false, 23, 4)
+	}
+	
+	Buffer.prototype.readDoubleLE = function readDoubleLE (offset, noAssert) {
+	  if (!noAssert) checkOffset(offset, 8, this.length)
+	  return ieee754.read(this, offset, true, 52, 8)
+	}
+	
+	Buffer.prototype.readDoubleBE = function readDoubleBE (offset, noAssert) {
+	  if (!noAssert) checkOffset(offset, 8, this.length)
+	  return ieee754.read(this, offset, false, 52, 8)
+	}
+	
+	function checkInt (buf, value, offset, ext, max, min) {
+	  if (!Buffer.isBuffer(buf)) throw new TypeError('"buffer" argument must be a Buffer instance')
+	  if (value > max || value < min) throw new RangeError('"value" argument is out of bounds')
+	  if (offset + ext > buf.length) throw new RangeError('Index out of range')
+	}
+	
+	Buffer.prototype.writeUIntLE = function writeUIntLE (value, offset, byteLength, noAssert) {
+	  value = +value
+	  offset = offset | 0
+	  byteLength = byteLength | 0
+	  if (!noAssert) {
+	    var maxBytes = Math.pow(2, 8 * byteLength) - 1
+	    checkInt(this, value, offset, byteLength, maxBytes, 0)
+	  }
+	
+	  var mul = 1
+	  var i = 0
+	  this[offset] = value & 0xFF
+	  while (++i < byteLength && (mul *= 0x100)) {
+	    this[offset + i] = (value / mul) & 0xFF
+	  }
+	
+	  return offset + byteLength
+	}
+	
+	Buffer.prototype.writeUIntBE = function writeUIntBE (value, offset, byteLength, noAssert) {
+	  value = +value
+	  offset = offset | 0
+	  byteLength = byteLength | 0
+	  if (!noAssert) {
+	    var maxBytes = Math.pow(2, 8 * byteLength) - 1
+	    checkInt(this, value, offset, byteLength, maxBytes, 0)
+	  }
+	
+	  var i = byteLength - 1
+	  var mul = 1
+	  this[offset + i] = value & 0xFF
+	  while (--i >= 0 && (mul *= 0x100)) {
+	    this[offset + i] = (value / mul) & 0xFF
+	  }
+	
+	  return offset + byteLength
+	}
+	
+	Buffer.prototype.writeUInt8 = function writeUInt8 (value, offset, noAssert) {
+	  value = +value
+	  offset = offset | 0
+	  if (!noAssert) checkInt(this, value, offset, 1, 0xff, 0)
+	  if (!Buffer.TYPED_ARRAY_SUPPORT) value = Math.floor(value)
+	  this[offset] = (value & 0xff)
+	  return offset + 1
+	}
+	
+	function objectWriteUInt16 (buf, value, offset, littleEndian) {
+	  if (value < 0) value = 0xffff + value + 1
+	  for (var i = 0, j = Math.min(buf.length - offset, 2); i < j; ++i) {
+	    buf[offset + i] = (value & (0xff << (8 * (littleEndian ? i : 1 - i)))) >>>
+	      (littleEndian ? i : 1 - i) * 8
+	  }
+	}
+	
+	Buffer.prototype.writeUInt16LE = function writeUInt16LE (value, offset, noAssert) {
+	  value = +value
+	  offset = offset | 0
+	  if (!noAssert) checkInt(this, value, offset, 2, 0xffff, 0)
+	  if (Buffer.TYPED_ARRAY_SUPPORT) {
+	    this[offset] = (value & 0xff)
+	    this[offset + 1] = (value >>> 8)
+	  } else {
+	    objectWriteUInt16(this, value, offset, true)
+	  }
+	  return offset + 2
+	}
+	
+	Buffer.prototype.writeUInt16BE = function writeUInt16BE (value, offset, noAssert) {
+	  value = +value
+	  offset = offset | 0
+	  if (!noAssert) checkInt(this, value, offset, 2, 0xffff, 0)
+	  if (Buffer.TYPED_ARRAY_SUPPORT) {
+	    this[offset] = (value >>> 8)
+	    this[offset + 1] = (value & 0xff)
+	  } else {
+	    objectWriteUInt16(this, value, offset, false)
+	  }
+	  return offset + 2
+	}
+	
+	function objectWriteUInt32 (buf, value, offset, littleEndian) {
+	  if (value < 0) value = 0xffffffff + value + 1
+	  for (var i = 0, j = Math.min(buf.length - offset, 4); i < j; ++i) {
+	    buf[offset + i] = (value >>> (littleEndian ? i : 3 - i) * 8) & 0xff
+	  }
+	}
+	
+	Buffer.prototype.writeUInt32LE = function writeUInt32LE (value, offset, noAssert) {
+	  value = +value
+	  offset = offset | 0
+	  if (!noAssert) checkInt(this, value, offset, 4, 0xffffffff, 0)
+	  if (Buffer.TYPED_ARRAY_SUPPORT) {
+	    this[offset + 3] = (value >>> 24)
+	    this[offset + 2] = (value >>> 16)
+	    this[offset + 1] = (value >>> 8)
+	    this[offset] = (value & 0xff)
+	  } else {
+	    objectWriteUInt32(this, value, offset, true)
+	  }
+	  return offset + 4
+	}
+	
+	Buffer.prototype.writeUInt32BE = function writeUInt32BE (value, offset, noAssert) {
+	  value = +value
+	  offset = offset | 0
+	  if (!noAssert) checkInt(this, value, offset, 4, 0xffffffff, 0)
+	  if (Buffer.TYPED_ARRAY_SUPPORT) {
+	    this[offset] = (value >>> 24)
+	    this[offset + 1] = (value >>> 16)
+	    this[offset + 2] = (value >>> 8)
+	    this[offset + 3] = (value & 0xff)
+	  } else {
+	    objectWriteUInt32(this, value, offset, false)
+	  }
+	  return offset + 4
+	}
+	
+	Buffer.prototype.writeIntLE = function writeIntLE (value, offset, byteLength, noAssert) {
+	  value = +value
+	  offset = offset | 0
+	  if (!noAssert) {
+	    var limit = Math.pow(2, 8 * byteLength - 1)
+	
+	    checkInt(this, value, offset, byteLength, limit - 1, -limit)
+	  }
+	
+	  var i = 0
+	  var mul = 1
+	  var sub = 0
+	  this[offset] = value & 0xFF
+	  while (++i < byteLength && (mul *= 0x100)) {
+	    if (value < 0 && sub === 0 && this[offset + i - 1] !== 0) {
+	      sub = 1
+	    }
+	    this[offset + i] = ((value / mul) >> 0) - sub & 0xFF
+	  }
+	
+	  return offset + byteLength
+	}
+	
+	Buffer.prototype.writeIntBE = function writeIntBE (value, offset, byteLength, noAssert) {
+	  value = +value
+	  offset = offset | 0
+	  if (!noAssert) {
+	    var limit = Math.pow(2, 8 * byteLength - 1)
+	
+	    checkInt(this, value, offset, byteLength, limit - 1, -limit)
+	  }
+	
+	  var i = byteLength - 1
+	  var mul = 1
+	  var sub = 0
+	  this[offset + i] = value & 0xFF
+	  while (--i >= 0 && (mul *= 0x100)) {
+	    if (value < 0 && sub === 0 && this[offset + i + 1] !== 0) {
+	      sub = 1
+	    }
+	    this[offset + i] = ((value / mul) >> 0) - sub & 0xFF
+	  }
+	
+	  return offset + byteLength
+	}
+	
+	Buffer.prototype.writeInt8 = function writeInt8 (value, offset, noAssert) {
+	  value = +value
+	  offset = offset | 0
+	  if (!noAssert) checkInt(this, value, offset, 1, 0x7f, -0x80)
+	  if (!Buffer.TYPED_ARRAY_SUPPORT) value = Math.floor(value)
+	  if (value < 0) value = 0xff + value + 1
+	  this[offset] = (value & 0xff)
+	  return offset + 1
+	}
+	
+	Buffer.prototype.writeInt16LE = function writeInt16LE (value, offset, noAssert) {
+	  value = +value
+	  offset = offset | 0
+	  if (!noAssert) checkInt(this, value, offset, 2, 0x7fff, -0x8000)
+	  if (Buffer.TYPED_ARRAY_SUPPORT) {
+	    this[offset] = (value & 0xff)
+	    this[offset + 1] = (value >>> 8)
+	  } else {
+	    objectWriteUInt16(this, value, offset, true)
+	  }
+	  return offset + 2
+	}
+	
+	Buffer.prototype.writeInt16BE = function writeInt16BE (value, offset, noAssert) {
+	  value = +value
+	  offset = offset | 0
+	  if (!noAssert) checkInt(this, value, offset, 2, 0x7fff, -0x8000)
+	  if (Buffer.TYPED_ARRAY_SUPPORT) {
+	    this[offset] = (value >>> 8)
+	    this[offset + 1] = (value & 0xff)
+	  } else {
+	    objectWriteUInt16(this, value, offset, false)
+	  }
+	  return offset + 2
+	}
+	
+	Buffer.prototype.writeInt32LE = function writeInt32LE (value, offset, noAssert) {
+	  value = +value
+	  offset = offset | 0
+	  if (!noAssert) checkInt(this, value, offset, 4, 0x7fffffff, -0x80000000)
+	  if (Buffer.TYPED_ARRAY_SUPPORT) {
+	    this[offset] = (value & 0xff)
+	    this[offset + 1] = (value >>> 8)
+	    this[offset + 2] = (value >>> 16)
+	    this[offset + 3] = (value >>> 24)
+	  } else {
+	    objectWriteUInt32(this, value, offset, true)
+	  }
+	  return offset + 4
+	}
+	
+	Buffer.prototype.writeInt32BE = function writeInt32BE (value, offset, noAssert) {
+	  value = +value
+	  offset = offset | 0
+	  if (!noAssert) checkInt(this, value, offset, 4, 0x7fffffff, -0x80000000)
+	  if (value < 0) value = 0xffffffff + value + 1
+	  if (Buffer.TYPED_ARRAY_SUPPORT) {
+	    this[offset] = (value >>> 24)
+	    this[offset + 1] = (value >>> 16)
+	    this[offset + 2] = (value >>> 8)
+	    this[offset + 3] = (value & 0xff)
+	  } else {
+	    objectWriteUInt32(this, value, offset, false)
+	  }
+	  return offset + 4
+	}
+	
+	function checkIEEE754 (buf, value, offset, ext, max, min) {
+	  if (offset + ext > buf.length) throw new RangeError('Index out of range')
+	  if (offset < 0) throw new RangeError('Index out of range')
+	}
+	
+	function writeFloat (buf, value, offset, littleEndian, noAssert) {
+	  if (!noAssert) {
+	    checkIEEE754(buf, value, offset, 4, 3.4028234663852886e+38, -3.4028234663852886e+38)
+	  }
+	  ieee754.write(buf, value, offset, littleEndian, 23, 4)
+	  return offset + 4
+	}
+	
+	Buffer.prototype.writeFloatLE = function writeFloatLE (value, offset, noAssert) {
+	  return writeFloat(this, value, offset, true, noAssert)
+	}
+	
+	Buffer.prototype.writeFloatBE = function writeFloatBE (value, offset, noAssert) {
+	  return writeFloat(this, value, offset, false, noAssert)
+	}
+	
+	function writeDouble (buf, value, offset, littleEndian, noAssert) {
+	  if (!noAssert) {
+	    checkIEEE754(buf, value, offset, 8, 1.7976931348623157E+308, -1.7976931348623157E+308)
+	  }
+	  ieee754.write(buf, value, offset, littleEndian, 52, 8)
+	  return offset + 8
+	}
+	
+	Buffer.prototype.writeDoubleLE = function writeDoubleLE (value, offset, noAssert) {
+	  return writeDouble(this, value, offset, true, noAssert)
+	}
+	
+	Buffer.prototype.writeDoubleBE = function writeDoubleBE (value, offset, noAssert) {
+	  return writeDouble(this, value, offset, false, noAssert)
+	}
+	
+	// copy(targetBuffer, targetStart=0, sourceStart=0, sourceEnd=buffer.length)
+	Buffer.prototype.copy = function copy (target, targetStart, start, end) {
+	  if (!start) start = 0
+	  if (!end && end !== 0) end = this.length
+	  if (targetStart >= target.length) targetStart = target.length
+	  if (!targetStart) targetStart = 0
+	  if (end > 0 && end < start) end = start
+	
+	  // Copy 0 bytes; we're done
+	  if (end === start) return 0
+	  if (target.length === 0 || this.length === 0) return 0
+	
+	  // Fatal error conditions
+	  if (targetStart < 0) {
+	    throw new RangeError('targetStart out of bounds')
+	  }
+	  if (start < 0 || start >= this.length) throw new RangeError('sourceStart out of bounds')
+	  if (end < 0) throw new RangeError('sourceEnd out of bounds')
+	
+	  // Are we oob?
+	  if (end > this.length) end = this.length
+	  if (target.length - targetStart < end - start) {
+	    end = target.length - targetStart + start
+	  }
+	
+	  var len = end - start
+	  var i
+	
+	  if (this === target && start < targetStart && targetStart < end) {
+	    // descending copy from end
+	    for (i = len - 1; i >= 0; --i) {
+	      target[i + targetStart] = this[i + start]
+	    }
+	  } else if (len < 1000 || !Buffer.TYPED_ARRAY_SUPPORT) {
+	    // ascending copy from start
+	    for (i = 0; i < len; ++i) {
+	      target[i + targetStart] = this[i + start]
+	    }
+	  } else {
+	    Uint8Array.prototype.set.call(
+	      target,
+	      this.subarray(start, start + len),
+	      targetStart
+	    )
+	  }
+	
+	  return len
+	}
+	
+	// Usage:
+	//    buffer.fill(number[, offset[, end]])
+	//    buffer.fill(buffer[, offset[, end]])
+	//    buffer.fill(string[, offset[, end]][, encoding])
+	Buffer.prototype.fill = function fill (val, start, end, encoding) {
+	  // Handle string cases:
+	  if (typeof val === 'string') {
+	    if (typeof start === 'string') {
+	      encoding = start
+	      start = 0
+	      end = this.length
+	    } else if (typeof end === 'string') {
+	      encoding = end
+	      end = this.length
+	    }
+	    if (val.length === 1) {
+	      var code = val.charCodeAt(0)
+	      if (code < 256) {
+	        val = code
+	      }
+	    }
+	    if (encoding !== undefined && typeof encoding !== 'string') {
+	      throw new TypeError('encoding must be a string')
+	    }
+	    if (typeof encoding === 'string' && !Buffer.isEncoding(encoding)) {
+	      throw new TypeError('Unknown encoding: ' + encoding)
+	    }
+	  } else if (typeof val === 'number') {
+	    val = val & 255
+	  }
+	
+	  // Invalid ranges are not set to a default, so can range check early.
+	  if (start < 0 || this.length < start || this.length < end) {
+	    throw new RangeError('Out of range index')
+	  }
+	
+	  if (end <= start) {
+	    return this
+	  }
+	
+	  start = start >>> 0
+	  end = end === undefined ? this.length : end >>> 0
+	
+	  if (!val) val = 0
+	
+	  var i
+	  if (typeof val === 'number') {
+	    for (i = start; i < end; ++i) {
+	      this[i] = val
+	    }
+	  } else {
+	    var bytes = Buffer.isBuffer(val)
+	      ? val
+	      : utf8ToBytes(new Buffer(val, encoding).toString())
+	    var len = bytes.length
+	    for (i = 0; i < end - start; ++i) {
+	      this[i + start] = bytes[i % len]
+	    }
+	  }
+	
+	  return this
+	}
+	
+	// HELPER FUNCTIONS
+	// ================
+	
+	var INVALID_BASE64_RE = /[^+\/0-9A-Za-z-_]/g
+	
+	function base64clean (str) {
+	  // Node strips out invalid characters like \n and \t from the string, base64-js does not
+	  str = stringtrim(str).replace(INVALID_BASE64_RE, '')
+	  // Node converts strings with length < 2 to ''
+	  if (str.length < 2) return ''
+	  // Node allows for non-padded base64 strings (missing trailing ===), base64-js does not
+	  while (str.length % 4 !== 0) {
+	    str = str + '='
+	  }
+	  return str
+	}
+	
+	function stringtrim (str) {
+	  if (str.trim) return str.trim()
+	  return str.replace(/^\s+|\s+$/g, '')
+	}
+	
+	function toHex (n) {
+	  if (n < 16) return '0' + n.toString(16)
+	  return n.toString(16)
+	}
+	
+	function utf8ToBytes (string, units) {
+	  units = units || Infinity
+	  var codePoint
+	  var length = string.length
+	  var leadSurrogate = null
+	  var bytes = []
+	
+	  for (var i = 0; i < length; ++i) {
+	    codePoint = string.charCodeAt(i)
+	
+	    // is surrogate component
+	    if (codePoint > 0xD7FF && codePoint < 0xE000) {
+	      // last char was a lead
+	      if (!leadSurrogate) {
+	        // no lead yet
+	        if (codePoint > 0xDBFF) {
+	          // unexpected trail
+	          if ((units -= 3) > -1) bytes.push(0xEF, 0xBF, 0xBD)
+	          continue
+	        } else if (i + 1 === length) {
+	          // unpaired lead
+	          if ((units -= 3) > -1) bytes.push(0xEF, 0xBF, 0xBD)
+	          continue
+	        }
+	
+	        // valid lead
+	        leadSurrogate = codePoint
+	
+	        continue
+	      }
+	
+	      // 2 leads in a row
+	      if (codePoint < 0xDC00) {
+	        if ((units -= 3) > -1) bytes.push(0xEF, 0xBF, 0xBD)
+	        leadSurrogate = codePoint
+	        continue
+	      }
+	
+	      // valid surrogate pair
+	      codePoint = (leadSurrogate - 0xD800 << 10 | codePoint - 0xDC00) + 0x10000
+	    } else if (leadSurrogate) {
+	      // valid bmp char, but last char was a lead
+	      if ((units -= 3) > -1) bytes.push(0xEF, 0xBF, 0xBD)
+	    }
+	
+	    leadSurrogate = null
+	
+	    // encode utf8
+	    if (codePoint < 0x80) {
+	      if ((units -= 1) < 0) break
+	      bytes.push(codePoint)
+	    } else if (codePoint < 0x800) {
+	      if ((units -= 2) < 0) break
+	      bytes.push(
+	        codePoint >> 0x6 | 0xC0,
+	        codePoint & 0x3F | 0x80
+	      )
+	    } else if (codePoint < 0x10000) {
+	      if ((units -= 3) < 0) break
+	      bytes.push(
+	        codePoint >> 0xC | 0xE0,
+	        codePoint >> 0x6 & 0x3F | 0x80,
+	        codePoint & 0x3F | 0x80
+	      )
+	    } else if (codePoint < 0x110000) {
+	      if ((units -= 4) < 0) break
+	      bytes.push(
+	        codePoint >> 0x12 | 0xF0,
+	        codePoint >> 0xC & 0x3F | 0x80,
+	        codePoint >> 0x6 & 0x3F | 0x80,
+	        codePoint & 0x3F | 0x80
+	      )
+	    } else {
+	      throw new Error('Invalid code point')
+	    }
+	  }
+	
+	  return bytes
+	}
+	
+	function asciiToBytes (str) {
+	  var byteArray = []
+	  for (var i = 0; i < str.length; ++i) {
+	    // Node's code seems to be doing this and not & 0x7F..
+	    byteArray.push(str.charCodeAt(i) & 0xFF)
+	  }
+	  return byteArray
+	}
+	
+	function utf16leToBytes (str, units) {
+	  var c, hi, lo
+	  var byteArray = []
+	  for (var i = 0; i < str.length; ++i) {
+	    if ((units -= 2) < 0) break
+	
+	    c = str.charCodeAt(i)
+	    hi = c >> 8
+	    lo = c % 256
+	    byteArray.push(lo)
+	    byteArray.push(hi)
+	  }
+	
+	  return byteArray
+	}
+	
+	function base64ToBytes (str) {
+	  return base64.toByteArray(base64clean(str))
+	}
+	
+	function blitBuffer (src, dst, offset, length) {
+	  for (var i = 0; i < length; ++i) {
+	    if ((i + offset >= dst.length) || (i >= src.length)) break
+	    dst[i + offset] = src[i]
+	  }
+	  return i
+	}
+	
+	function isnan (val) {
+	  return val !== val // eslint-disable-line no-self-compare
+	}
+	
+	/* WEBPACK VAR INJECTION */}.call(exports, (function() { return this; }())))
 
 /***/ },
 /* 13 */
 /***/ function(module, exports) {
 
-	eval("'use strict'\n\nexports.byteLength = byteLength\nexports.toByteArray = toByteArray\nexports.fromByteArray = fromByteArray\n\nvar lookup = []\nvar revLookup = []\nvar Arr = typeof Uint8Array !== 'undefined' ? Uint8Array : Array\n\nvar code = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/'\nfor (var i = 0, len = code.length; i < len; ++i) {\n  lookup[i] = code[i]\n  revLookup[code.charCodeAt(i)] = i\n}\n\nrevLookup['-'.charCodeAt(0)] = 62\nrevLookup['_'.charCodeAt(0)] = 63\n\nfunction placeHoldersCount (b64) {\n  var len = b64.length\n  if (len % 4 > 0) {\n    throw new Error('Invalid string. Length must be a multiple of 4')\n  }\n\n  // the number of equal signs (place holders)\n  // if there are two placeholders, than the two characters before it\n  // represent one byte\n  // if there is only one, then the three characters before it represent 2 bytes\n  // this is just a cheap hack to not do indexOf twice\n  return b64[len - 2] === '=' ? 2 : b64[len - 1] === '=' ? 1 : 0\n}\n\nfunction byteLength (b64) {\n  // base64 is 4/3 + up to two characters of the original data\n  return b64.length * 3 / 4 - placeHoldersCount(b64)\n}\n\nfunction toByteArray (b64) {\n  var i, j, l, tmp, placeHolders, arr\n  var len = b64.length\n  placeHolders = placeHoldersCount(b64)\n\n  arr = new Arr(len * 3 / 4 - placeHolders)\n\n  // if there are placeholders, only get up to the last complete 4 chars\n  l = placeHolders > 0 ? len - 4 : len\n\n  var L = 0\n\n  for (i = 0, j = 0; i < l; i += 4, j += 3) {\n    tmp = (revLookup[b64.charCodeAt(i)] << 18) | (revLookup[b64.charCodeAt(i + 1)] << 12) | (revLookup[b64.charCodeAt(i + 2)] << 6) | revLookup[b64.charCodeAt(i + 3)]\n    arr[L++] = (tmp >> 16) & 0xFF\n    arr[L++] = (tmp >> 8) & 0xFF\n    arr[L++] = tmp & 0xFF\n  }\n\n  if (placeHolders === 2) {\n    tmp = (revLookup[b64.charCodeAt(i)] << 2) | (revLookup[b64.charCodeAt(i + 1)] >> 4)\n    arr[L++] = tmp & 0xFF\n  } else if (placeHolders === 1) {\n    tmp = (revLookup[b64.charCodeAt(i)] << 10) | (revLookup[b64.charCodeAt(i + 1)] << 4) | (revLookup[b64.charCodeAt(i + 2)] >> 2)\n    arr[L++] = (tmp >> 8) & 0xFF\n    arr[L++] = tmp & 0xFF\n  }\n\n  return arr\n}\n\nfunction tripletToBase64 (num) {\n  return lookup[num >> 18 & 0x3F] + lookup[num >> 12 & 0x3F] + lookup[num >> 6 & 0x3F] + lookup[num & 0x3F]\n}\n\nfunction encodeChunk (uint8, start, end) {\n  var tmp\n  var output = []\n  for (var i = start; i < end; i += 3) {\n    tmp = (uint8[i] << 16) + (uint8[i + 1] << 8) + (uint8[i + 2])\n    output.push(tripletToBase64(tmp))\n  }\n  return output.join('')\n}\n\nfunction fromByteArray (uint8) {\n  var tmp\n  var len = uint8.length\n  var extraBytes = len % 3 // if we have 1 byte left, pad 2 bytes\n  var output = ''\n  var parts = []\n  var maxChunkLength = 16383 // must be multiple of 3\n\n  // go through the array every three bytes, we'll deal with trailing stuff later\n  for (var i = 0, len2 = len - extraBytes; i < len2; i += maxChunkLength) {\n    parts.push(encodeChunk(uint8, i, (i + maxChunkLength) > len2 ? len2 : (i + maxChunkLength)))\n  }\n\n  // pad the end with zeros, but make sure to not forget the extra bytes\n  if (extraBytes === 1) {\n    tmp = uint8[len - 1]\n    output += lookup[tmp >> 2]\n    output += lookup[(tmp << 4) & 0x3F]\n    output += '=='\n  } else if (extraBytes === 2) {\n    tmp = (uint8[len - 2] << 8) + (uint8[len - 1])\n    output += lookup[tmp >> 10]\n    output += lookup[(tmp >> 4) & 0x3F]\n    output += lookup[(tmp << 2) & 0x3F]\n    output += '='\n  }\n\n  parts.push(output)\n\n  return parts.join('')\n}\n//# sourceMappingURL=data:application/json;charset=utf-8;base64,eyJ2ZXJzaW9uIjozLCJzb3VyY2VzIjpbIndlYnBhY2s6Ly8vLi4vfi9iYXNlNjQtanMvaW5kZXguanM/ZTA0MCJdLCJuYW1lcyI6W10sIm1hcHBpbmdzIjoiQUFBQTs7QUFFQTtBQUNBO0FBQ0E7O0FBRUE7QUFDQTtBQUNBOztBQUVBO0FBQ0Esa0NBQWtDLFNBQVM7QUFDM0M7QUFDQTtBQUNBOztBQUVBO0FBQ0E7O0FBRUE7QUFDQTtBQUNBO0FBQ0E7QUFDQTs7QUFFQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTs7QUFFQTtBQUNBO0FBQ0E7QUFDQTs7QUFFQTtBQUNBO0FBQ0E7QUFDQTs7QUFFQTs7QUFFQTtBQUNBOztBQUVBOztBQUVBLG9CQUFvQixPQUFPO0FBQzNCO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7O0FBRUE7QUFDQTtBQUNBO0FBQ0EsR0FBRztBQUNIO0FBQ0E7QUFDQTtBQUNBOztBQUVBO0FBQ0E7O0FBRUE7QUFDQTtBQUNBOztBQUVBO0FBQ0E7QUFDQTtBQUNBLHFCQUFxQixTQUFTO0FBQzlCO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7O0FBRUE7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7O0FBRUE7QUFDQSwwQ0FBMEMsVUFBVTtBQUNwRDtBQUNBOztBQUVBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBLEdBQUc7QUFDSDtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7O0FBRUE7O0FBRUE7QUFDQSIsImZpbGUiOiIxMy5qcyIsInNvdXJjZXNDb250ZW50IjpbIid1c2Ugc3RyaWN0J1xuXG5leHBvcnRzLmJ5dGVMZW5ndGggPSBieXRlTGVuZ3RoXG5leHBvcnRzLnRvQnl0ZUFycmF5ID0gdG9CeXRlQXJyYXlcbmV4cG9ydHMuZnJvbUJ5dGVBcnJheSA9IGZyb21CeXRlQXJyYXlcblxudmFyIGxvb2t1cCA9IFtdXG52YXIgcmV2TG9va3VwID0gW11cbnZhciBBcnIgPSB0eXBlb2YgVWludDhBcnJheSAhPT0gJ3VuZGVmaW5lZCcgPyBVaW50OEFycmF5IDogQXJyYXlcblxudmFyIGNvZGUgPSAnQUJDREVGR0hJSktMTU5PUFFSU1RVVldYWVphYmNkZWZnaGlqa2xtbm9wcXJzdHV2d3h5ejAxMjM0NTY3ODkrLydcbmZvciAodmFyIGkgPSAwLCBsZW4gPSBjb2RlLmxlbmd0aDsgaSA8IGxlbjsgKytpKSB7XG4gIGxvb2t1cFtpXSA9IGNvZGVbaV1cbiAgcmV2TG9va3VwW2NvZGUuY2hhckNvZGVBdChpKV0gPSBpXG59XG5cbnJldkxvb2t1cFsnLScuY2hhckNvZGVBdCgwKV0gPSA2MlxucmV2TG9va3VwWydfJy5jaGFyQ29kZUF0KDApXSA9IDYzXG5cbmZ1bmN0aW9uIHBsYWNlSG9sZGVyc0NvdW50IChiNjQpIHtcbiAgdmFyIGxlbiA9IGI2NC5sZW5ndGhcbiAgaWYgKGxlbiAlIDQgPiAwKSB7XG4gICAgdGhyb3cgbmV3IEVycm9yKCdJbnZhbGlkIHN0cmluZy4gTGVuZ3RoIG11c3QgYmUgYSBtdWx0aXBsZSBvZiA0JylcbiAgfVxuXG4gIC8vIHRoZSBudW1iZXIgb2YgZXF1YWwgc2lnbnMgKHBsYWNlIGhvbGRlcnMpXG4gIC8vIGlmIHRoZXJlIGFyZSB0d28gcGxhY2Vob2xkZXJzLCB0aGFuIHRoZSB0d28gY2hhcmFjdGVycyBiZWZvcmUgaXRcbiAgLy8gcmVwcmVzZW50IG9uZSBieXRlXG4gIC8vIGlmIHRoZXJlIGlzIG9ubHkgb25lLCB0aGVuIHRoZSB0aHJlZSBjaGFyYWN0ZXJzIGJlZm9yZSBpdCByZXByZXNlbnQgMiBieXRlc1xuICAvLyB0aGlzIGlzIGp1c3QgYSBjaGVhcCBoYWNrIHRvIG5vdCBkbyBpbmRleE9mIHR3aWNlXG4gIHJldHVybiBiNjRbbGVuIC0gMl0gPT09ICc9JyA/IDIgOiBiNjRbbGVuIC0gMV0gPT09ICc9JyA/IDEgOiAwXG59XG5cbmZ1bmN0aW9uIGJ5dGVMZW5ndGggKGI2NCkge1xuICAvLyBiYXNlNjQgaXMgNC8zICsgdXAgdG8gdHdvIGNoYXJhY3RlcnMgb2YgdGhlIG9yaWdpbmFsIGRhdGFcbiAgcmV0dXJuIGI2NC5sZW5ndGggKiAzIC8gNCAtIHBsYWNlSG9sZGVyc0NvdW50KGI2NClcbn1cblxuZnVuY3Rpb24gdG9CeXRlQXJyYXkgKGI2NCkge1xuICB2YXIgaSwgaiwgbCwgdG1wLCBwbGFjZUhvbGRlcnMsIGFyclxuICB2YXIgbGVuID0gYjY0Lmxlbmd0aFxuICBwbGFjZUhvbGRlcnMgPSBwbGFjZUhvbGRlcnNDb3VudChiNjQpXG5cbiAgYXJyID0gbmV3IEFycihsZW4gKiAzIC8gNCAtIHBsYWNlSG9sZGVycylcblxuICAvLyBpZiB0aGVyZSBhcmUgcGxhY2Vob2xkZXJzLCBvbmx5IGdldCB1cCB0byB0aGUgbGFzdCBjb21wbGV0ZSA0IGNoYXJzXG4gIGwgPSBwbGFjZUhvbGRlcnMgPiAwID8gbGVuIC0gNCA6IGxlblxuXG4gIHZhciBMID0gMFxuXG4gIGZvciAoaSA9IDAsIGogPSAwOyBpIDwgbDsgaSArPSA0LCBqICs9IDMpIHtcbiAgICB0bXAgPSAocmV2TG9va3VwW2I2NC5jaGFyQ29kZUF0KGkpXSA8PCAxOCkgfCAocmV2TG9va3VwW2I2NC5jaGFyQ29kZUF0KGkgKyAxKV0gPDwgMTIpIHwgKHJldkxvb2t1cFtiNjQuY2hhckNvZGVBdChpICsgMildIDw8IDYpIHwgcmV2TG9va3VwW2I2NC5jaGFyQ29kZUF0KGkgKyAzKV1cbiAgICBhcnJbTCsrXSA9ICh0bXAgPj4gMTYpICYgMHhGRlxuICAgIGFycltMKytdID0gKHRtcCA+PiA4KSAmIDB4RkZcbiAgICBhcnJbTCsrXSA9IHRtcCAmIDB4RkZcbiAgfVxuXG4gIGlmIChwbGFjZUhvbGRlcnMgPT09IDIpIHtcbiAgICB0bXAgPSAocmV2TG9va3VwW2I2NC5jaGFyQ29kZUF0KGkpXSA8PCAyKSB8IChyZXZMb29rdXBbYjY0LmNoYXJDb2RlQXQoaSArIDEpXSA+PiA0KVxuICAgIGFycltMKytdID0gdG1wICYgMHhGRlxuICB9IGVsc2UgaWYgKHBsYWNlSG9sZGVycyA9PT0gMSkge1xuICAgIHRtcCA9IChyZXZMb29rdXBbYjY0LmNoYXJDb2RlQXQoaSldIDw8IDEwKSB8IChyZXZMb29rdXBbYjY0LmNoYXJDb2RlQXQoaSArIDEpXSA8PCA0KSB8IChyZXZMb29rdXBbYjY0LmNoYXJDb2RlQXQoaSArIDIpXSA+PiAyKVxuICAgIGFycltMKytdID0gKHRtcCA+PiA4KSAmIDB4RkZcbiAgICBhcnJbTCsrXSA9IHRtcCAmIDB4RkZcbiAgfVxuXG4gIHJldHVybiBhcnJcbn1cblxuZnVuY3Rpb24gdHJpcGxldFRvQmFzZTY0IChudW0pIHtcbiAgcmV0dXJuIGxvb2t1cFtudW0gPj4gMTggJiAweDNGXSArIGxvb2t1cFtudW0gPj4gMTIgJiAweDNGXSArIGxvb2t1cFtudW0gPj4gNiAmIDB4M0ZdICsgbG9va3VwW251bSAmIDB4M0ZdXG59XG5cbmZ1bmN0aW9uIGVuY29kZUNodW5rICh1aW50OCwgc3RhcnQsIGVuZCkge1xuICB2YXIgdG1wXG4gIHZhciBvdXRwdXQgPSBbXVxuICBmb3IgKHZhciBpID0gc3RhcnQ7IGkgPCBlbmQ7IGkgKz0gMykge1xuICAgIHRtcCA9ICh1aW50OFtpXSA8PCAxNikgKyAodWludDhbaSArIDFdIDw8IDgpICsgKHVpbnQ4W2kgKyAyXSlcbiAgICBvdXRwdXQucHVzaCh0cmlwbGV0VG9CYXNlNjQodG1wKSlcbiAgfVxuICByZXR1cm4gb3V0cHV0LmpvaW4oJycpXG59XG5cbmZ1bmN0aW9uIGZyb21CeXRlQXJyYXkgKHVpbnQ4KSB7XG4gIHZhciB0bXBcbiAgdmFyIGxlbiA9IHVpbnQ4Lmxlbmd0aFxuICB2YXIgZXh0cmFCeXRlcyA9IGxlbiAlIDMgLy8gaWYgd2UgaGF2ZSAxIGJ5dGUgbGVmdCwgcGFkIDIgYnl0ZXNcbiAgdmFyIG91dHB1dCA9ICcnXG4gIHZhciBwYXJ0cyA9IFtdXG4gIHZhciBtYXhDaHVua0xlbmd0aCA9IDE2MzgzIC8vIG11c3QgYmUgbXVsdGlwbGUgb2YgM1xuXG4gIC8vIGdvIHRocm91Z2ggdGhlIGFycmF5IGV2ZXJ5IHRocmVlIGJ5dGVzLCB3ZSdsbCBkZWFsIHdpdGggdHJhaWxpbmcgc3R1ZmYgbGF0ZXJcbiAgZm9yICh2YXIgaSA9IDAsIGxlbjIgPSBsZW4gLSBleHRyYUJ5dGVzOyBpIDwgbGVuMjsgaSArPSBtYXhDaHVua0xlbmd0aCkge1xuICAgIHBhcnRzLnB1c2goZW5jb2RlQ2h1bmsodWludDgsIGksIChpICsgbWF4Q2h1bmtMZW5ndGgpID4gbGVuMiA/IGxlbjIgOiAoaSArIG1heENodW5rTGVuZ3RoKSkpXG4gIH1cblxuICAvLyBwYWQgdGhlIGVuZCB3aXRoIHplcm9zLCBidXQgbWFrZSBzdXJlIHRvIG5vdCBmb3JnZXQgdGhlIGV4dHJhIGJ5dGVzXG4gIGlmIChleHRyYUJ5dGVzID09PSAxKSB7XG4gICAgdG1wID0gdWludDhbbGVuIC0gMV1cbiAgICBvdXRwdXQgKz0gbG9va3VwW3RtcCA+PiAyXVxuICAgIG91dHB1dCArPSBsb29rdXBbKHRtcCA8PCA0KSAmIDB4M0ZdXG4gICAgb3V0cHV0ICs9ICc9PSdcbiAgfSBlbHNlIGlmIChleHRyYUJ5dGVzID09PSAyKSB7XG4gICAgdG1wID0gKHVpbnQ4W2xlbiAtIDJdIDw8IDgpICsgKHVpbnQ4W2xlbiAtIDFdKVxuICAgIG91dHB1dCArPSBsb29rdXBbdG1wID4+IDEwXVxuICAgIG91dHB1dCArPSBsb29rdXBbKHRtcCA+PiA0KSAmIDB4M0ZdXG4gICAgb3V0cHV0ICs9IGxvb2t1cFsodG1wIDw8IDIpICYgMHgzRl1cbiAgICBvdXRwdXQgKz0gJz0nXG4gIH1cblxuICBwYXJ0cy5wdXNoKG91dHB1dClcblxuICByZXR1cm4gcGFydHMuam9pbignJylcbn1cblxuXG5cbi8vLy8vLy8vLy8vLy8vLy8vL1xuLy8gV0VCUEFDSyBGT09URVJcbi8vIC4uL34vYmFzZTY0LWpzL2luZGV4LmpzXG4vLyBtb2R1bGUgaWQgPSAxM1xuLy8gbW9kdWxlIGNodW5rcyA9IDAiXSwic291cmNlUm9vdCI6IiJ9");
+	'use strict'
+	
+	exports.byteLength = byteLength
+	exports.toByteArray = toByteArray
+	exports.fromByteArray = fromByteArray
+	
+	var lookup = []
+	var revLookup = []
+	var Arr = typeof Uint8Array !== 'undefined' ? Uint8Array : Array
+	
+	var code = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/'
+	for (var i = 0, len = code.length; i < len; ++i) {
+	  lookup[i] = code[i]
+	  revLookup[code.charCodeAt(i)] = i
+	}
+	
+	revLookup['-'.charCodeAt(0)] = 62
+	revLookup['_'.charCodeAt(0)] = 63
+	
+	function placeHoldersCount (b64) {
+	  var len = b64.length
+	  if (len % 4 > 0) {
+	    throw new Error('Invalid string. Length must be a multiple of 4')
+	  }
+	
+	  // the number of equal signs (place holders)
+	  // if there are two placeholders, than the two characters before it
+	  // represent one byte
+	  // if there is only one, then the three characters before it represent 2 bytes
+	  // this is just a cheap hack to not do indexOf twice
+	  return b64[len - 2] === '=' ? 2 : b64[len - 1] === '=' ? 1 : 0
+	}
+	
+	function byteLength (b64) {
+	  // base64 is 4/3 + up to two characters of the original data
+	  return b64.length * 3 / 4 - placeHoldersCount(b64)
+	}
+	
+	function toByteArray (b64) {
+	  var i, j, l, tmp, placeHolders, arr
+	  var len = b64.length
+	  placeHolders = placeHoldersCount(b64)
+	
+	  arr = new Arr(len * 3 / 4 - placeHolders)
+	
+	  // if there are placeholders, only get up to the last complete 4 chars
+	  l = placeHolders > 0 ? len - 4 : len
+	
+	  var L = 0
+	
+	  for (i = 0, j = 0; i < l; i += 4, j += 3) {
+	    tmp = (revLookup[b64.charCodeAt(i)] << 18) | (revLookup[b64.charCodeAt(i + 1)] << 12) | (revLookup[b64.charCodeAt(i + 2)] << 6) | revLookup[b64.charCodeAt(i + 3)]
+	    arr[L++] = (tmp >> 16) & 0xFF
+	    arr[L++] = (tmp >> 8) & 0xFF
+	    arr[L++] = tmp & 0xFF
+	  }
+	
+	  if (placeHolders === 2) {
+	    tmp = (revLookup[b64.charCodeAt(i)] << 2) | (revLookup[b64.charCodeAt(i + 1)] >> 4)
+	    arr[L++] = tmp & 0xFF
+	  } else if (placeHolders === 1) {
+	    tmp = (revLookup[b64.charCodeAt(i)] << 10) | (revLookup[b64.charCodeAt(i + 1)] << 4) | (revLookup[b64.charCodeAt(i + 2)] >> 2)
+	    arr[L++] = (tmp >> 8) & 0xFF
+	    arr[L++] = tmp & 0xFF
+	  }
+	
+	  return arr
+	}
+	
+	function tripletToBase64 (num) {
+	  return lookup[num >> 18 & 0x3F] + lookup[num >> 12 & 0x3F] + lookup[num >> 6 & 0x3F] + lookup[num & 0x3F]
+	}
+	
+	function encodeChunk (uint8, start, end) {
+	  var tmp
+	  var output = []
+	  for (var i = start; i < end; i += 3) {
+	    tmp = (uint8[i] << 16) + (uint8[i + 1] << 8) + (uint8[i + 2])
+	    output.push(tripletToBase64(tmp))
+	  }
+	  return output.join('')
+	}
+	
+	function fromByteArray (uint8) {
+	  var tmp
+	  var len = uint8.length
+	  var extraBytes = len % 3 // if we have 1 byte left, pad 2 bytes
+	  var output = ''
+	  var parts = []
+	  var maxChunkLength = 16383 // must be multiple of 3
+	
+	  // go through the array every three bytes, we'll deal with trailing stuff later
+	  for (var i = 0, len2 = len - extraBytes; i < len2; i += maxChunkLength) {
+	    parts.push(encodeChunk(uint8, i, (i + maxChunkLength) > len2 ? len2 : (i + maxChunkLength)))
+	  }
+	
+	  // pad the end with zeros, but make sure to not forget the extra bytes
+	  if (extraBytes === 1) {
+	    tmp = uint8[len - 1]
+	    output += lookup[tmp >> 2]
+	    output += lookup[(tmp << 4) & 0x3F]
+	    output += '=='
+	  } else if (extraBytes === 2) {
+	    tmp = (uint8[len - 2] << 8) + (uint8[len - 1])
+	    output += lookup[tmp >> 10]
+	    output += lookup[(tmp >> 4) & 0x3F]
+	    output += lookup[(tmp << 2) & 0x3F]
+	    output += '='
+	  }
+	
+	  parts.push(output)
+	
+	  return parts.join('')
+	}
+
 
 /***/ },
 /* 14 */
 /***/ function(module, exports) {
 
-	eval("exports.read = function (buffer, offset, isLE, mLen, nBytes) {\n  var e, m\n  var eLen = nBytes * 8 - mLen - 1\n  var eMax = (1 << eLen) - 1\n  var eBias = eMax >> 1\n  var nBits = -7\n  var i = isLE ? (nBytes - 1) : 0\n  var d = isLE ? -1 : 1\n  var s = buffer[offset + i]\n\n  i += d\n\n  e = s & ((1 << (-nBits)) - 1)\n  s >>= (-nBits)\n  nBits += eLen\n  for (; nBits > 0; e = e * 256 + buffer[offset + i], i += d, nBits -= 8) {}\n\n  m = e & ((1 << (-nBits)) - 1)\n  e >>= (-nBits)\n  nBits += mLen\n  for (; nBits > 0; m = m * 256 + buffer[offset + i], i += d, nBits -= 8) {}\n\n  if (e === 0) {\n    e = 1 - eBias\n  } else if (e === eMax) {\n    return m ? NaN : ((s ? -1 : 1) * Infinity)\n  } else {\n    m = m + Math.pow(2, mLen)\n    e = e - eBias\n  }\n  return (s ? -1 : 1) * m * Math.pow(2, e - mLen)\n}\n\nexports.write = function (buffer, value, offset, isLE, mLen, nBytes) {\n  var e, m, c\n  var eLen = nBytes * 8 - mLen - 1\n  var eMax = (1 << eLen) - 1\n  var eBias = eMax >> 1\n  var rt = (mLen === 23 ? Math.pow(2, -24) - Math.pow(2, -77) : 0)\n  var i = isLE ? 0 : (nBytes - 1)\n  var d = isLE ? 1 : -1\n  var s = value < 0 || (value === 0 && 1 / value < 0) ? 1 : 0\n\n  value = Math.abs(value)\n\n  if (isNaN(value) || value === Infinity) {\n    m = isNaN(value) ? 1 : 0\n    e = eMax\n  } else {\n    e = Math.floor(Math.log(value) / Math.LN2)\n    if (value * (c = Math.pow(2, -e)) < 1) {\n      e--\n      c *= 2\n    }\n    if (e + eBias >= 1) {\n      value += rt / c\n    } else {\n      value += rt * Math.pow(2, 1 - eBias)\n    }\n    if (value * c >= 2) {\n      e++\n      c /= 2\n    }\n\n    if (e + eBias >= eMax) {\n      m = 0\n      e = eMax\n    } else if (e + eBias >= 1) {\n      m = (value * c - 1) * Math.pow(2, mLen)\n      e = e + eBias\n    } else {\n      m = value * Math.pow(2, eBias - 1) * Math.pow(2, mLen)\n      e = 0\n    }\n  }\n\n  for (; mLen >= 8; buffer[offset + i] = m & 0xff, i += d, m /= 256, mLen -= 8) {}\n\n  e = (e << mLen) | m\n  eLen += mLen\n  for (; eLen > 0; buffer[offset + i] = e & 0xff, i += d, e /= 256, eLen -= 8) {}\n\n  buffer[offset + i - d] |= s * 128\n}\n//# sourceMappingURL=data:application/json;charset=utf-8;base64,eyJ2ZXJzaW9uIjozLCJzb3VyY2VzIjpbIndlYnBhY2s6Ly8vLi4vfi9pZWVlNzU0L2luZGV4LmpzPzEyYTkiXSwibmFtZXMiOltdLCJtYXBwaW5ncyI6IkFBQUE7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBOztBQUVBOztBQUVBO0FBQ0E7QUFDQTtBQUNBLFFBQVEsV0FBVzs7QUFFbkI7QUFDQTtBQUNBO0FBQ0EsUUFBUSxXQUFXOztBQUVuQjtBQUNBO0FBQ0EsR0FBRztBQUNIO0FBQ0EsR0FBRztBQUNIO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7O0FBRUE7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBOztBQUVBOztBQUVBO0FBQ0E7QUFDQTtBQUNBLEdBQUc7QUFDSDtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBLEtBQUs7QUFDTDtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7O0FBRUE7QUFDQTtBQUNBO0FBQ0EsS0FBSztBQUNMO0FBQ0E7QUFDQSxLQUFLO0FBQ0w7QUFDQTtBQUNBO0FBQ0E7O0FBRUEsUUFBUSxXQUFXOztBQUVuQjtBQUNBO0FBQ0EsUUFBUSxVQUFVOztBQUVsQjtBQUNBIiwiZmlsZSI6IjE0LmpzIiwic291cmNlc0NvbnRlbnQiOlsiZXhwb3J0cy5yZWFkID0gZnVuY3Rpb24gKGJ1ZmZlciwgb2Zmc2V0LCBpc0xFLCBtTGVuLCBuQnl0ZXMpIHtcbiAgdmFyIGUsIG1cbiAgdmFyIGVMZW4gPSBuQnl0ZXMgKiA4IC0gbUxlbiAtIDFcbiAgdmFyIGVNYXggPSAoMSA8PCBlTGVuKSAtIDFcbiAgdmFyIGVCaWFzID0gZU1heCA+PiAxXG4gIHZhciBuQml0cyA9IC03XG4gIHZhciBpID0gaXNMRSA/IChuQnl0ZXMgLSAxKSA6IDBcbiAgdmFyIGQgPSBpc0xFID8gLTEgOiAxXG4gIHZhciBzID0gYnVmZmVyW29mZnNldCArIGldXG5cbiAgaSArPSBkXG5cbiAgZSA9IHMgJiAoKDEgPDwgKC1uQml0cykpIC0gMSlcbiAgcyA+Pj0gKC1uQml0cylcbiAgbkJpdHMgKz0gZUxlblxuICBmb3IgKDsgbkJpdHMgPiAwOyBlID0gZSAqIDI1NiArIGJ1ZmZlcltvZmZzZXQgKyBpXSwgaSArPSBkLCBuQml0cyAtPSA4KSB7fVxuXG4gIG0gPSBlICYgKCgxIDw8ICgtbkJpdHMpKSAtIDEpXG4gIGUgPj49ICgtbkJpdHMpXG4gIG5CaXRzICs9IG1MZW5cbiAgZm9yICg7IG5CaXRzID4gMDsgbSA9IG0gKiAyNTYgKyBidWZmZXJbb2Zmc2V0ICsgaV0sIGkgKz0gZCwgbkJpdHMgLT0gOCkge31cblxuICBpZiAoZSA9PT0gMCkge1xuICAgIGUgPSAxIC0gZUJpYXNcbiAgfSBlbHNlIGlmIChlID09PSBlTWF4KSB7XG4gICAgcmV0dXJuIG0gPyBOYU4gOiAoKHMgPyAtMSA6IDEpICogSW5maW5pdHkpXG4gIH0gZWxzZSB7XG4gICAgbSA9IG0gKyBNYXRoLnBvdygyLCBtTGVuKVxuICAgIGUgPSBlIC0gZUJpYXNcbiAgfVxuICByZXR1cm4gKHMgPyAtMSA6IDEpICogbSAqIE1hdGgucG93KDIsIGUgLSBtTGVuKVxufVxuXG5leHBvcnRzLndyaXRlID0gZnVuY3Rpb24gKGJ1ZmZlciwgdmFsdWUsIG9mZnNldCwgaXNMRSwgbUxlbiwgbkJ5dGVzKSB7XG4gIHZhciBlLCBtLCBjXG4gIHZhciBlTGVuID0gbkJ5dGVzICogOCAtIG1MZW4gLSAxXG4gIHZhciBlTWF4ID0gKDEgPDwgZUxlbikgLSAxXG4gIHZhciBlQmlhcyA9IGVNYXggPj4gMVxuICB2YXIgcnQgPSAobUxlbiA9PT0gMjMgPyBNYXRoLnBvdygyLCAtMjQpIC0gTWF0aC5wb3coMiwgLTc3KSA6IDApXG4gIHZhciBpID0gaXNMRSA/IDAgOiAobkJ5dGVzIC0gMSlcbiAgdmFyIGQgPSBpc0xFID8gMSA6IC0xXG4gIHZhciBzID0gdmFsdWUgPCAwIHx8ICh2YWx1ZSA9PT0gMCAmJiAxIC8gdmFsdWUgPCAwKSA/IDEgOiAwXG5cbiAgdmFsdWUgPSBNYXRoLmFicyh2YWx1ZSlcblxuICBpZiAoaXNOYU4odmFsdWUpIHx8IHZhbHVlID09PSBJbmZpbml0eSkge1xuICAgIG0gPSBpc05hTih2YWx1ZSkgPyAxIDogMFxuICAgIGUgPSBlTWF4XG4gIH0gZWxzZSB7XG4gICAgZSA9IE1hdGguZmxvb3IoTWF0aC5sb2codmFsdWUpIC8gTWF0aC5MTjIpXG4gICAgaWYgKHZhbHVlICogKGMgPSBNYXRoLnBvdygyLCAtZSkpIDwgMSkge1xuICAgICAgZS0tXG4gICAgICBjICo9IDJcbiAgICB9XG4gICAgaWYgKGUgKyBlQmlhcyA+PSAxKSB7XG4gICAgICB2YWx1ZSArPSBydCAvIGNcbiAgICB9IGVsc2Uge1xuICAgICAgdmFsdWUgKz0gcnQgKiBNYXRoLnBvdygyLCAxIC0gZUJpYXMpXG4gICAgfVxuICAgIGlmICh2YWx1ZSAqIGMgPj0gMikge1xuICAgICAgZSsrXG4gICAgICBjIC89IDJcbiAgICB9XG5cbiAgICBpZiAoZSArIGVCaWFzID49IGVNYXgpIHtcbiAgICAgIG0gPSAwXG4gICAgICBlID0gZU1heFxuICAgIH0gZWxzZSBpZiAoZSArIGVCaWFzID49IDEpIHtcbiAgICAgIG0gPSAodmFsdWUgKiBjIC0gMSkgKiBNYXRoLnBvdygyLCBtTGVuKVxuICAgICAgZSA9IGUgKyBlQmlhc1xuICAgIH0gZWxzZSB7XG4gICAgICBtID0gdmFsdWUgKiBNYXRoLnBvdygyLCBlQmlhcyAtIDEpICogTWF0aC5wb3coMiwgbUxlbilcbiAgICAgIGUgPSAwXG4gICAgfVxuICB9XG5cbiAgZm9yICg7IG1MZW4gPj0gODsgYnVmZmVyW29mZnNldCArIGldID0gbSAmIDB4ZmYsIGkgKz0gZCwgbSAvPSAyNTYsIG1MZW4gLT0gOCkge31cblxuICBlID0gKGUgPDwgbUxlbikgfCBtXG4gIGVMZW4gKz0gbUxlblxuICBmb3IgKDsgZUxlbiA+IDA7IGJ1ZmZlcltvZmZzZXQgKyBpXSA9IGUgJiAweGZmLCBpICs9IGQsIGUgLz0gMjU2LCBlTGVuIC09IDgpIHt9XG5cbiAgYnVmZmVyW29mZnNldCArIGkgLSBkXSB8PSBzICogMTI4XG59XG5cblxuXG4vLy8vLy8vLy8vLy8vLy8vLy9cbi8vIFdFQlBBQ0sgRk9PVEVSXG4vLyAuLi9+L2llZWU3NTQvaW5kZXguanNcbi8vIG1vZHVsZSBpZCA9IDE0XG4vLyBtb2R1bGUgY2h1bmtzID0gMCJdLCJzb3VyY2VSb290IjoiIn0=");
+	exports.read = function (buffer, offset, isLE, mLen, nBytes) {
+	  var e, m
+	  var eLen = nBytes * 8 - mLen - 1
+	  var eMax = (1 << eLen) - 1
+	  var eBias = eMax >> 1
+	  var nBits = -7
+	  var i = isLE ? (nBytes - 1) : 0
+	  var d = isLE ? -1 : 1
+	  var s = buffer[offset + i]
+	
+	  i += d
+	
+	  e = s & ((1 << (-nBits)) - 1)
+	  s >>= (-nBits)
+	  nBits += eLen
+	  for (; nBits > 0; e = e * 256 + buffer[offset + i], i += d, nBits -= 8) {}
+	
+	  m = e & ((1 << (-nBits)) - 1)
+	  e >>= (-nBits)
+	  nBits += mLen
+	  for (; nBits > 0; m = m * 256 + buffer[offset + i], i += d, nBits -= 8) {}
+	
+	  if (e === 0) {
+	    e = 1 - eBias
+	  } else if (e === eMax) {
+	    return m ? NaN : ((s ? -1 : 1) * Infinity)
+	  } else {
+	    m = m + Math.pow(2, mLen)
+	    e = e - eBias
+	  }
+	  return (s ? -1 : 1) * m * Math.pow(2, e - mLen)
+	}
+	
+	exports.write = function (buffer, value, offset, isLE, mLen, nBytes) {
+	  var e, m, c
+	  var eLen = nBytes * 8 - mLen - 1
+	  var eMax = (1 << eLen) - 1
+	  var eBias = eMax >> 1
+	  var rt = (mLen === 23 ? Math.pow(2, -24) - Math.pow(2, -77) : 0)
+	  var i = isLE ? 0 : (nBytes - 1)
+	  var d = isLE ? 1 : -1
+	  var s = value < 0 || (value === 0 && 1 / value < 0) ? 1 : 0
+	
+	  value = Math.abs(value)
+	
+	  if (isNaN(value) || value === Infinity) {
+	    m = isNaN(value) ? 1 : 0
+	    e = eMax
+	  } else {
+	    e = Math.floor(Math.log(value) / Math.LN2)
+	    if (value * (c = Math.pow(2, -e)) < 1) {
+	      e--
+	      c *= 2
+	    }
+	    if (e + eBias >= 1) {
+	      value += rt / c
+	    } else {
+	      value += rt * Math.pow(2, 1 - eBias)
+	    }
+	    if (value * c >= 2) {
+	      e++
+	      c /= 2
+	    }
+	
+	    if (e + eBias >= eMax) {
+	      m = 0
+	      e = eMax
+	    } else if (e + eBias >= 1) {
+	      m = (value * c - 1) * Math.pow(2, mLen)
+	      e = e + eBias
+	    } else {
+	      m = value * Math.pow(2, eBias - 1) * Math.pow(2, mLen)
+	      e = 0
+	    }
+	  }
+	
+	  for (; mLen >= 8; buffer[offset + i] = m & 0xff, i += d, m /= 256, mLen -= 8) {}
+	
+	  e = (e << mLen) | m
+	  eLen += mLen
+	  for (; eLen > 0; buffer[offset + i] = e & 0xff, i += d, e /= 256, eLen -= 8) {}
+	
+	  buffer[offset + i - d] |= s * 128
+	}
+
 
 /***/ },
 /* 15 */
 /***/ function(module, exports) {
 
-	eval("var toString = {}.toString;\n\nmodule.exports = Array.isArray || function (arr) {\n  return toString.call(arr) == '[object Array]';\n};\n//# sourceMappingURL=data:application/json;charset=utf-8;base64,eyJ2ZXJzaW9uIjozLCJzb3VyY2VzIjpbIndlYnBhY2s6Ly8vLi4vfi9pc2FycmF5L2luZGV4LmpzP2MxOTgiXSwibmFtZXMiOltdLCJtYXBwaW5ncyI6IkFBQUEsaUJBQWlCOztBQUVqQjtBQUNBO0FBQ0EiLCJmaWxlIjoiMTUuanMiLCJzb3VyY2VzQ29udGVudCI6WyJ2YXIgdG9TdHJpbmcgPSB7fS50b1N0cmluZztcblxubW9kdWxlLmV4cG9ydHMgPSBBcnJheS5pc0FycmF5IHx8IGZ1bmN0aW9uIChhcnIpIHtcbiAgcmV0dXJuIHRvU3RyaW5nLmNhbGwoYXJyKSA9PSAnW29iamVjdCBBcnJheV0nO1xufTtcblxuXG5cbi8vLy8vLy8vLy8vLy8vLy8vL1xuLy8gV0VCUEFDSyBGT09URVJcbi8vIC4uL34vaXNhcnJheS9pbmRleC5qc1xuLy8gbW9kdWxlIGlkID0gMTVcbi8vIG1vZHVsZSBjaHVua3MgPSAwIl0sInNvdXJjZVJvb3QiOiIifQ==");
+	var toString = {}.toString;
+	
+	module.exports = Array.isArray || function (arr) {
+	  return toString.call(arr) == '[object Array]';
+	};
+
 
 /***/ },
 /* 16 */
 /***/ function(module, exports) {
 
-	eval("/**\n * Bit twiddling hacks for JavaScript.\n *\n * Author: Mikola Lysenko\n *\n * Ported from Stanford bit twiddling hack library:\n *    http://graphics.stanford.edu/~seander/bithacks.html\n */\n\n\"use strict\"; \"use restrict\";\n\n//Number of bits in an integer\nvar INT_BITS = 32;\n\n//Constants\nexports.INT_BITS  = INT_BITS;\nexports.INT_MAX   =  0x7fffffff;\nexports.INT_MIN   = -1<<(INT_BITS-1);\n\n//Returns -1, 0, +1 depending on sign of x\nexports.sign = function(v) {\n  return (v > 0) - (v < 0);\n}\n\n//Computes absolute value of integer\nexports.abs = function(v) {\n  var mask = v >> (INT_BITS-1);\n  return (v ^ mask) - mask;\n}\n\n//Computes minimum of integers x and y\nexports.min = function(x, y) {\n  return y ^ ((x ^ y) & -(x < y));\n}\n\n//Computes maximum of integers x and y\nexports.max = function(x, y) {\n  return x ^ ((x ^ y) & -(x < y));\n}\n\n//Checks if a number is a power of two\nexports.isPow2 = function(v) {\n  return !(v & (v-1)) && (!!v);\n}\n\n//Computes log base 2 of v\nexports.log2 = function(v) {\n  var r, shift;\n  r =     (v > 0xFFFF) << 4; v >>>= r;\n  shift = (v > 0xFF  ) << 3; v >>>= shift; r |= shift;\n  shift = (v > 0xF   ) << 2; v >>>= shift; r |= shift;\n  shift = (v > 0x3   ) << 1; v >>>= shift; r |= shift;\n  return r | (v >> 1);\n}\n\n//Computes log base 10 of v\nexports.log10 = function(v) {\n  return  (v >= 1000000000) ? 9 : (v >= 100000000) ? 8 : (v >= 10000000) ? 7 :\n          (v >= 1000000) ? 6 : (v >= 100000) ? 5 : (v >= 10000) ? 4 :\n          (v >= 1000) ? 3 : (v >= 100) ? 2 : (v >= 10) ? 1 : 0;\n}\n\n//Counts number of bits\nexports.popCount = function(v) {\n  v = v - ((v >>> 1) & 0x55555555);\n  v = (v & 0x33333333) + ((v >>> 2) & 0x33333333);\n  return ((v + (v >>> 4) & 0xF0F0F0F) * 0x1010101) >>> 24;\n}\n\n//Counts number of trailing zeros\nfunction countTrailingZeros(v) {\n  var c = 32;\n  v &= -v;\n  if (v) c--;\n  if (v & 0x0000FFFF) c -= 16;\n  if (v & 0x00FF00FF) c -= 8;\n  if (v & 0x0F0F0F0F) c -= 4;\n  if (v & 0x33333333) c -= 2;\n  if (v & 0x55555555) c -= 1;\n  return c;\n}\nexports.countTrailingZeros = countTrailingZeros;\n\n//Rounds to next power of 2\nexports.nextPow2 = function(v) {\n  v += v === 0;\n  --v;\n  v |= v >>> 1;\n  v |= v >>> 2;\n  v |= v >>> 4;\n  v |= v >>> 8;\n  v |= v >>> 16;\n  return v + 1;\n}\n\n//Rounds down to previous power of 2\nexports.prevPow2 = function(v) {\n  v |= v >>> 1;\n  v |= v >>> 2;\n  v |= v >>> 4;\n  v |= v >>> 8;\n  v |= v >>> 16;\n  return v - (v>>>1);\n}\n\n//Computes parity of word\nexports.parity = function(v) {\n  v ^= v >>> 16;\n  v ^= v >>> 8;\n  v ^= v >>> 4;\n  v &= 0xf;\n  return (0x6996 >>> v) & 1;\n}\n\nvar REVERSE_TABLE = new Array(256);\n\n(function(tab) {\n  for(var i=0; i<256; ++i) {\n    var v = i, r = i, s = 7;\n    for (v >>>= 1; v; v >>>= 1) {\n      r <<= 1;\n      r |= v & 1;\n      --s;\n    }\n    tab[i] = (r << s) & 0xff;\n  }\n})(REVERSE_TABLE);\n\n//Reverse bits in a 32 bit word\nexports.reverse = function(v) {\n  return  (REVERSE_TABLE[ v         & 0xff] << 24) |\n          (REVERSE_TABLE[(v >>> 8)  & 0xff] << 16) |\n          (REVERSE_TABLE[(v >>> 16) & 0xff] << 8)  |\n           REVERSE_TABLE[(v >>> 24) & 0xff];\n}\n\n//Interleave bits of 2 coordinates with 16 bits.  Useful for fast quadtree codes\nexports.interleave2 = function(x, y) {\n  x &= 0xFFFF;\n  x = (x | (x << 8)) & 0x00FF00FF;\n  x = (x | (x << 4)) & 0x0F0F0F0F;\n  x = (x | (x << 2)) & 0x33333333;\n  x = (x | (x << 1)) & 0x55555555;\n\n  y &= 0xFFFF;\n  y = (y | (y << 8)) & 0x00FF00FF;\n  y = (y | (y << 4)) & 0x0F0F0F0F;\n  y = (y | (y << 2)) & 0x33333333;\n  y = (y | (y << 1)) & 0x55555555;\n\n  return x | (y << 1);\n}\n\n//Extracts the nth interleaved component\nexports.deinterleave2 = function(v, n) {\n  v = (v >>> n) & 0x55555555;\n  v = (v | (v >>> 1))  & 0x33333333;\n  v = (v | (v >>> 2))  & 0x0F0F0F0F;\n  v = (v | (v >>> 4))  & 0x00FF00FF;\n  v = (v | (v >>> 16)) & 0x000FFFF;\n  return (v << 16) >> 16;\n}\n\n\n//Interleave bits of 3 coordinates, each with 10 bits.  Useful for fast octree codes\nexports.interleave3 = function(x, y, z) {\n  x &= 0x3FF;\n  x  = (x | (x<<16)) & 4278190335;\n  x  = (x | (x<<8))  & 251719695;\n  x  = (x | (x<<4))  & 3272356035;\n  x  = (x | (x<<2))  & 1227133513;\n\n  y &= 0x3FF;\n  y  = (y | (y<<16)) & 4278190335;\n  y  = (y | (y<<8))  & 251719695;\n  y  = (y | (y<<4))  & 3272356035;\n  y  = (y | (y<<2))  & 1227133513;\n  x |= (y << 1);\n  \n  z &= 0x3FF;\n  z  = (z | (z<<16)) & 4278190335;\n  z  = (z | (z<<8))  & 251719695;\n  z  = (z | (z<<4))  & 3272356035;\n  z  = (z | (z<<2))  & 1227133513;\n  \n  return x | (z << 2);\n}\n\n//Extracts nth interleaved component of a 3-tuple\nexports.deinterleave3 = function(v, n) {\n  v = (v >>> n)       & 1227133513;\n  v = (v | (v>>>2))   & 3272356035;\n  v = (v | (v>>>4))   & 251719695;\n  v = (v | (v>>>8))   & 4278190335;\n  v = (v | (v>>>16))  & 0x3FF;\n  return (v<<22)>>22;\n}\n\n//Computes next combination in colexicographic order (this is mistakenly called nextPermutation on the bit twiddling hacks page)\nexports.nextCombination = function(v) {\n  var t = v | (v - 1);\n  return (t + 1) | (((~t & -~t) - 1) >>> (countTrailingZeros(v) + 1));\n}\n\n//# sourceMappingURL=data:application/json;charset=utf-8;base64,eyJ2ZXJzaW9uIjozLCJzb3VyY2VzIjpbIndlYnBhY2s6Ly8vLi4vfi9iaXQtdHdpZGRsZS90d2lkZGxlLmpzP2RlZDIiXSwibmFtZXMiOltdLCJtYXBwaW5ncyI6IkFBQUE7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTs7QUFFQSxhQUFhOztBQUViO0FBQ0E7O0FBRUE7QUFDQTtBQUNBO0FBQ0E7O0FBRUE7QUFDQTtBQUNBO0FBQ0E7O0FBRUE7QUFDQTtBQUNBO0FBQ0E7QUFDQTs7QUFFQTtBQUNBO0FBQ0E7QUFDQTs7QUFFQTtBQUNBO0FBQ0E7QUFDQTs7QUFFQTtBQUNBO0FBQ0E7QUFDQTs7QUFFQTtBQUNBO0FBQ0E7QUFDQSw0QkFBNEI7QUFDNUIsNEJBQTRCLGNBQWM7QUFDMUMsNEJBQTRCLGNBQWM7QUFDMUMsNEJBQTRCLGNBQWM7QUFDMUM7QUFDQTs7QUFFQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7O0FBRUE7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBOztBQUVBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBOztBQUVBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7O0FBRUE7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBOztBQUVBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7O0FBRUE7O0FBRUE7QUFDQSxjQUFjLE9BQU87QUFDckI7QUFDQSxrQkFBa0IsR0FBRztBQUNyQjtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQSxDQUFDOztBQUVEO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBOztBQUVBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBOztBQUVBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7O0FBRUE7QUFDQTs7QUFFQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7OztBQUdBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBOztBQUVBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTs7QUFFQTtBQUNBO0FBQ0E7QUFDQTtBQUNBOztBQUVBO0FBQ0E7O0FBRUE7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBOztBQUVBO0FBQ0E7QUFDQTtBQUNBO0FBQ0EiLCJmaWxlIjoiMTYuanMiLCJzb3VyY2VzQ29udGVudCI6WyIvKipcbiAqIEJpdCB0d2lkZGxpbmcgaGFja3MgZm9yIEphdmFTY3JpcHQuXG4gKlxuICogQXV0aG9yOiBNaWtvbGEgTHlzZW5rb1xuICpcbiAqIFBvcnRlZCBmcm9tIFN0YW5mb3JkIGJpdCB0d2lkZGxpbmcgaGFjayBsaWJyYXJ5OlxuICogICAgaHR0cDovL2dyYXBoaWNzLnN0YW5mb3JkLmVkdS9+c2VhbmRlci9iaXRoYWNrcy5odG1sXG4gKi9cblxuXCJ1c2Ugc3RyaWN0XCI7IFwidXNlIHJlc3RyaWN0XCI7XG5cbi8vTnVtYmVyIG9mIGJpdHMgaW4gYW4gaW50ZWdlclxudmFyIElOVF9CSVRTID0gMzI7XG5cbi8vQ29uc3RhbnRzXG5leHBvcnRzLklOVF9CSVRTICA9IElOVF9CSVRTO1xuZXhwb3J0cy5JTlRfTUFYICAgPSAgMHg3ZmZmZmZmZjtcbmV4cG9ydHMuSU5UX01JTiAgID0gLTE8PChJTlRfQklUUy0xKTtcblxuLy9SZXR1cm5zIC0xLCAwLCArMSBkZXBlbmRpbmcgb24gc2lnbiBvZiB4XG5leHBvcnRzLnNpZ24gPSBmdW5jdGlvbih2KSB7XG4gIHJldHVybiAodiA+IDApIC0gKHYgPCAwKTtcbn1cblxuLy9Db21wdXRlcyBhYnNvbHV0ZSB2YWx1ZSBvZiBpbnRlZ2VyXG5leHBvcnRzLmFicyA9IGZ1bmN0aW9uKHYpIHtcbiAgdmFyIG1hc2sgPSB2ID4+IChJTlRfQklUUy0xKTtcbiAgcmV0dXJuICh2IF4gbWFzaykgLSBtYXNrO1xufVxuXG4vL0NvbXB1dGVzIG1pbmltdW0gb2YgaW50ZWdlcnMgeCBhbmQgeVxuZXhwb3J0cy5taW4gPSBmdW5jdGlvbih4LCB5KSB7XG4gIHJldHVybiB5IF4gKCh4IF4geSkgJiAtKHggPCB5KSk7XG59XG5cbi8vQ29tcHV0ZXMgbWF4aW11bSBvZiBpbnRlZ2VycyB4IGFuZCB5XG5leHBvcnRzLm1heCA9IGZ1bmN0aW9uKHgsIHkpIHtcbiAgcmV0dXJuIHggXiAoKHggXiB5KSAmIC0oeCA8IHkpKTtcbn1cblxuLy9DaGVja3MgaWYgYSBudW1iZXIgaXMgYSBwb3dlciBvZiB0d29cbmV4cG9ydHMuaXNQb3cyID0gZnVuY3Rpb24odikge1xuICByZXR1cm4gISh2ICYgKHYtMSkpICYmICghIXYpO1xufVxuXG4vL0NvbXB1dGVzIGxvZyBiYXNlIDIgb2YgdlxuZXhwb3J0cy5sb2cyID0gZnVuY3Rpb24odikge1xuICB2YXIgciwgc2hpZnQ7XG4gIHIgPSAgICAgKHYgPiAweEZGRkYpIDw8IDQ7IHYgPj4+PSByO1xuICBzaGlmdCA9ICh2ID4gMHhGRiAgKSA8PCAzOyB2ID4+Pj0gc2hpZnQ7IHIgfD0gc2hpZnQ7XG4gIHNoaWZ0ID0gKHYgPiAweEYgICApIDw8IDI7IHYgPj4+PSBzaGlmdDsgciB8PSBzaGlmdDtcbiAgc2hpZnQgPSAodiA+IDB4MyAgICkgPDwgMTsgdiA+Pj49IHNoaWZ0OyByIHw9IHNoaWZ0O1xuICByZXR1cm4gciB8ICh2ID4+IDEpO1xufVxuXG4vL0NvbXB1dGVzIGxvZyBiYXNlIDEwIG9mIHZcbmV4cG9ydHMubG9nMTAgPSBmdW5jdGlvbih2KSB7XG4gIHJldHVybiAgKHYgPj0gMTAwMDAwMDAwMCkgPyA5IDogKHYgPj0gMTAwMDAwMDAwKSA/IDggOiAodiA+PSAxMDAwMDAwMCkgPyA3IDpcbiAgICAgICAgICAodiA+PSAxMDAwMDAwKSA/IDYgOiAodiA+PSAxMDAwMDApID8gNSA6ICh2ID49IDEwMDAwKSA/IDQgOlxuICAgICAgICAgICh2ID49IDEwMDApID8gMyA6ICh2ID49IDEwMCkgPyAyIDogKHYgPj0gMTApID8gMSA6IDA7XG59XG5cbi8vQ291bnRzIG51bWJlciBvZiBiaXRzXG5leHBvcnRzLnBvcENvdW50ID0gZnVuY3Rpb24odikge1xuICB2ID0gdiAtICgodiA+Pj4gMSkgJiAweDU1NTU1NTU1KTtcbiAgdiA9ICh2ICYgMHgzMzMzMzMzMykgKyAoKHYgPj4+IDIpICYgMHgzMzMzMzMzMyk7XG4gIHJldHVybiAoKHYgKyAodiA+Pj4gNCkgJiAweEYwRjBGMEYpICogMHgxMDEwMTAxKSA+Pj4gMjQ7XG59XG5cbi8vQ291bnRzIG51bWJlciBvZiB0cmFpbGluZyB6ZXJvc1xuZnVuY3Rpb24gY291bnRUcmFpbGluZ1plcm9zKHYpIHtcbiAgdmFyIGMgPSAzMjtcbiAgdiAmPSAtdjtcbiAgaWYgKHYpIGMtLTtcbiAgaWYgKHYgJiAweDAwMDBGRkZGKSBjIC09IDE2O1xuICBpZiAodiAmIDB4MDBGRjAwRkYpIGMgLT0gODtcbiAgaWYgKHYgJiAweDBGMEYwRjBGKSBjIC09IDQ7XG4gIGlmICh2ICYgMHgzMzMzMzMzMykgYyAtPSAyO1xuICBpZiAodiAmIDB4NTU1NTU1NTUpIGMgLT0gMTtcbiAgcmV0dXJuIGM7XG59XG5leHBvcnRzLmNvdW50VHJhaWxpbmdaZXJvcyA9IGNvdW50VHJhaWxpbmdaZXJvcztcblxuLy9Sb3VuZHMgdG8gbmV4dCBwb3dlciBvZiAyXG5leHBvcnRzLm5leHRQb3cyID0gZnVuY3Rpb24odikge1xuICB2ICs9IHYgPT09IDA7XG4gIC0tdjtcbiAgdiB8PSB2ID4+PiAxO1xuICB2IHw9IHYgPj4+IDI7XG4gIHYgfD0gdiA+Pj4gNDtcbiAgdiB8PSB2ID4+PiA4O1xuICB2IHw9IHYgPj4+IDE2O1xuICByZXR1cm4gdiArIDE7XG59XG5cbi8vUm91bmRzIGRvd24gdG8gcHJldmlvdXMgcG93ZXIgb2YgMlxuZXhwb3J0cy5wcmV2UG93MiA9IGZ1bmN0aW9uKHYpIHtcbiAgdiB8PSB2ID4+PiAxO1xuICB2IHw9IHYgPj4+IDI7XG4gIHYgfD0gdiA+Pj4gNDtcbiAgdiB8PSB2ID4+PiA4O1xuICB2IHw9IHYgPj4+IDE2O1xuICByZXR1cm4gdiAtICh2Pj4+MSk7XG59XG5cbi8vQ29tcHV0ZXMgcGFyaXR5IG9mIHdvcmRcbmV4cG9ydHMucGFyaXR5ID0gZnVuY3Rpb24odikge1xuICB2IF49IHYgPj4+IDE2O1xuICB2IF49IHYgPj4+IDg7XG4gIHYgXj0gdiA+Pj4gNDtcbiAgdiAmPSAweGY7XG4gIHJldHVybiAoMHg2OTk2ID4+PiB2KSAmIDE7XG59XG5cbnZhciBSRVZFUlNFX1RBQkxFID0gbmV3IEFycmF5KDI1Nik7XG5cbihmdW5jdGlvbih0YWIpIHtcbiAgZm9yKHZhciBpPTA7IGk8MjU2OyArK2kpIHtcbiAgICB2YXIgdiA9IGksIHIgPSBpLCBzID0gNztcbiAgICBmb3IgKHYgPj4+PSAxOyB2OyB2ID4+Pj0gMSkge1xuICAgICAgciA8PD0gMTtcbiAgICAgIHIgfD0gdiAmIDE7XG4gICAgICAtLXM7XG4gICAgfVxuICAgIHRhYltpXSA9IChyIDw8IHMpICYgMHhmZjtcbiAgfVxufSkoUkVWRVJTRV9UQUJMRSk7XG5cbi8vUmV2ZXJzZSBiaXRzIGluIGEgMzIgYml0IHdvcmRcbmV4cG9ydHMucmV2ZXJzZSA9IGZ1bmN0aW9uKHYpIHtcbiAgcmV0dXJuICAoUkVWRVJTRV9UQUJMRVsgdiAgICAgICAgICYgMHhmZl0gPDwgMjQpIHxcbiAgICAgICAgICAoUkVWRVJTRV9UQUJMRVsodiA+Pj4gOCkgICYgMHhmZl0gPDwgMTYpIHxcbiAgICAgICAgICAoUkVWRVJTRV9UQUJMRVsodiA+Pj4gMTYpICYgMHhmZl0gPDwgOCkgIHxcbiAgICAgICAgICAgUkVWRVJTRV9UQUJMRVsodiA+Pj4gMjQpICYgMHhmZl07XG59XG5cbi8vSW50ZXJsZWF2ZSBiaXRzIG9mIDIgY29vcmRpbmF0ZXMgd2l0aCAxNiBiaXRzLiAgVXNlZnVsIGZvciBmYXN0IHF1YWR0cmVlIGNvZGVzXG5leHBvcnRzLmludGVybGVhdmUyID0gZnVuY3Rpb24oeCwgeSkge1xuICB4ICY9IDB4RkZGRjtcbiAgeCA9ICh4IHwgKHggPDwgOCkpICYgMHgwMEZGMDBGRjtcbiAgeCA9ICh4IHwgKHggPDwgNCkpICYgMHgwRjBGMEYwRjtcbiAgeCA9ICh4IHwgKHggPDwgMikpICYgMHgzMzMzMzMzMztcbiAgeCA9ICh4IHwgKHggPDwgMSkpICYgMHg1NTU1NTU1NTtcblxuICB5ICY9IDB4RkZGRjtcbiAgeSA9ICh5IHwgKHkgPDwgOCkpICYgMHgwMEZGMDBGRjtcbiAgeSA9ICh5IHwgKHkgPDwgNCkpICYgMHgwRjBGMEYwRjtcbiAgeSA9ICh5IHwgKHkgPDwgMikpICYgMHgzMzMzMzMzMztcbiAgeSA9ICh5IHwgKHkgPDwgMSkpICYgMHg1NTU1NTU1NTtcblxuICByZXR1cm4geCB8ICh5IDw8IDEpO1xufVxuXG4vL0V4dHJhY3RzIHRoZSBudGggaW50ZXJsZWF2ZWQgY29tcG9uZW50XG5leHBvcnRzLmRlaW50ZXJsZWF2ZTIgPSBmdW5jdGlvbih2LCBuKSB7XG4gIHYgPSAodiA+Pj4gbikgJiAweDU1NTU1NTU1O1xuICB2ID0gKHYgfCAodiA+Pj4gMSkpICAmIDB4MzMzMzMzMzM7XG4gIHYgPSAodiB8ICh2ID4+PiAyKSkgICYgMHgwRjBGMEYwRjtcbiAgdiA9ICh2IHwgKHYgPj4+IDQpKSAgJiAweDAwRkYwMEZGO1xuICB2ID0gKHYgfCAodiA+Pj4gMTYpKSAmIDB4MDAwRkZGRjtcbiAgcmV0dXJuICh2IDw8IDE2KSA+PiAxNjtcbn1cblxuXG4vL0ludGVybGVhdmUgYml0cyBvZiAzIGNvb3JkaW5hdGVzLCBlYWNoIHdpdGggMTAgYml0cy4gIFVzZWZ1bCBmb3IgZmFzdCBvY3RyZWUgY29kZXNcbmV4cG9ydHMuaW50ZXJsZWF2ZTMgPSBmdW5jdGlvbih4LCB5LCB6KSB7XG4gIHggJj0gMHgzRkY7XG4gIHggID0gKHggfCAoeDw8MTYpKSAmIDQyNzgxOTAzMzU7XG4gIHggID0gKHggfCAoeDw8OCkpICAmIDI1MTcxOTY5NTtcbiAgeCAgPSAoeCB8ICh4PDw0KSkgICYgMzI3MjM1NjAzNTtcbiAgeCAgPSAoeCB8ICh4PDwyKSkgICYgMTIyNzEzMzUxMztcblxuICB5ICY9IDB4M0ZGO1xuICB5ICA9ICh5IHwgKHk8PDE2KSkgJiA0Mjc4MTkwMzM1O1xuICB5ICA9ICh5IHwgKHk8PDgpKSAgJiAyNTE3MTk2OTU7XG4gIHkgID0gKHkgfCAoeTw8NCkpICAmIDMyNzIzNTYwMzU7XG4gIHkgID0gKHkgfCAoeTw8MikpICAmIDEyMjcxMzM1MTM7XG4gIHggfD0gKHkgPDwgMSk7XG4gIFxuICB6ICY9IDB4M0ZGO1xuICB6ICA9ICh6IHwgKHo8PDE2KSkgJiA0Mjc4MTkwMzM1O1xuICB6ICA9ICh6IHwgKHo8PDgpKSAgJiAyNTE3MTk2OTU7XG4gIHogID0gKHogfCAoejw8NCkpICAmIDMyNzIzNTYwMzU7XG4gIHogID0gKHogfCAoejw8MikpICAmIDEyMjcxMzM1MTM7XG4gIFxuICByZXR1cm4geCB8ICh6IDw8IDIpO1xufVxuXG4vL0V4dHJhY3RzIG50aCBpbnRlcmxlYXZlZCBjb21wb25lbnQgb2YgYSAzLXR1cGxlXG5leHBvcnRzLmRlaW50ZXJsZWF2ZTMgPSBmdW5jdGlvbih2LCBuKSB7XG4gIHYgPSAodiA+Pj4gbikgICAgICAgJiAxMjI3MTMzNTEzO1xuICB2ID0gKHYgfCAodj4+PjIpKSAgICYgMzI3MjM1NjAzNTtcbiAgdiA9ICh2IHwgKHY+Pj40KSkgICAmIDI1MTcxOTY5NTtcbiAgdiA9ICh2IHwgKHY+Pj44KSkgICAmIDQyNzgxOTAzMzU7XG4gIHYgPSAodiB8ICh2Pj4+MTYpKSAgJiAweDNGRjtcbiAgcmV0dXJuICh2PDwyMik+PjIyO1xufVxuXG4vL0NvbXB1dGVzIG5leHQgY29tYmluYXRpb24gaW4gY29sZXhpY29ncmFwaGljIG9yZGVyICh0aGlzIGlzIG1pc3Rha2VubHkgY2FsbGVkIG5leHRQZXJtdXRhdGlvbiBvbiB0aGUgYml0IHR3aWRkbGluZyBoYWNrcyBwYWdlKVxuZXhwb3J0cy5uZXh0Q29tYmluYXRpb24gPSBmdW5jdGlvbih2KSB7XG4gIHZhciB0ID0gdiB8ICh2IC0gMSk7XG4gIHJldHVybiAodCArIDEpIHwgKCgofnQgJiAtfnQpIC0gMSkgPj4+IChjb3VudFRyYWlsaW5nWmVyb3ModikgKyAxKSk7XG59XG5cblxuXG5cbi8vLy8vLy8vLy8vLy8vLy8vL1xuLy8gV0VCUEFDSyBGT09URVJcbi8vIC4uL34vYml0LXR3aWRkbGUvdHdpZGRsZS5qc1xuLy8gbW9kdWxlIGlkID0gMTZcbi8vIG1vZHVsZSBjaHVua3MgPSAwIl0sInNvdXJjZVJvb3QiOiIifQ==");
+	/**
+	 * Bit twiddling hacks for JavaScript.
+	 *
+	 * Author: Mikola Lysenko
+	 *
+	 * Ported from Stanford bit twiddling hack library:
+	 *    http://graphics.stanford.edu/~seander/bithacks.html
+	 */
+	
+	"use strict"; "use restrict";
+	
+	//Number of bits in an integer
+	var INT_BITS = 32;
+	
+	//Constants
+	exports.INT_BITS  = INT_BITS;
+	exports.INT_MAX   =  0x7fffffff;
+	exports.INT_MIN   = -1<<(INT_BITS-1);
+	
+	//Returns -1, 0, +1 depending on sign of x
+	exports.sign = function(v) {
+	  return (v > 0) - (v < 0);
+	}
+	
+	//Computes absolute value of integer
+	exports.abs = function(v) {
+	  var mask = v >> (INT_BITS-1);
+	  return (v ^ mask) - mask;
+	}
+	
+	//Computes minimum of integers x and y
+	exports.min = function(x, y) {
+	  return y ^ ((x ^ y) & -(x < y));
+	}
+	
+	//Computes maximum of integers x and y
+	exports.max = function(x, y) {
+	  return x ^ ((x ^ y) & -(x < y));
+	}
+	
+	//Checks if a number is a power of two
+	exports.isPow2 = function(v) {
+	  return !(v & (v-1)) && (!!v);
+	}
+	
+	//Computes log base 2 of v
+	exports.log2 = function(v) {
+	  var r, shift;
+	  r =     (v > 0xFFFF) << 4; v >>>= r;
+	  shift = (v > 0xFF  ) << 3; v >>>= shift; r |= shift;
+	  shift = (v > 0xF   ) << 2; v >>>= shift; r |= shift;
+	  shift = (v > 0x3   ) << 1; v >>>= shift; r |= shift;
+	  return r | (v >> 1);
+	}
+	
+	//Computes log base 10 of v
+	exports.log10 = function(v) {
+	  return  (v >= 1000000000) ? 9 : (v >= 100000000) ? 8 : (v >= 10000000) ? 7 :
+	          (v >= 1000000) ? 6 : (v >= 100000) ? 5 : (v >= 10000) ? 4 :
+	          (v >= 1000) ? 3 : (v >= 100) ? 2 : (v >= 10) ? 1 : 0;
+	}
+	
+	//Counts number of bits
+	exports.popCount = function(v) {
+	  v = v - ((v >>> 1) & 0x55555555);
+	  v = (v & 0x33333333) + ((v >>> 2) & 0x33333333);
+	  return ((v + (v >>> 4) & 0xF0F0F0F) * 0x1010101) >>> 24;
+	}
+	
+	//Counts number of trailing zeros
+	function countTrailingZeros(v) {
+	  var c = 32;
+	  v &= -v;
+	  if (v) c--;
+	  if (v & 0x0000FFFF) c -= 16;
+	  if (v & 0x00FF00FF) c -= 8;
+	  if (v & 0x0F0F0F0F) c -= 4;
+	  if (v & 0x33333333) c -= 2;
+	  if (v & 0x55555555) c -= 1;
+	  return c;
+	}
+	exports.countTrailingZeros = countTrailingZeros;
+	
+	//Rounds to next power of 2
+	exports.nextPow2 = function(v) {
+	  v += v === 0;
+	  --v;
+	  v |= v >>> 1;
+	  v |= v >>> 2;
+	  v |= v >>> 4;
+	  v |= v >>> 8;
+	  v |= v >>> 16;
+	  return v + 1;
+	}
+	
+	//Rounds down to previous power of 2
+	exports.prevPow2 = function(v) {
+	  v |= v >>> 1;
+	  v |= v >>> 2;
+	  v |= v >>> 4;
+	  v |= v >>> 8;
+	  v |= v >>> 16;
+	  return v - (v>>>1);
+	}
+	
+	//Computes parity of word
+	exports.parity = function(v) {
+	  v ^= v >>> 16;
+	  v ^= v >>> 8;
+	  v ^= v >>> 4;
+	  v &= 0xf;
+	  return (0x6996 >>> v) & 1;
+	}
+	
+	var REVERSE_TABLE = new Array(256);
+	
+	(function(tab) {
+	  for(var i=0; i<256; ++i) {
+	    var v = i, r = i, s = 7;
+	    for (v >>>= 1; v; v >>>= 1) {
+	      r <<= 1;
+	      r |= v & 1;
+	      --s;
+	    }
+	    tab[i] = (r << s) & 0xff;
+	  }
+	})(REVERSE_TABLE);
+	
+	//Reverse bits in a 32 bit word
+	exports.reverse = function(v) {
+	  return  (REVERSE_TABLE[ v         & 0xff] << 24) |
+	          (REVERSE_TABLE[(v >>> 8)  & 0xff] << 16) |
+	          (REVERSE_TABLE[(v >>> 16) & 0xff] << 8)  |
+	           REVERSE_TABLE[(v >>> 24) & 0xff];
+	}
+	
+	//Interleave bits of 2 coordinates with 16 bits.  Useful for fast quadtree codes
+	exports.interleave2 = function(x, y) {
+	  x &= 0xFFFF;
+	  x = (x | (x << 8)) & 0x00FF00FF;
+	  x = (x | (x << 4)) & 0x0F0F0F0F;
+	  x = (x | (x << 2)) & 0x33333333;
+	  x = (x | (x << 1)) & 0x55555555;
+	
+	  y &= 0xFFFF;
+	  y = (y | (y << 8)) & 0x00FF00FF;
+	  y = (y | (y << 4)) & 0x0F0F0F0F;
+	  y = (y | (y << 2)) & 0x33333333;
+	  y = (y | (y << 1)) & 0x55555555;
+	
+	  return x | (y << 1);
+	}
+	
+	//Extracts the nth interleaved component
+	exports.deinterleave2 = function(v, n) {
+	  v = (v >>> n) & 0x55555555;
+	  v = (v | (v >>> 1))  & 0x33333333;
+	  v = (v | (v >>> 2))  & 0x0F0F0F0F;
+	  v = (v | (v >>> 4))  & 0x00FF00FF;
+	  v = (v | (v >>> 16)) & 0x000FFFF;
+	  return (v << 16) >> 16;
+	}
+	
+	
+	//Interleave bits of 3 coordinates, each with 10 bits.  Useful for fast octree codes
+	exports.interleave3 = function(x, y, z) {
+	  x &= 0x3FF;
+	  x  = (x | (x<<16)) & 4278190335;
+	  x  = (x | (x<<8))  & 251719695;
+	  x  = (x | (x<<4))  & 3272356035;
+	  x  = (x | (x<<2))  & 1227133513;
+	
+	  y &= 0x3FF;
+	  y  = (y | (y<<16)) & 4278190335;
+	  y  = (y | (y<<8))  & 251719695;
+	  y  = (y | (y<<4))  & 3272356035;
+	  y  = (y | (y<<2))  & 1227133513;
+	  x |= (y << 1);
+	  
+	  z &= 0x3FF;
+	  z  = (z | (z<<16)) & 4278190335;
+	  z  = (z | (z<<8))  & 251719695;
+	  z  = (z | (z<<4))  & 3272356035;
+	  z  = (z | (z<<2))  & 1227133513;
+	  
+	  return x | (z << 2);
+	}
+	
+	//Extracts nth interleaved component of a 3-tuple
+	exports.deinterleave3 = function(v, n) {
+	  v = (v >>> n)       & 1227133513;
+	  v = (v | (v>>>2))   & 3272356035;
+	  v = (v | (v>>>4))   & 251719695;
+	  v = (v | (v>>>8))   & 4278190335;
+	  v = (v | (v>>>16))  & 0x3FF;
+	  return (v<<22)>>22;
+	}
+	
+	//Computes next combination in colexicographic order (this is mistakenly called nextPermutation on the bit twiddling hacks page)
+	exports.nextCombination = function(v) {
+	  var t = v | (v - 1);
+	  return (t + 1) | (((~t & -~t) - 1) >>> (countTrailingZeros(v) + 1));
+	}
+	
+
 
 /***/ },
 /* 17 */
 /***/ function(module, exports) {
 
-	eval("\"use strict\"\n\nfunction dupe_array(count, value, i) {\n  var c = count[i]|0\n  if(c <= 0) {\n    return []\n  }\n  var result = new Array(c), j\n  if(i === count.length-1) {\n    for(j=0; j<c; ++j) {\n      result[j] = value\n    }\n  } else {\n    for(j=0; j<c; ++j) {\n      result[j] = dupe_array(count, value, i+1)\n    }\n  }\n  return result\n}\n\nfunction dupe_number(count, value) {\n  var result, i\n  result = new Array(count)\n  for(i=0; i<count; ++i) {\n    result[i] = value\n  }\n  return result\n}\n\nfunction dupe(count, value) {\n  if(typeof value === \"undefined\") {\n    value = 0\n  }\n  switch(typeof count) {\n    case \"number\":\n      if(count > 0) {\n        return dupe_number(count|0, value)\n      }\n    break\n    case \"object\":\n      if(typeof (count.length) === \"number\") {\n        return dupe_array(count, value, 0)\n      }\n    break\n  }\n  return []\n}\n\nmodule.exports = dupe//# sourceMappingURL=data:application/json;charset=utf-8;base64,eyJ2ZXJzaW9uIjozLCJzb3VyY2VzIjpbIndlYnBhY2s6Ly8vLi4vfi9kdXAvZHVwLmpzP2UxYmIiXSwibmFtZXMiOltdLCJtYXBwaW5ncyI6IkFBQUE7O0FBRUE7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQSxZQUFZLEtBQUs7QUFDakI7QUFDQTtBQUNBLEdBQUc7QUFDSCxZQUFZLEtBQUs7QUFDakI7QUFDQTtBQUNBO0FBQ0E7QUFDQTs7QUFFQTtBQUNBO0FBQ0E7QUFDQSxVQUFVLFNBQVM7QUFDbkI7QUFDQTtBQUNBO0FBQ0E7O0FBRUE7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBOztBQUVBIiwiZmlsZSI6IjE3LmpzIiwic291cmNlc0NvbnRlbnQiOlsiXCJ1c2Ugc3RyaWN0XCJcblxuZnVuY3Rpb24gZHVwZV9hcnJheShjb3VudCwgdmFsdWUsIGkpIHtcbiAgdmFyIGMgPSBjb3VudFtpXXwwXG4gIGlmKGMgPD0gMCkge1xuICAgIHJldHVybiBbXVxuICB9XG4gIHZhciByZXN1bHQgPSBuZXcgQXJyYXkoYyksIGpcbiAgaWYoaSA9PT0gY291bnQubGVuZ3RoLTEpIHtcbiAgICBmb3Ioaj0wOyBqPGM7ICsraikge1xuICAgICAgcmVzdWx0W2pdID0gdmFsdWVcbiAgICB9XG4gIH0gZWxzZSB7XG4gICAgZm9yKGo9MDsgajxjOyArK2opIHtcbiAgICAgIHJlc3VsdFtqXSA9IGR1cGVfYXJyYXkoY291bnQsIHZhbHVlLCBpKzEpXG4gICAgfVxuICB9XG4gIHJldHVybiByZXN1bHRcbn1cblxuZnVuY3Rpb24gZHVwZV9udW1iZXIoY291bnQsIHZhbHVlKSB7XG4gIHZhciByZXN1bHQsIGlcbiAgcmVzdWx0ID0gbmV3IEFycmF5KGNvdW50KVxuICBmb3IoaT0wOyBpPGNvdW50OyArK2kpIHtcbiAgICByZXN1bHRbaV0gPSB2YWx1ZVxuICB9XG4gIHJldHVybiByZXN1bHRcbn1cblxuZnVuY3Rpb24gZHVwZShjb3VudCwgdmFsdWUpIHtcbiAgaWYodHlwZW9mIHZhbHVlID09PSBcInVuZGVmaW5lZFwiKSB7XG4gICAgdmFsdWUgPSAwXG4gIH1cbiAgc3dpdGNoKHR5cGVvZiBjb3VudCkge1xuICAgIGNhc2UgXCJudW1iZXJcIjpcbiAgICAgIGlmKGNvdW50ID4gMCkge1xuICAgICAgICByZXR1cm4gZHVwZV9udW1iZXIoY291bnR8MCwgdmFsdWUpXG4gICAgICB9XG4gICAgYnJlYWtcbiAgICBjYXNlIFwib2JqZWN0XCI6XG4gICAgICBpZih0eXBlb2YgKGNvdW50Lmxlbmd0aCkgPT09IFwibnVtYmVyXCIpIHtcbiAgICAgICAgcmV0dXJuIGR1cGVfYXJyYXkoY291bnQsIHZhbHVlLCAwKVxuICAgICAgfVxuICAgIGJyZWFrXG4gIH1cbiAgcmV0dXJuIFtdXG59XG5cbm1vZHVsZS5leHBvcnRzID0gZHVwZVxuXG5cbi8vLy8vLy8vLy8vLy8vLy8vL1xuLy8gV0VCUEFDSyBGT09URVJcbi8vIC4uL34vZHVwL2R1cC5qc1xuLy8gbW9kdWxlIGlkID0gMTdcbi8vIG1vZHVsZSBjaHVua3MgPSAwIl0sInNvdXJjZVJvb3QiOiIifQ==");
+	"use strict"
+	
+	function dupe_array(count, value, i) {
+	  var c = count[i]|0
+	  if(c <= 0) {
+	    return []
+	  }
+	  var result = new Array(c), j
+	  if(i === count.length-1) {
+	    for(j=0; j<c; ++j) {
+	      result[j] = value
+	    }
+	  } else {
+	    for(j=0; j<c; ++j) {
+	      result[j] = dupe_array(count, value, i+1)
+	    }
+	  }
+	  return result
+	}
+	
+	function dupe_number(count, value) {
+	  var result, i
+	  result = new Array(count)
+	  for(i=0; i<count; ++i) {
+	    result[i] = value
+	  }
+	  return result
+	}
+	
+	function dupe(count, value) {
+	  if(typeof value === "undefined") {
+	    value = 0
+	  }
+	  switch(typeof count) {
+	    case "number":
+	      if(count > 0) {
+	        return dupe_number(count|0, value)
+	      }
+	    break
+	    case "object":
+	      if(typeof (count.length) === "number") {
+	        return dupe_array(count, value, 0)
+	      }
+	    break
+	  }
+	  return []
+	}
+	
+	module.exports = dupe
 
 /***/ },
 /* 18 */
 /***/ function(module, exports) {
 
-	eval("//\n//  barnes-hut.js\n//\n//  implementation of the barnes-hut quadtree algorithm for n-body repulsion\n//  http://www.cs.princeton.edu/courses/archive/fall03/cs126/assignments/barnes-hut.html\n//\n//  Created by Christian Swinehart on 2011-01-14.\n//  Copyright (c) 2011 Samizdat Drafting Co. All rights reserved.\n//\n//\n\nvar Cell = function (origin, size) {\n    this.nw = undefined\n    this.ne = undefined\n    this.sw = undefined\n    this.se = undefined\n    this.origin = origin\n    this.size = size\n    this.p = undefined\n    this.mass = 0\n}\n\n\n\nvar BarnesHutTree = function(){\n  var _branches = []\n  var _branchCtr = 0\n  var _root = null\n  var _theta = .5\n\n  var that = {\n    init:function(topleft, bottomright, theta){\n      _theta = theta\n\n      // Reset the pointer in the Cell allocator\n      _branchCtr = 0\n\n      // create a fresh root node for these spatial bounds\n      _root = that._newBranch(topleft, bottomright.subtract(topleft))\n    },\n\n    initWithData: function(data, theta, N) {\n      // TODO: keep the data in place?\n      // compute top left and top right based on data and call init\n      var topleft = new Point(0, 0)\n      var bottomright = new Point(0, 0)\n      for (var i = 0; i < N; i++) {\n        var x = data.get(i, 0)\n        var y = data.get(i, 1)\n        if (x < topleft.x) topleft.x = x\n        if (y < topleft.y) topleft.y = y\n        if (x > bottomright.x) bottomright.x = x\n        if (y > bottomright.y) bottomright.y = y\n      }\n      that.init(topleft, bottomright, theta);\n      // then insert all the points\n      for (var i = 0; i < N; i++) {\n        that.insert(data.get(i, 0), data.get(i, 1));\n      }\n    },\n    isCorrect: function() {\n\n      var queue = [_root]\n\n\n      var recurse = function(pnode, node) {\n        if (node === undefined){\n          return true;\n        }\n\n        if (!(pnode === null || _contains(pnode, node))) {\n          console.error(pnode, node)\n          return false;\n        }\n\n        // Just a point, or all children also are correct\n        return (!('origin' in node) ||\n            (recurse(node, node.nw)\n            && recurse(node, node.ne)\n            && recurse(node, node.sw)\n            && recurse(node, node.se)\n            ))\n      }\n\n      return recurse(null, _root)\n    },\n    insert:function(x, y){\n      // add a particle to the tree, starting at the current _root and working down\n      var node = _root\n      var queue = [new Point(x, y)]\n      var point, p_quad, mult1, mult2, branch_size, branch_origin, oldPoint\n\n      while (queue.length){\n        point = queue.shift()\n        p_quad = that._whichQuad(point, node)\n\n        // Increment total mass (count) and update center\n        node.mass += 1.\n        mult1 = (node.mass - 1) / node.mass\n        mult2 = 1 / node.mass\n        if (node.p) {\n          node.p = node.p.multiply(mult1).add(point.multiply(mult2))\n        } else {\n          node.p = point\n        }\n\n        if (node[p_quad]===undefined){\n          // slot is empty, just drop this node in and update the mass/c.o.m.\n          node[p_quad] = point\n        }else if ('origin' in node[p_quad]){\n          // slot contains a branch node,\n          // keep iterating with the branch as our new root\n          node = node[p_quad]\n\n          // put point back\n          queue.unshift(point)\n        }else{\n          // slot contains a point, create a new branch (subdivide)\n          // and recurse with both points in the queue now\n          branch_size = node.size.divide(2)\n          branch_origin = new Point(node.origin)\n          if (p_quad[0]=='s') branch_origin.y += branch_size.y\n          if (p_quad[1]=='e') branch_origin.x += branch_size.x\n\n          // replace the previously point-occupied quad with a new internal branch node\n          oldPoint = node[p_quad]\n          node[p_quad] = that._newBranch(branch_origin, branch_size)\n\n          // Switch down into the new branch\n          node = node[p_quad]\n\n          //if (oldParticle.p.x===particle.p.x && oldParticle.p.y===particle.p.y){\n          //  // prevent infinite bisection in the case where two particles\n          //  // have identical coordinates by jostling one of them slightly\n          //  var x_spread = branch_size.x*.08\n          //  var y_spread = branch_size.y*.08\n          //  oldParticle.p.x = Math.min(branch_origin.x+branch_size.x,\n          //                             Math.max(branch_origin.x,\n          //                                      oldParticle.p.x - x_spread/2 +\n          //                                      Math.random()*x_spread))\n          //  oldParticle.p.y = Math.min(branch_origin.y+branch_size.y,\n          //                             Math.max(branch_origin.y,\n          //                                      oldParticle.p.y - y_spread/2 +\n          //                                      Math.random()*y_spread))\n          //}\n\n          // keep iterating but now having to place both the current particle and the\n          // one we just replaced with the branch node\n          queue.push(oldPoint)\n          queue.unshift(point)\n        }\n\n      }\n\n    },\n\n    computeForces:function(x, y){\n      var xForce = 0.\n      var yForce = 0.\n\n      var Z = 0.  // Z\n      var count = 0\n\n      var dx, dy, distSq, dist, aff, force, rcell, node\n\n      var queue = [_root]\n      while (queue.length) {\n        count++\n        node = queue.shift()\n        if (node === undefined) {\n          continue\n        } else if (node instanceof Point){\n          // this is a point leafnode, so just apply the force directly\n          dx = x - node.x\n          dy = y - node.y\n          distSq = dx*dx + dy*dy\n          aff = 1. / (1. + distSq)\n          force = - aff * aff  // -qu_ij^2 = -(q_ij * Z)^2\n          if (distSq < 1e-5) continue\n          // Accumulate force and Z\n          xForce += force * dx\n          yForce += force * dy\n          Z += aff\n        } else {\n          // it's a branch node so decide if it's cluster-y and distant enough\n          // to summarize as a single point. if it's too complex, open it and deal\n          // with its quadrants in turn\n          dx = x - node.p.x\n          dy = y - node.p.y\n          distSq = dx*dx + dy*dy\n          dist = Math.sqrt(distSq)\n          rcell = node.size.x > node.size.y ? node.size.x : node.size.y\n          if (rcell/dist > _theta) { // i.e., s/d > Θ\n            // open the quad and recurse\n            queue.push(node.ne)\n            queue.push(node.nw)\n            queue.push(node.se)\n            queue.push(node.sw)\n          } else {\n            // treat the quad as a single body\n            aff = 1.0 / (1.0 + distSq)\n            force = - node.mass * aff * aff  // - N_cell * (q_{i,cell} * Z)^2\n            //var direction = (d.magnitude()>0) ? d : Point.random(1e-5)\n            // Accumulate force and Z\n            xForce += force * dx\n            yForce += force * dy\n            Z += node.mass * aff\n          }\n        }\n      }\n\n      // Return accumulated forces on the particle\n      return {\n        x: xForce,\n        y: yForce,\n        Z: Z,\n      }\n    },\n\n    _whichQuad:function(p, node){\n      // sort the point into one of the quadrants of this node\n      if (p.exploded()) return null\n      var particle_p = p.subtract(node.origin)\n      var halfsize = node.size.divide(2)\n      if (particle_p.y < halfsize.y){\n        if (particle_p.x < halfsize.x) return 'nw'\n        else return 'ne'\n      }else{\n        if (particle_p.x < halfsize.x) return 'sw'\n        else return 'se'\n      }\n    },\n\n    _newBranch:function(origin, size){\n      // to prevent a gc horrorshow, recycle the tree nodes between iterations\n      if (_branches[_branchCtr]) {\n        // Use old node object if one exists\n        var branch = _branches[_branchCtr]\n        branch.ne = branch.nw = branch.se = branch.sw = undefined\n        branch.origin = origin\n        branch.size = size\n        branch.mass = 0\n        branch.p = undefined\n      } else {\n        // Create new branch object\n        branch = new Cell(origin, size)\n        _branches[_branchCtr] = branch\n      }\n\n      _branchCtr++\n      return branch\n    }\n  }\n\n  return that\n}\n\nvar _contains = function(node, child) {\n    var bottomright = node.origin.add(node.size)\n    return (\n        child.p.x >= node.origin.x - 1e-5\n        && child.p.y >= node.origin.y - 1e-5\n        && child.p.x <= bottomright.x + 1e-5\n        && child.p.y <= bottomright.y + 1e-5\n        )\n}\n\nvar Point = function(x, y){\n  if (x && x.hasOwnProperty('y')){\n    y = x.y; x=x.x;\n  }\n  this.x = x;\n  this.y = y;\n}\n\nPoint.random = function(radius){\n  console.error('random??')\n  radius = (radius!==undefined) ? radius : 5\n\treturn new Point(2*radius * (Math.random() - 0.5), 2*radius* (Math.random() - 0.5));\n}\n\nPoint.prototype = {\n  exploded:function(){\n    return ( isNaN(this.x) || isNaN(this.y) )\n  },\n  add:function(v2){\n  \treturn new Point(this.x + v2.x, this.y + v2.y);\n  },\n  subtract:function(v2){\n  \treturn new Point(this.x - v2.x, this.y - v2.y);\n  },\n  multiply:function(n){\n  \treturn new Point(this.x * n, this.y * n);\n  },\n  divide:function(n){\n  \treturn new Point(this.x / n, this.y / n);\n  },\n  magnitude:function(){\n  \treturn Math.sqrt(this.x*this.x + this.y*this.y);\n  },\n  magnitudeSquared:function(){\n  \treturn this.x*this.x + this.y*this.y;\n  },\n  normal:function(){\n  \treturn new Point(-this.y, this.x);\n  },\n  normalize:function(){\n  \treturn this.divide(this.magnitude());\n  }\n}\n\nmodule.exports = {\n  BarnesHutTree: BarnesHutTree,\n  Point: Point,\n}\n//# sourceMappingURL=data:application/json;charset=utf-8;base64,eyJ2ZXJzaW9uIjozLCJzb3VyY2VzIjpbIndlYnBhY2s6Ly8vLi9pbmNsdWRlcy9iaHRyZWUuanM/ZGIzZiJdLCJuYW1lcyI6W10sIm1hcHBpbmdzIjoiQUFBQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTs7QUFFQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTs7OztBQUlBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7O0FBRUE7QUFDQTtBQUNBOztBQUVBO0FBQ0E7O0FBRUE7QUFDQTtBQUNBLEtBQUs7O0FBRUw7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBLHFCQUFxQixPQUFPO0FBQzVCO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBLHFCQUFxQixPQUFPO0FBQzVCO0FBQ0E7QUFDQSxLQUFLO0FBQ0w7O0FBRUE7OztBQUdBO0FBQ0E7QUFDQTtBQUNBOztBQUVBO0FBQ0E7QUFDQTtBQUNBOztBQUVBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7O0FBRUE7QUFDQSxLQUFLO0FBQ0w7QUFDQTtBQUNBO0FBQ0E7QUFDQTs7QUFFQTtBQUNBO0FBQ0E7O0FBRUE7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0EsU0FBUztBQUNUO0FBQ0E7O0FBRUE7QUFDQTtBQUNBO0FBQ0EsU0FBUztBQUNUO0FBQ0E7QUFDQTs7QUFFQTtBQUNBO0FBQ0EsU0FBUztBQUNUO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTs7QUFFQTtBQUNBO0FBQ0E7O0FBRUE7QUFDQTs7QUFFQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBOztBQUVBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7O0FBRUE7O0FBRUEsS0FBSzs7QUFFTDtBQUNBO0FBQ0E7O0FBRUE7QUFDQTs7QUFFQTs7QUFFQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQSxTQUFTO0FBQ1Q7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBLFNBQVM7QUFDVDtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0Esb0NBQW9DO0FBQ3BDO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQSxXQUFXO0FBQ1g7QUFDQTtBQUNBLCtEQUErRCxPQUFPO0FBQ3RFO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7O0FBRUE7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0EsS0FBSzs7QUFFTDtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0EsT0FBTztBQUNQO0FBQ0E7QUFDQTtBQUNBLEtBQUs7O0FBRUw7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQSxPQUFPO0FBQ1A7QUFDQTtBQUNBO0FBQ0E7O0FBRUE7QUFDQTtBQUNBO0FBQ0E7O0FBRUE7QUFDQTs7QUFFQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7O0FBRUE7QUFDQTtBQUNBLFlBQVk7QUFDWjtBQUNBO0FBQ0E7QUFDQTs7QUFFQTtBQUNBO0FBQ0E7QUFDQTtBQUNBOztBQUVBO0FBQ0E7QUFDQTtBQUNBLEdBQUc7QUFDSDtBQUNBO0FBQ0EsR0FBRztBQUNIO0FBQ0E7QUFDQSxHQUFHO0FBQ0g7QUFDQTtBQUNBLEdBQUc7QUFDSDtBQUNBO0FBQ0EsR0FBRztBQUNIO0FBQ0E7QUFDQSxHQUFHO0FBQ0g7QUFDQTtBQUNBLEdBQUc7QUFDSDtBQUNBO0FBQ0EsR0FBRztBQUNIO0FBQ0E7QUFDQTtBQUNBOztBQUVBO0FBQ0E7QUFDQTtBQUNBIiwiZmlsZSI6IjE4LmpzIiwic291cmNlc0NvbnRlbnQiOlsiLy9cbi8vICBiYXJuZXMtaHV0LmpzXG4vL1xuLy8gIGltcGxlbWVudGF0aW9uIG9mIHRoZSBiYXJuZXMtaHV0IHF1YWR0cmVlIGFsZ29yaXRobSBmb3Igbi1ib2R5IHJlcHVsc2lvblxuLy8gIGh0dHA6Ly93d3cuY3MucHJpbmNldG9uLmVkdS9jb3Vyc2VzL2FyY2hpdmUvZmFsbDAzL2NzMTI2L2Fzc2lnbm1lbnRzL2Jhcm5lcy1odXQuaHRtbFxuLy9cbi8vICBDcmVhdGVkIGJ5IENocmlzdGlhbiBTd2luZWhhcnQgb24gMjAxMS0wMS0xNC5cbi8vICBDb3B5cmlnaHQgKGMpIDIwMTEgU2FtaXpkYXQgRHJhZnRpbmcgQ28uIEFsbCByaWdodHMgcmVzZXJ2ZWQuXG4vL1xuLy9cblxudmFyIENlbGwgPSBmdW5jdGlvbiAob3JpZ2luLCBzaXplKSB7XG4gICAgdGhpcy5udyA9IHVuZGVmaW5lZFxuICAgIHRoaXMubmUgPSB1bmRlZmluZWRcbiAgICB0aGlzLnN3ID0gdW5kZWZpbmVkXG4gICAgdGhpcy5zZSA9IHVuZGVmaW5lZFxuICAgIHRoaXMub3JpZ2luID0gb3JpZ2luXG4gICAgdGhpcy5zaXplID0gc2l6ZVxuICAgIHRoaXMucCA9IHVuZGVmaW5lZFxuICAgIHRoaXMubWFzcyA9IDBcbn1cblxuXG5cbnZhciBCYXJuZXNIdXRUcmVlID0gZnVuY3Rpb24oKXtcbiAgdmFyIF9icmFuY2hlcyA9IFtdXG4gIHZhciBfYnJhbmNoQ3RyID0gMFxuICB2YXIgX3Jvb3QgPSBudWxsXG4gIHZhciBfdGhldGEgPSAuNVxuXG4gIHZhciB0aGF0ID0ge1xuICAgIGluaXQ6ZnVuY3Rpb24odG9wbGVmdCwgYm90dG9tcmlnaHQsIHRoZXRhKXtcbiAgICAgIF90aGV0YSA9IHRoZXRhXG5cbiAgICAgIC8vIFJlc2V0IHRoZSBwb2ludGVyIGluIHRoZSBDZWxsIGFsbG9jYXRvclxuICAgICAgX2JyYW5jaEN0ciA9IDBcblxuICAgICAgLy8gY3JlYXRlIGEgZnJlc2ggcm9vdCBub2RlIGZvciB0aGVzZSBzcGF0aWFsIGJvdW5kc1xuICAgICAgX3Jvb3QgPSB0aGF0Ll9uZXdCcmFuY2godG9wbGVmdCwgYm90dG9tcmlnaHQuc3VidHJhY3QodG9wbGVmdCkpXG4gICAgfSxcblxuICAgIGluaXRXaXRoRGF0YTogZnVuY3Rpb24oZGF0YSwgdGhldGEsIE4pIHtcbiAgICAgIC8vIFRPRE86IGtlZXAgdGhlIGRhdGEgaW4gcGxhY2U/XG4gICAgICAvLyBjb21wdXRlIHRvcCBsZWZ0IGFuZCB0b3AgcmlnaHQgYmFzZWQgb24gZGF0YSBhbmQgY2FsbCBpbml0XG4gICAgICB2YXIgdG9wbGVmdCA9IG5ldyBQb2ludCgwLCAwKVxuICAgICAgdmFyIGJvdHRvbXJpZ2h0ID0gbmV3IFBvaW50KDAsIDApXG4gICAgICBmb3IgKHZhciBpID0gMDsgaSA8IE47IGkrKykge1xuICAgICAgICB2YXIgeCA9IGRhdGEuZ2V0KGksIDApXG4gICAgICAgIHZhciB5ID0gZGF0YS5nZXQoaSwgMSlcbiAgICAgICAgaWYgKHggPCB0b3BsZWZ0LngpIHRvcGxlZnQueCA9IHhcbiAgICAgICAgaWYgKHkgPCB0b3BsZWZ0LnkpIHRvcGxlZnQueSA9IHlcbiAgICAgICAgaWYgKHggPiBib3R0b21yaWdodC54KSBib3R0b21yaWdodC54ID0geFxuICAgICAgICBpZiAoeSA+IGJvdHRvbXJpZ2h0LnkpIGJvdHRvbXJpZ2h0LnkgPSB5XG4gICAgICB9XG4gICAgICB0aGF0LmluaXQodG9wbGVmdCwgYm90dG9tcmlnaHQsIHRoZXRhKTtcbiAgICAgIC8vIHRoZW4gaW5zZXJ0IGFsbCB0aGUgcG9pbnRzXG4gICAgICBmb3IgKHZhciBpID0gMDsgaSA8IE47IGkrKykge1xuICAgICAgICB0aGF0Lmluc2VydChkYXRhLmdldChpLCAwKSwgZGF0YS5nZXQoaSwgMSkpO1xuICAgICAgfVxuICAgIH0sXG4gICAgaXNDb3JyZWN0OiBmdW5jdGlvbigpIHtcblxuICAgICAgdmFyIHF1ZXVlID0gW19yb290XVxuXG5cbiAgICAgIHZhciByZWN1cnNlID0gZnVuY3Rpb24ocG5vZGUsIG5vZGUpIHtcbiAgICAgICAgaWYgKG5vZGUgPT09IHVuZGVmaW5lZCl7XG4gICAgICAgICAgcmV0dXJuIHRydWU7XG4gICAgICAgIH1cblxuICAgICAgICBpZiAoIShwbm9kZSA9PT0gbnVsbCB8fCBfY29udGFpbnMocG5vZGUsIG5vZGUpKSkge1xuICAgICAgICAgIGNvbnNvbGUuZXJyb3IocG5vZGUsIG5vZGUpXG4gICAgICAgICAgcmV0dXJuIGZhbHNlO1xuICAgICAgICB9XG5cbiAgICAgICAgLy8gSnVzdCBhIHBvaW50LCBvciBhbGwgY2hpbGRyZW4gYWxzbyBhcmUgY29ycmVjdFxuICAgICAgICByZXR1cm4gKCEoJ29yaWdpbicgaW4gbm9kZSkgfHxcbiAgICAgICAgICAgIChyZWN1cnNlKG5vZGUsIG5vZGUubncpXG4gICAgICAgICAgICAmJiByZWN1cnNlKG5vZGUsIG5vZGUubmUpXG4gICAgICAgICAgICAmJiByZWN1cnNlKG5vZGUsIG5vZGUuc3cpXG4gICAgICAgICAgICAmJiByZWN1cnNlKG5vZGUsIG5vZGUuc2UpXG4gICAgICAgICAgICApKVxuICAgICAgfVxuXG4gICAgICByZXR1cm4gcmVjdXJzZShudWxsLCBfcm9vdClcbiAgICB9LFxuICAgIGluc2VydDpmdW5jdGlvbih4LCB5KXtcbiAgICAgIC8vIGFkZCBhIHBhcnRpY2xlIHRvIHRoZSB0cmVlLCBzdGFydGluZyBhdCB0aGUgY3VycmVudCBfcm9vdCBhbmQgd29ya2luZyBkb3duXG4gICAgICB2YXIgbm9kZSA9IF9yb290XG4gICAgICB2YXIgcXVldWUgPSBbbmV3IFBvaW50KHgsIHkpXVxuICAgICAgdmFyIHBvaW50LCBwX3F1YWQsIG11bHQxLCBtdWx0MiwgYnJhbmNoX3NpemUsIGJyYW5jaF9vcmlnaW4sIG9sZFBvaW50XG5cbiAgICAgIHdoaWxlIChxdWV1ZS5sZW5ndGgpe1xuICAgICAgICBwb2ludCA9IHF1ZXVlLnNoaWZ0KClcbiAgICAgICAgcF9xdWFkID0gdGhhdC5fd2hpY2hRdWFkKHBvaW50LCBub2RlKVxuXG4gICAgICAgIC8vIEluY3JlbWVudCB0b3RhbCBtYXNzIChjb3VudCkgYW5kIHVwZGF0ZSBjZW50ZXJcbiAgICAgICAgbm9kZS5tYXNzICs9IDEuXG4gICAgICAgIG11bHQxID0gKG5vZGUubWFzcyAtIDEpIC8gbm9kZS5tYXNzXG4gICAgICAgIG11bHQyID0gMSAvIG5vZGUubWFzc1xuICAgICAgICBpZiAobm9kZS5wKSB7XG4gICAgICAgICAgbm9kZS5wID0gbm9kZS5wLm11bHRpcGx5KG11bHQxKS5hZGQocG9pbnQubXVsdGlwbHkobXVsdDIpKVxuICAgICAgICB9IGVsc2Uge1xuICAgICAgICAgIG5vZGUucCA9IHBvaW50XG4gICAgICAgIH1cblxuICAgICAgICBpZiAobm9kZVtwX3F1YWRdPT09dW5kZWZpbmVkKXtcbiAgICAgICAgICAvLyBzbG90IGlzIGVtcHR5LCBqdXN0IGRyb3AgdGhpcyBub2RlIGluIGFuZCB1cGRhdGUgdGhlIG1hc3MvYy5vLm0uXG4gICAgICAgICAgbm9kZVtwX3F1YWRdID0gcG9pbnRcbiAgICAgICAgfWVsc2UgaWYgKCdvcmlnaW4nIGluIG5vZGVbcF9xdWFkXSl7XG4gICAgICAgICAgLy8gc2xvdCBjb250YWlucyBhIGJyYW5jaCBub2RlLFxuICAgICAgICAgIC8vIGtlZXAgaXRlcmF0aW5nIHdpdGggdGhlIGJyYW5jaCBhcyBvdXIgbmV3IHJvb3RcbiAgICAgICAgICBub2RlID0gbm9kZVtwX3F1YWRdXG5cbiAgICAgICAgICAvLyBwdXQgcG9pbnQgYmFja1xuICAgICAgICAgIHF1ZXVlLnVuc2hpZnQocG9pbnQpXG4gICAgICAgIH1lbHNle1xuICAgICAgICAgIC8vIHNsb3QgY29udGFpbnMgYSBwb2ludCwgY3JlYXRlIGEgbmV3IGJyYW5jaCAoc3ViZGl2aWRlKVxuICAgICAgICAgIC8vIGFuZCByZWN1cnNlIHdpdGggYm90aCBwb2ludHMgaW4gdGhlIHF1ZXVlIG5vd1xuICAgICAgICAgIGJyYW5jaF9zaXplID0gbm9kZS5zaXplLmRpdmlkZSgyKVxuICAgICAgICAgIGJyYW5jaF9vcmlnaW4gPSBuZXcgUG9pbnQobm9kZS5vcmlnaW4pXG4gICAgICAgICAgaWYgKHBfcXVhZFswXT09J3MnKSBicmFuY2hfb3JpZ2luLnkgKz0gYnJhbmNoX3NpemUueVxuICAgICAgICAgIGlmIChwX3F1YWRbMV09PSdlJykgYnJhbmNoX29yaWdpbi54ICs9IGJyYW5jaF9zaXplLnhcblxuICAgICAgICAgIC8vIHJlcGxhY2UgdGhlIHByZXZpb3VzbHkgcG9pbnQtb2NjdXBpZWQgcXVhZCB3aXRoIGEgbmV3IGludGVybmFsIGJyYW5jaCBub2RlXG4gICAgICAgICAgb2xkUG9pbnQgPSBub2RlW3BfcXVhZF1cbiAgICAgICAgICBub2RlW3BfcXVhZF0gPSB0aGF0Ll9uZXdCcmFuY2goYnJhbmNoX29yaWdpbiwgYnJhbmNoX3NpemUpXG5cbiAgICAgICAgICAvLyBTd2l0Y2ggZG93biBpbnRvIHRoZSBuZXcgYnJhbmNoXG4gICAgICAgICAgbm9kZSA9IG5vZGVbcF9xdWFkXVxuXG4gICAgICAgICAgLy9pZiAob2xkUGFydGljbGUucC54PT09cGFydGljbGUucC54ICYmIG9sZFBhcnRpY2xlLnAueT09PXBhcnRpY2xlLnAueSl7XG4gICAgICAgICAgLy8gIC8vIHByZXZlbnQgaW5maW5pdGUgYmlzZWN0aW9uIGluIHRoZSBjYXNlIHdoZXJlIHR3byBwYXJ0aWNsZXNcbiAgICAgICAgICAvLyAgLy8gaGF2ZSBpZGVudGljYWwgY29vcmRpbmF0ZXMgYnkgam9zdGxpbmcgb25lIG9mIHRoZW0gc2xpZ2h0bHlcbiAgICAgICAgICAvLyAgdmFyIHhfc3ByZWFkID0gYnJhbmNoX3NpemUueCouMDhcbiAgICAgICAgICAvLyAgdmFyIHlfc3ByZWFkID0gYnJhbmNoX3NpemUueSouMDhcbiAgICAgICAgICAvLyAgb2xkUGFydGljbGUucC54ID0gTWF0aC5taW4oYnJhbmNoX29yaWdpbi54K2JyYW5jaF9zaXplLngsXG4gICAgICAgICAgLy8gICAgICAgICAgICAgICAgICAgICAgICAgICAgIE1hdGgubWF4KGJyYW5jaF9vcmlnaW4ueCxcbiAgICAgICAgICAvLyAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgb2xkUGFydGljbGUucC54IC0geF9zcHJlYWQvMiArXG4gICAgICAgICAgLy8gICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgIE1hdGgucmFuZG9tKCkqeF9zcHJlYWQpKVxuICAgICAgICAgIC8vICBvbGRQYXJ0aWNsZS5wLnkgPSBNYXRoLm1pbihicmFuY2hfb3JpZ2luLnkrYnJhbmNoX3NpemUueSxcbiAgICAgICAgICAvLyAgICAgICAgICAgICAgICAgICAgICAgICAgICAgTWF0aC5tYXgoYnJhbmNoX29yaWdpbi55LFxuICAgICAgICAgIC8vICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICBvbGRQYXJ0aWNsZS5wLnkgLSB5X3NwcmVhZC8yICtcbiAgICAgICAgICAvLyAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgTWF0aC5yYW5kb20oKSp5X3NwcmVhZCkpXG4gICAgICAgICAgLy99XG5cbiAgICAgICAgICAvLyBrZWVwIGl0ZXJhdGluZyBidXQgbm93IGhhdmluZyB0byBwbGFjZSBib3RoIHRoZSBjdXJyZW50IHBhcnRpY2xlIGFuZCB0aGVcbiAgICAgICAgICAvLyBvbmUgd2UganVzdCByZXBsYWNlZCB3aXRoIHRoZSBicmFuY2ggbm9kZVxuICAgICAgICAgIHF1ZXVlLnB1c2gob2xkUG9pbnQpXG4gICAgICAgICAgcXVldWUudW5zaGlmdChwb2ludClcbiAgICAgICAgfVxuXG4gICAgICB9XG5cbiAgICB9LFxuXG4gICAgY29tcHV0ZUZvcmNlczpmdW5jdGlvbih4LCB5KXtcbiAgICAgIHZhciB4Rm9yY2UgPSAwLlxuICAgICAgdmFyIHlGb3JjZSA9IDAuXG5cbiAgICAgIHZhciBaID0gMC4gIC8vIFpcbiAgICAgIHZhciBjb3VudCA9IDBcblxuICAgICAgdmFyIGR4LCBkeSwgZGlzdFNxLCBkaXN0LCBhZmYsIGZvcmNlLCByY2VsbCwgbm9kZVxuXG4gICAgICB2YXIgcXVldWUgPSBbX3Jvb3RdXG4gICAgICB3aGlsZSAocXVldWUubGVuZ3RoKSB7XG4gICAgICAgIGNvdW50KytcbiAgICAgICAgbm9kZSA9IHF1ZXVlLnNoaWZ0KClcbiAgICAgICAgaWYgKG5vZGUgPT09IHVuZGVmaW5lZCkge1xuICAgICAgICAgIGNvbnRpbnVlXG4gICAgICAgIH0gZWxzZSBpZiAobm9kZSBpbnN0YW5jZW9mIFBvaW50KXtcbiAgICAgICAgICAvLyB0aGlzIGlzIGEgcG9pbnQgbGVhZm5vZGUsIHNvIGp1c3QgYXBwbHkgdGhlIGZvcmNlIGRpcmVjdGx5XG4gICAgICAgICAgZHggPSB4IC0gbm9kZS54XG4gICAgICAgICAgZHkgPSB5IC0gbm9kZS55XG4gICAgICAgICAgZGlzdFNxID0gZHgqZHggKyBkeSpkeVxuICAgICAgICAgIGFmZiA9IDEuIC8gKDEuICsgZGlzdFNxKVxuICAgICAgICAgIGZvcmNlID0gLSBhZmYgKiBhZmYgIC8vIC1xdV9pal4yID0gLShxX2lqICogWileMlxuICAgICAgICAgIGlmIChkaXN0U3EgPCAxZS01KSBjb250aW51ZVxuICAgICAgICAgIC8vIEFjY3VtdWxhdGUgZm9yY2UgYW5kIFpcbiAgICAgICAgICB4Rm9yY2UgKz0gZm9yY2UgKiBkeFxuICAgICAgICAgIHlGb3JjZSArPSBmb3JjZSAqIGR5XG4gICAgICAgICAgWiArPSBhZmZcbiAgICAgICAgfSBlbHNlIHtcbiAgICAgICAgICAvLyBpdCdzIGEgYnJhbmNoIG5vZGUgc28gZGVjaWRlIGlmIGl0J3MgY2x1c3Rlci15IGFuZCBkaXN0YW50IGVub3VnaFxuICAgICAgICAgIC8vIHRvIHN1bW1hcml6ZSBhcyBhIHNpbmdsZSBwb2ludC4gaWYgaXQncyB0b28gY29tcGxleCwgb3BlbiBpdCBhbmQgZGVhbFxuICAgICAgICAgIC8vIHdpdGggaXRzIHF1YWRyYW50cyBpbiB0dXJuXG4gICAgICAgICAgZHggPSB4IC0gbm9kZS5wLnhcbiAgICAgICAgICBkeSA9IHkgLSBub2RlLnAueVxuICAgICAgICAgIGRpc3RTcSA9IGR4KmR4ICsgZHkqZHlcbiAgICAgICAgICBkaXN0ID0gTWF0aC5zcXJ0KGRpc3RTcSlcbiAgICAgICAgICByY2VsbCA9IG5vZGUuc2l6ZS54ID4gbm9kZS5zaXplLnkgPyBub2RlLnNpemUueCA6IG5vZGUuc2l6ZS55XG4gICAgICAgICAgaWYgKHJjZWxsL2Rpc3QgPiBfdGhldGEpIHsgLy8gaS5lLiwgcy9kID4gzphcbiAgICAgICAgICAgIC8vIG9wZW4gdGhlIHF1YWQgYW5kIHJlY3Vyc2VcbiAgICAgICAgICAgIHF1ZXVlLnB1c2gobm9kZS5uZSlcbiAgICAgICAgICAgIHF1ZXVlLnB1c2gobm9kZS5udylcbiAgICAgICAgICAgIHF1ZXVlLnB1c2gobm9kZS5zZSlcbiAgICAgICAgICAgIHF1ZXVlLnB1c2gobm9kZS5zdylcbiAgICAgICAgICB9IGVsc2Uge1xuICAgICAgICAgICAgLy8gdHJlYXQgdGhlIHF1YWQgYXMgYSBzaW5nbGUgYm9keVxuICAgICAgICAgICAgYWZmID0gMS4wIC8gKDEuMCArIGRpc3RTcSlcbiAgICAgICAgICAgIGZvcmNlID0gLSBub2RlLm1hc3MgKiBhZmYgKiBhZmYgIC8vIC0gTl9jZWxsICogKHFfe2ksY2VsbH0gKiBaKV4yXG4gICAgICAgICAgICAvL3ZhciBkaXJlY3Rpb24gPSAoZC5tYWduaXR1ZGUoKT4wKSA/IGQgOiBQb2ludC5yYW5kb20oMWUtNSlcbiAgICAgICAgICAgIC8vIEFjY3VtdWxhdGUgZm9yY2UgYW5kIFpcbiAgICAgICAgICAgIHhGb3JjZSArPSBmb3JjZSAqIGR4XG4gICAgICAgICAgICB5Rm9yY2UgKz0gZm9yY2UgKiBkeVxuICAgICAgICAgICAgWiArPSBub2RlLm1hc3MgKiBhZmZcbiAgICAgICAgICB9XG4gICAgICAgIH1cbiAgICAgIH1cblxuICAgICAgLy8gUmV0dXJuIGFjY3VtdWxhdGVkIGZvcmNlcyBvbiB0aGUgcGFydGljbGVcbiAgICAgIHJldHVybiB7XG4gICAgICAgIHg6IHhGb3JjZSxcbiAgICAgICAgeTogeUZvcmNlLFxuICAgICAgICBaOiBaLFxuICAgICAgfVxuICAgIH0sXG5cbiAgICBfd2hpY2hRdWFkOmZ1bmN0aW9uKHAsIG5vZGUpe1xuICAgICAgLy8gc29ydCB0aGUgcG9pbnQgaW50byBvbmUgb2YgdGhlIHF1YWRyYW50cyBvZiB0aGlzIG5vZGVcbiAgICAgIGlmIChwLmV4cGxvZGVkKCkpIHJldHVybiBudWxsXG4gICAgICB2YXIgcGFydGljbGVfcCA9IHAuc3VidHJhY3Qobm9kZS5vcmlnaW4pXG4gICAgICB2YXIgaGFsZnNpemUgPSBub2RlLnNpemUuZGl2aWRlKDIpXG4gICAgICBpZiAocGFydGljbGVfcC55IDwgaGFsZnNpemUueSl7XG4gICAgICAgIGlmIChwYXJ0aWNsZV9wLnggPCBoYWxmc2l6ZS54KSByZXR1cm4gJ253J1xuICAgICAgICBlbHNlIHJldHVybiAnbmUnXG4gICAgICB9ZWxzZXtcbiAgICAgICAgaWYgKHBhcnRpY2xlX3AueCA8IGhhbGZzaXplLngpIHJldHVybiAnc3cnXG4gICAgICAgIGVsc2UgcmV0dXJuICdzZSdcbiAgICAgIH1cbiAgICB9LFxuXG4gICAgX25ld0JyYW5jaDpmdW5jdGlvbihvcmlnaW4sIHNpemUpe1xuICAgICAgLy8gdG8gcHJldmVudCBhIGdjIGhvcnJvcnNob3csIHJlY3ljbGUgdGhlIHRyZWUgbm9kZXMgYmV0d2VlbiBpdGVyYXRpb25zXG4gICAgICBpZiAoX2JyYW5jaGVzW19icmFuY2hDdHJdKSB7XG4gICAgICAgIC8vIFVzZSBvbGQgbm9kZSBvYmplY3QgaWYgb25lIGV4aXN0c1xuICAgICAgICB2YXIgYnJhbmNoID0gX2JyYW5jaGVzW19icmFuY2hDdHJdXG4gICAgICAgIGJyYW5jaC5uZSA9IGJyYW5jaC5udyA9IGJyYW5jaC5zZSA9IGJyYW5jaC5zdyA9IHVuZGVmaW5lZFxuICAgICAgICBicmFuY2gub3JpZ2luID0gb3JpZ2luXG4gICAgICAgIGJyYW5jaC5zaXplID0gc2l6ZVxuICAgICAgICBicmFuY2gubWFzcyA9IDBcbiAgICAgICAgYnJhbmNoLnAgPSB1bmRlZmluZWRcbiAgICAgIH0gZWxzZSB7XG4gICAgICAgIC8vIENyZWF0ZSBuZXcgYnJhbmNoIG9iamVjdFxuICAgICAgICBicmFuY2ggPSBuZXcgQ2VsbChvcmlnaW4sIHNpemUpXG4gICAgICAgIF9icmFuY2hlc1tfYnJhbmNoQ3RyXSA9IGJyYW5jaFxuICAgICAgfVxuXG4gICAgICBfYnJhbmNoQ3RyKytcbiAgICAgIHJldHVybiBicmFuY2hcbiAgICB9XG4gIH1cblxuICByZXR1cm4gdGhhdFxufVxuXG52YXIgX2NvbnRhaW5zID0gZnVuY3Rpb24obm9kZSwgY2hpbGQpIHtcbiAgICB2YXIgYm90dG9tcmlnaHQgPSBub2RlLm9yaWdpbi5hZGQobm9kZS5zaXplKVxuICAgIHJldHVybiAoXG4gICAgICAgIGNoaWxkLnAueCA+PSBub2RlLm9yaWdpbi54IC0gMWUtNVxuICAgICAgICAmJiBjaGlsZC5wLnkgPj0gbm9kZS5vcmlnaW4ueSAtIDFlLTVcbiAgICAgICAgJiYgY2hpbGQucC54IDw9IGJvdHRvbXJpZ2h0LnggKyAxZS01XG4gICAgICAgICYmIGNoaWxkLnAueSA8PSBib3R0b21yaWdodC55ICsgMWUtNVxuICAgICAgICApXG59XG5cbnZhciBQb2ludCA9IGZ1bmN0aW9uKHgsIHkpe1xuICBpZiAoeCAmJiB4Lmhhc093blByb3BlcnR5KCd5Jykpe1xuICAgIHkgPSB4Lnk7IHg9eC54O1xuICB9XG4gIHRoaXMueCA9IHg7XG4gIHRoaXMueSA9IHk7XG59XG5cblBvaW50LnJhbmRvbSA9IGZ1bmN0aW9uKHJhZGl1cyl7XG4gIGNvbnNvbGUuZXJyb3IoJ3JhbmRvbT8/JylcbiAgcmFkaXVzID0gKHJhZGl1cyE9PXVuZGVmaW5lZCkgPyByYWRpdXMgOiA1XG5cdHJldHVybiBuZXcgUG9pbnQoMipyYWRpdXMgKiAoTWF0aC5yYW5kb20oKSAtIDAuNSksIDIqcmFkaXVzKiAoTWF0aC5yYW5kb20oKSAtIDAuNSkpO1xufVxuXG5Qb2ludC5wcm90b3R5cGUgPSB7XG4gIGV4cGxvZGVkOmZ1bmN0aW9uKCl7XG4gICAgcmV0dXJuICggaXNOYU4odGhpcy54KSB8fCBpc05hTih0aGlzLnkpIClcbiAgfSxcbiAgYWRkOmZ1bmN0aW9uKHYyKXtcbiAgXHRyZXR1cm4gbmV3IFBvaW50KHRoaXMueCArIHYyLngsIHRoaXMueSArIHYyLnkpO1xuICB9LFxuICBzdWJ0cmFjdDpmdW5jdGlvbih2Mil7XG4gIFx0cmV0dXJuIG5ldyBQb2ludCh0aGlzLnggLSB2Mi54LCB0aGlzLnkgLSB2Mi55KTtcbiAgfSxcbiAgbXVsdGlwbHk6ZnVuY3Rpb24obil7XG4gIFx0cmV0dXJuIG5ldyBQb2ludCh0aGlzLnggKiBuLCB0aGlzLnkgKiBuKTtcbiAgfSxcbiAgZGl2aWRlOmZ1bmN0aW9uKG4pe1xuICBcdHJldHVybiBuZXcgUG9pbnQodGhpcy54IC8gbiwgdGhpcy55IC8gbik7XG4gIH0sXG4gIG1hZ25pdHVkZTpmdW5jdGlvbigpe1xuICBcdHJldHVybiBNYXRoLnNxcnQodGhpcy54KnRoaXMueCArIHRoaXMueSp0aGlzLnkpO1xuICB9LFxuICBtYWduaXR1ZGVTcXVhcmVkOmZ1bmN0aW9uKCl7XG4gIFx0cmV0dXJuIHRoaXMueCp0aGlzLnggKyB0aGlzLnkqdGhpcy55O1xuICB9LFxuICBub3JtYWw6ZnVuY3Rpb24oKXtcbiAgXHRyZXR1cm4gbmV3IFBvaW50KC10aGlzLnksIHRoaXMueCk7XG4gIH0sXG4gIG5vcm1hbGl6ZTpmdW5jdGlvbigpe1xuICBcdHJldHVybiB0aGlzLmRpdmlkZSh0aGlzLm1hZ25pdHVkZSgpKTtcbiAgfVxufVxuXG5tb2R1bGUuZXhwb3J0cyA9IHtcbiAgQmFybmVzSHV0VHJlZTogQmFybmVzSHV0VHJlZSxcbiAgUG9pbnQ6IFBvaW50LFxufVxuXG5cblxuLy8vLy8vLy8vLy8vLy8vLy8vXG4vLyBXRUJQQUNLIEZPT1RFUlxuLy8gLi9pbmNsdWRlcy9iaHRyZWUuanNcbi8vIG1vZHVsZSBpZCA9IDE4XG4vLyBtb2R1bGUgY2h1bmtzID0gMCJdLCJzb3VyY2VSb290IjoiIn0=");
+	//
+	//  barnes-hut.js
+	//
+	//  implementation of the barnes-hut quadtree algorithm for n-body repulsion
+	//  http://www.cs.princeton.edu/courses/archive/fall03/cs126/assignments/barnes-hut.html
+	//
+	//  Created by Christian Swinehart on 2011-01-14.
+	//  Copyright (c) 2011 Samizdat Drafting Co. All rights reserved.
+	//
+	//
+	
+	var Cell = function (origin, size) {
+	    this.nw = undefined
+	    this.ne = undefined
+	    this.sw = undefined
+	    this.se = undefined
+	    this.origin = origin
+	    this.size = size
+	    this.p = undefined
+	    this.mass = 0
+	}
+	
+	
+	
+	var BarnesHutTree = function(){
+	  var _branches = []
+	  var _branchCtr = 0
+	  var _root = null
+	  var _theta = .5
+	
+	  var that = {
+	    init:function(topleft, bottomright, theta){
+	      _theta = theta
+	
+	      // Reset the pointer in the Cell allocator
+	      _branchCtr = 0
+	
+	      // create a fresh root node for these spatial bounds
+	      _root = that._newBranch(topleft, bottomright.subtract(topleft))
+	    },
+	
+	    initWithData: function(data, theta, N) {
+	      // TODO: keep the data in place?
+	      // compute top left and top right based on data and call init
+	      var topleft = new Point(0, 0)
+	      var bottomright = new Point(0, 0)
+	      for (var i = 0; i < N; i++) {
+	        var x = data.get(i, 0)
+	        var y = data.get(i, 1)
+	        if (x < topleft.x) topleft.x = x
+	        if (y < topleft.y) topleft.y = y
+	        if (x > bottomright.x) bottomright.x = x
+	        if (y > bottomright.y) bottomright.y = y
+	      }
+	      that.init(topleft, bottomright, theta);
+	      // then insert all the points
+	      for (var i = 0; i < N; i++) {
+	        that.insert(data.get(i, 0), data.get(i, 1));
+	      }
+	    },
+	    isCorrect: function() {
+	
+	      var queue = [_root]
+	
+	
+	      var recurse = function(pnode, node) {
+	        if (node === undefined){
+	          return true;
+	        }
+	
+	        if (!(pnode === null || _contains(pnode, node))) {
+	          console.error(pnode, node)
+	          return false;
+	        }
+	
+	        // Just a point, or all children also are correct
+	        return (!('origin' in node) ||
+	            (recurse(node, node.nw)
+	            && recurse(node, node.ne)
+	            && recurse(node, node.sw)
+	            && recurse(node, node.se)
+	            ))
+	      }
+	
+	      return recurse(null, _root)
+	    },
+	    insert:function(x, y){
+	      // add a particle to the tree, starting at the current _root and working down
+	      var node = _root
+	      var queue = [new Point(x, y)]
+	      var point, p_quad, mult1, mult2, branch_size, branch_origin, oldPoint
+	
+	      while (queue.length){
+	        point = queue.shift()
+	        p_quad = that._whichQuad(point, node)
+	
+	        // Increment total mass (count) and update center
+	        node.mass += 1.
+	        mult1 = (node.mass - 1) / node.mass
+	        mult2 = 1 / node.mass
+	        if (node.p) {
+	          node.p = node.p.multiply(mult1).add(point.multiply(mult2))
+	        } else {
+	          node.p = point
+	        }
+	
+	        if (node[p_quad]===undefined){
+	          // slot is empty, just drop this node in and update the mass/c.o.m.
+	          node[p_quad] = point
+	        }else if ('origin' in node[p_quad]){
+	          // slot contains a branch node,
+	          // keep iterating with the branch as our new root
+	          node = node[p_quad]
+	
+	          // put point back
+	          queue.unshift(point)
+	        }else{
+	          // slot contains a point, create a new branch (subdivide)
+	          // and recurse with both points in the queue now
+	          branch_size = node.size.divide(2)
+	          branch_origin = new Point(node.origin)
+	          if (p_quad[0]=='s') branch_origin.y += branch_size.y
+	          if (p_quad[1]=='e') branch_origin.x += branch_size.x
+	
+	          // replace the previously point-occupied quad with a new internal branch node
+	          oldPoint = node[p_quad]
+	          node[p_quad] = that._newBranch(branch_origin, branch_size)
+	
+	          // Switch down into the new branch
+	          node = node[p_quad]
+	
+	          //if (oldParticle.p.x===particle.p.x && oldParticle.p.y===particle.p.y){
+	          //  // prevent infinite bisection in the case where two particles
+	          //  // have identical coordinates by jostling one of them slightly
+	          //  var x_spread = branch_size.x*.08
+	          //  var y_spread = branch_size.y*.08
+	          //  oldParticle.p.x = Math.min(branch_origin.x+branch_size.x,
+	          //                             Math.max(branch_origin.x,
+	          //                                      oldParticle.p.x - x_spread/2 +
+	          //                                      Math.random()*x_spread))
+	          //  oldParticle.p.y = Math.min(branch_origin.y+branch_size.y,
+	          //                             Math.max(branch_origin.y,
+	          //                                      oldParticle.p.y - y_spread/2 +
+	          //                                      Math.random()*y_spread))
+	          //}
+	
+	          // keep iterating but now having to place both the current particle and the
+	          // one we just replaced with the branch node
+	          queue.push(oldPoint)
+	          queue.unshift(point)
+	        }
+	
+	      }
+	
+	    },
+	
+	    computeForces:function(x, y){
+	      var xForce = 0.
+	      var yForce = 0.
+	
+	      var Z = 0.  // Z
+	      var count = 0
+	
+	      var dx, dy, distSq, dist, aff, force, rcell, node
+	
+	      var queue = [_root]
+	      while (queue.length) {
+	        count++
+	        node = queue.shift()
+	        if (node === undefined) {
+	          continue
+	        } else if (node instanceof Point){
+	          // this is a point leafnode, so just apply the force directly
+	          dx = x - node.x
+	          dy = y - node.y
+	          distSq = dx*dx + dy*dy
+	          aff = 1. / (1. + distSq)
+	          force = - aff * aff  // -qu_ij^2 = -(q_ij * Z)^2
+	          if (distSq < 1e-5) continue
+	          // Accumulate force and Z
+	          xForce += force * dx
+	          yForce += force * dy
+	          Z += aff
+	        } else {
+	          // it's a branch node so decide if it's cluster-y and distant enough
+	          // to summarize as a single point. if it's too complex, open it and deal
+	          // with its quadrants in turn
+	          dx = x - node.p.x
+	          dy = y - node.p.y
+	          distSq = dx*dx + dy*dy
+	          dist = Math.sqrt(distSq)
+	          rcell = node.size.x > node.size.y ? node.size.x : node.size.y
+	          if (rcell/dist > _theta) { // i.e., s/d > Θ
+	            // open the quad and recurse
+	            queue.push(node.ne)
+	            queue.push(node.nw)
+	            queue.push(node.se)
+	            queue.push(node.sw)
+	          } else {
+	            // treat the quad as a single body
+	            aff = 1.0 / (1.0 + distSq)
+	            force = - node.mass * aff * aff  // - N_cell * (q_{i,cell} * Z)^2
+	            //var direction = (d.magnitude()>0) ? d : Point.random(1e-5)
+	            // Accumulate force and Z
+	            xForce += force * dx
+	            yForce += force * dy
+	            Z += node.mass * aff
+	          }
+	        }
+	      }
+	
+	      // Return accumulated forces on the particle
+	      return {
+	        x: xForce,
+	        y: yForce,
+	        Z: Z,
+	      }
+	    },
+	
+	    _whichQuad:function(p, node){
+	      // sort the point into one of the quadrants of this node
+	      if (p.exploded()) return null
+	      var particle_p = p.subtract(node.origin)
+	      var halfsize = node.size.divide(2)
+	      if (particle_p.y < halfsize.y){
+	        if (particle_p.x < halfsize.x) return 'nw'
+	        else return 'ne'
+	      }else{
+	        if (particle_p.x < halfsize.x) return 'sw'
+	        else return 'se'
+	      }
+	    },
+	
+	    _newBranch:function(origin, size){
+	      // to prevent a gc horrorshow, recycle the tree nodes between iterations
+	      if (_branches[_branchCtr]) {
+	        // Use old node object if one exists
+	        var branch = _branches[_branchCtr]
+	        branch.ne = branch.nw = branch.se = branch.sw = undefined
+	        branch.origin = origin
+	        branch.size = size
+	        branch.mass = 0
+	        branch.p = undefined
+	      } else {
+	        // Create new branch object
+	        branch = new Cell(origin, size)
+	        _branches[_branchCtr] = branch
+	      }
+	
+	      _branchCtr++
+	      return branch
+	    }
+	  }
+	
+	  return that
+	}
+	
+	var _contains = function(node, child) {
+	    var bottomright = node.origin.add(node.size)
+	    return (
+	        child.p.x >= node.origin.x - 1e-5
+	        && child.p.y >= node.origin.y - 1e-5
+	        && child.p.x <= bottomright.x + 1e-5
+	        && child.p.y <= bottomright.y + 1e-5
+	        )
+	}
+	
+	var Point = function(x, y){
+	  if (x && x.hasOwnProperty('y')){
+	    y = x.y; x=x.x;
+	  }
+	  this.x = x;
+	  this.y = y;
+	}
+	
+	Point.random = function(radius){
+	  console.error('random??')
+	  radius = (radius!==undefined) ? radius : 5
+		return new Point(2*radius * (Math.random() - 0.5), 2*radius* (Math.random() - 0.5));
+	}
+	
+	Point.prototype = {
+	  exploded:function(){
+	    return ( isNaN(this.x) || isNaN(this.y) )
+	  },
+	  add:function(v2){
+	  	return new Point(this.x + v2.x, this.y + v2.y);
+	  },
+	  subtract:function(v2){
+	  	return new Point(this.x - v2.x, this.y - v2.y);
+	  },
+	  multiply:function(n){
+	  	return new Point(this.x * n, this.y * n);
+	  },
+	  divide:function(n){
+	  	return new Point(this.x / n, this.y / n);
+	  },
+	  magnitude:function(){
+	  	return Math.sqrt(this.x*this.x + this.y*this.y);
+	  },
+	  magnitudeSquared:function(){
+	  	return this.x*this.x + this.y*this.y;
+	  },
+	  normal:function(){
+	  	return new Point(-this.y, this.x);
+	  },
+	  normalize:function(){
+	  	return this.divide(this.magnitude());
+	  }
+	}
+	
+	module.exports = {
+	  BarnesHutTree: BarnesHutTree,
+	  Point: Point,
+	}
+
 
 /***/ },
 /* 19 */
 /***/ function(module, exports, __webpack_require__) {
 
-	eval("var __WEBPACK_AMD_DEFINE_ARRAY__, __WEBPACK_AMD_DEFINE_RESULT__;/*╔═════════════════════════════════════════════════════════════════════════════════════════════════════════╗\n *║                                                                                                         ║\n *║      vptree.js v0.2.3                                                                                   ║\n *║      https://github.com/fpirsch/vptree.js                                                               ║\n *║                                                                                                         ║\n *║      A javascript implementation of the Vantage-Point Tree algorithm                                    ║\n *║      ISC license (http://opensource.org/licenses/ISC). François Pirsch. 2013.                           ║\n *║                                                                                                         ║\n *║      Date: 2015-12-24T11:39Z                                                                            ║\n *║                                                                                                         ║\n *╚═════════════════════════════════════════════════════════════════════════════════════════════════════════╝\n */\n\n/* jshint node: true */\n/* global define */\n\n//https://github.com/umdjs/umd/blob/master/commonjsStrictGlobal.js\n(function (root, factory) {\n    if (true) {\n        // AMD. Register as an anonymous module.\n        !(__WEBPACK_AMD_DEFINE_ARRAY__ = [exports], __WEBPACK_AMD_DEFINE_RESULT__ = function (exports) {\n            factory(root.VPTreeFactory = exports);\n        }.apply(exports, __WEBPACK_AMD_DEFINE_ARRAY__), __WEBPACK_AMD_DEFINE_RESULT__ !== undefined && (module.exports = __WEBPACK_AMD_DEFINE_RESULT__));\n    } else if (typeof exports === 'object') {\n        // CommonJS\n        factory(exports);\n    } else {\n        // Browser globals\n        factory(root.VPTreeFactory = {});\n    }\n}(this, function (exports) {\n    \"use strict\";\n    /* global VPTree, exports */\n\n  /*───────────────────────────────────────────────────────────────────────────┐\n   │   Selection/partition algorithm                                           │\n   └───────────────────────────────────────────────────────────────────────────*/\n\n  function partition(list, left, right, pivotIndex, comp) {\n    var pivotValue = list[pivotIndex];\n    var swap = list[pivotIndex];  // Move pivot to end\n    list[pivotIndex] = list[right];\n    list[right] = swap;\n    var storeIndex = left;\n    for (var i = left; i < right; i++) {\n      if (comp(list[i], pivotValue)) {\n        swap = list[storeIndex];\n        list[storeIndex] = list[i];\n        list[i] = swap;\n        storeIndex++;\n      }\n    }\n    swap = list[right];       // Move pivot to its final place\n    list[right] = list[storeIndex];\n    list[storeIndex] = swap;\n    return storeIndex;\n  }\n\n  // Pivot selection : computes the median of elements a, b and c of the list,\n  // according to comparator comp.\n  function medianOf3(list, a, b, c, comp) {\n    var A = list[a], B = list[b], C = list[c];\n    return comp (A, B) ?\n            comp (B, C) ? b : comp (A, C) ? c : a :\n      comp (A, C) ? a : comp (B, C) ? c : b;\n  }\n\n  /**\n   * Quickselect : Finds the nth smallest number in a list according to comparator comp.\n   * All elements smaller than the nth element are moved to its left (in no particular order),\n   * and all elements greater thant the nth are moved to its right.\n   *\n   * The funny mix of 0-based and 1-based indexes comes from the C++\n   * Standard Library function nth_element.\n   *\n   * @param {Array} list - the list to partition\n   * @param {int} left - index in the list of the first element of the sublist.\n   * @param {int} right - index in the list of the last element of the sublist (inclusive)\n   * @param {int} nth - index, in the range [1, sublist.length] of the element to find.\n   * @param {function} comp - a comparator, i.e. a boolean function accepting two parameters a and b,\n   *        and returning true if a < b and false if a >= b.\n   *\n   * See http://en.wikipedia.org/wiki/Quickselect\n   * And /include/bits/stl_algo.h in the GCC Standard Library ( http://gcc.gnu.org/libstdc++/ )\n   */\n  function nth_element(list, left, nth, right, comp) {\n    if (nth <= 0 || nth > (right-left+1)) throw new Error(\"VPTree.nth_element: nth must be in range [1, right-left+1] (nth=\"+nth+\")\");\n    var pivotIndex, pivotNewIndex, pivotDist;\n    for (;;) {\n      // select pivotIndex between left and right\n      pivotIndex = medianOf3(list, left, right, (left + right) >> 1, comp);\n      pivotNewIndex = partition(list, left, right, pivotIndex, comp);\n      pivotDist = pivotNewIndex - left + 1;\n      if (pivotDist === nth) {\n        return list[pivotNewIndex];\n      }\n      else if (nth < pivotDist) {\n        right = pivotNewIndex - 1;\n      }\n      else {\n        nth -= pivotDist;\n        left = pivotNewIndex + 1;\n      }\n    }\n  }\n\n\n  /**\n   * Wrapper around nth_element with a 0-based index.\n   */\n  function select(list, k, comp) {\n    if (k < 0 || k >= list.length) {\n            throw new Error(\"VPTree.select: k must be in range [0, list.length-1] (k=\"+k+\")\");\n        }\n    return nth_element(list, 0, k+1, list.length-1, comp);\n  }\n\n\n  /*───────────────────────────────────────────────────────────────────────────┐\n   │   vp-tree creation                                                        │\n   └───────────────────────────────────────────────────────────────────────────*/\n  /** Selects a vantage point in a set.\n   *  We trivially pick one at random.\n   *  TODO this could be improved by random sampling to maximize spread.\n   */\n  function selectVPIndex(list) {\n    return Math.floor(Math.random() * list.length);\n  }\n\n  var distanceComparator = function(a, b) { return a.dist < b.dist; };\n\n  /**\n   * Builds and returns a vp-tree from the list S.\n   * @param {Array} S array of objects to structure into a vp-tree.\n   * @param {function} distance a function returning the distance between 2 ojects from the list S.\n   * @param {number} nb (maximum) bucket size. 0 or undefined = no buckets used.\n   * @return {object} vp-tree.\n   */\n  function buildVPTree(S, distance, nb) {\n    var list = [];\n    for (var i = 0, n = S.length; i < n; i++) {\n      list[i] = {\n        i: i\n        //hist: []    // unused (yet)\n      };\n    }\n\n    var tree = recurseVPTree(S, list, distance, nb);\n    return new VPTree(S, distance, tree);\n  }\n\n  function recurseVPTree(S, list, distance, nb) {\n    if (list.length === 0) return null;\n    var i;\n\n    // Is this a leaf node ?\n    var listLength = list.length;\n    if (nb > 0 && listLength <= nb) {\n      var bucket = [];\n      for (i = 0; i < listLength; i++) {\n        bucket[i] = list[i].i;\n      }\n      return bucket;\n    }\n\n    // Non-leaf node.\n    // Constructs a node with the selected vantage point extracted from the set.\n    var vpIndex = selectVPIndex(list),\n      node = list[vpIndex];\n    list.splice(vpIndex, 1);\n    listLength--;\n    // We can't use node.dist yet, so don't show it in the vp-tree output.\n    node = { i: node.i };\n    if (listLength === 0) return node;\n\n    // Adds to each item its distance to the vantage point.\n    // This ensures each distance is computed only once.\n    var vp = S[node.i],\n      dmin = Infinity,\n      dmax = 0,\n      item, dist, n;\n    for (i = 0, n = listLength; i < n; i++) {\n      item = list[i];\n      dist = distance(vp, S[item.i]);\n      item.dist = dist;\n      //item.hist.push(dist); // unused (yet)\n      if (dmin > dist) dmin = dist;\n      if (dmax < dist) dmax = dist;\n    }\n    node.m = dmin;\n    node.M = dmax;\n\n    // Partitions the set around the median distance.\n    var medianIndex = listLength >> 1,\n      median = select(list, medianIndex, distanceComparator);\n\n    // Recursively builds vp-trees with the 2 resulting subsets.\n    var leftItems = list.splice(0, medianIndex),\n      rightItems = list;\n    node.μ = median.dist;\n    node.L = recurseVPTree(S, leftItems, distance, nb);\n    node.R = recurseVPTree(S, rightItems, distance, nb);\n    return node;\n  }\n\n\n  /** Stringifies a vp-tree data structure.\n   *  JSON without the null nodes and the quotes around object keys, to save space.\n   */\n  function stringify(root) {\n    var stack = [root || this.tree], s = '';\n    while (stack.length) {\n      var node = stack.pop();\n\n      // Happens if the bucket size is greater thant the dataset.\n      if (node.length) return '['+node.join(',')+']';\n\n      s += '{i:' + node.i;\n      if (node.hasOwnProperty('m')) {\n        s += ',m:' + node.m + ',M:' + node.M + ',μ:' + node.μ;\n      }\n      if (node.hasOwnProperty('b')) {\n        s += ',b:[' + node.b + ']';\n      }\n      if (node.hasOwnProperty('L')) {\n        var L = node.L;\n        if (L) {\n          s += ',L:';\n          if (L.length) s += '[' + L + ']';\n          else s += stringify(L);\n        }\n      }\n      if (node.hasOwnProperty('R')) {\n        var R = node.R;\n        if (R) {\n          s += ',R:';\n          if (R.length) s += '[' + R + ']';\n          else s += stringify(R);\n        }\n      }\n      s += '}';\n    }\n    return s;\n  }\n\n  /*───────────────────────────────────────────────────────────────────────────┐\n   │   Build Public API                                                        │\n   └───────────────────────────────────────────────────────────────────────────*/\n\n  exports.select = select;\n  exports.build = buildVPTree;\n\n\n  /*───────────────────────────────────────────────────────────────────────────┐\n   │   Priority Queue, used to store search results.                           │\n   └───────────────────────────────────────────────────────────────────────────*/\n\n  /**\n   * @constructor\n   * @class PriorityQueue manages a queue of elements with priorities.\n   *\n   * @param {number} size maximum size of the queue (default = 5). Only lowest priority items will be retained.\n   */\n  function PriorityQueue(size) {\n    size = size || 5;\n    var contents = [];\n\n    function binaryIndexOf(priority) {\n      var minIndex = 0,\n        maxIndex = contents.length - 1,\n        currentIndex,\n        currentElement;\n\n      while (minIndex <= maxIndex) {\n        currentIndex = (minIndex + maxIndex) >> 1;\n        currentElement = contents[currentIndex].priority;\n         \n        if (currentElement < priority) {\n          minIndex = currentIndex + 1;\n        }\n        else if (currentElement > priority) {\n          maxIndex = currentIndex - 1;\n        }\n        else {\n          return currentIndex;\n        }\n      }\n\n      return -1 - minIndex;\n    }\n\n    var api = {\n      // This breaks IE8 compatibility. Who cares ?\n      get length() {\n        return contents.length;\n      },\n\n      insert: function(data, priority) {\n        var index = binaryIndexOf(priority);\n        if (index < 0) index = -1 - index;\n        if (index < size) {\n          contents.splice(index, 0, {data: data, priority: priority});\n          if (contents.length > size) {\n            contents.length--;\n          }\n        }\n        return contents.length === size ? contents[contents.length-1].priority : undefined;\n      },\n\n      list: function() {\n        return contents.map(function(item){ return {i: item.data, d: item.priority}; });\n      }\n    };\n\n    return api;\n  }\n\n\n  /*───────────────────────────────────────────────────────────────────────────┐\n   │   vp-tree search                                                          │\n   └───────────────────────────────────────────────────────────────────────────*/\n\n  /**\n   * @param {object} q - query : any object the distance function can be applied to.\n   * @param {number} [n=1] - number of nearest neighbors to find\n   * @param {number} [τ=∞] - maximum distance from element q\n   *\n   * @return {object[]} list of search results, ordered by increasing distance to the query object.\n   *                    Each result has a property i which is the index of the element in S, and d which\n   *                    is its distance to the query object.\n   */\n  function searchVPTree(q, n, τ) {\n    τ = τ || Infinity;\n    var W = new PriorityQueue(n || 1),\n      S = this.S,\n      distance = this.distance,\n      comparisons = 0;\n\n    function doSearch(node) {\n      if (node === null) return;\n\n      // Leaf node : test each element in this node's bucket.\n      if (node.length) {\n        for (var i = 0, n = node.length; i < n; i++) {\n          comparisons++;\n          var elementID = node[i],\n            element = S[elementID],\n            elementDist = distance(q, element);\n          if (elementDist < τ) {\n            τ = W.insert(elementID, elementDist) || τ;\n          }\n        }\n        return;\n      }\n\n      // Non-leaf node\n      var id = node.i,\n        p = S[id],\n        dist = distance(q, p);\n\n      comparisons++;\n\n      // This vantage-point is close enough to q.\n      if (dist < τ) {\n        τ = W.insert(id, dist) || τ;\n      }\n\n      // The order of exploration is determined by comparison with μ.\n      // The sooner we find elements close to q, the smaller τ and the more nodes we skip.\n      // P. Yianilos uses the middle of left/right bounds instead of μ.\n      // We search L if dist is in (m - τ, μ + τ), and R if dist is in (μ - τ, M + τ)\n      var μ = node.μ, L = node.L, R = node.R;\n      if (μ === undefined) return;\n      if (dist < μ) {\n        if (L && node.m - τ < dist) doSearch(L);\n        if (R && μ - τ < dist) doSearch(R);\n      }\n      else {\n        if (R && dist < node.M + τ) doSearch(R);\n        if (L && dist < μ + τ) doSearch(L);\n      }\n    }\n\n    doSearch(this.tree);\n    this.comparisons = comparisons;\n    return W.list();\n  }\n\n\n\n  /*───────────────────────────────────────────────────────────────────────────┐\n   │   vp-tree constructor                                                     │\n   └───────────────────────────────────────────────────────────────────────────*/\n\n  /**\n   * @constructor\n   * @class VPTree manages a vp-tree.\n   *\n   * @param {Array} S the initial set of elements\n   * @param {Function} distance the distance function\n   * @param {Object} the vp-tree structure\n   */\n  function VPTree(S, distance, tree) {\n    this.S = S;\n    this.distance = distance;\n    this.tree = tree;\n\n    this.search = searchVPTree;\n    this.comparisons = 0;\n    this.stringify = stringify;\n  }\n\n\n  exports.load = function(S, distance, tree) {\n    return new VPTree(S, distance, tree);\n  };\n}));//# sourceMappingURL=data:application/json;charset=utf-8;base64,eyJ2ZXJzaW9uIjozLCJzb3VyY2VzIjpbIndlYnBhY2s6Ly8vLi9pbmNsdWRlcy92cHRyZWUuanM/ZDcxMyJdLCJuYW1lcyI6W10sIm1hcHBpbmdzIjoiQUFBQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7O0FBRUE7QUFDQTs7QUFFQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQSxTQUFTO0FBQ1QsS0FBSztBQUNMO0FBQ0E7QUFDQSxLQUFLO0FBQ0w7QUFDQSx1Q0FBdUM7QUFDdkM7QUFDQSxDQUFDO0FBQ0Q7QUFDQTs7QUFFQTtBQUNBO0FBQ0E7O0FBRUE7QUFDQTtBQUNBLGdDQUFnQztBQUNoQztBQUNBO0FBQ0E7QUFDQSxzQkFBc0IsV0FBVztBQUNqQztBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBLHVCQUF1QjtBQUN2QjtBQUNBO0FBQ0E7QUFDQTs7QUFFQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBOztBQUVBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQSxhQUFhLE1BQU07QUFDbkIsYUFBYSxJQUFJO0FBQ2pCLGFBQWEsSUFBSTtBQUNqQixhQUFhLElBQUk7QUFDakIsYUFBYSxTQUFTO0FBQ3RCO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQSxXQUFXO0FBQ1g7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7OztBQUdBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTs7O0FBR0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7O0FBRUEsMkNBQTJDLHdCQUF3Qjs7QUFFbkU7QUFDQTtBQUNBLGFBQWEsTUFBTTtBQUNuQixhQUFhLFNBQVM7QUFDdEIsYUFBYSxPQUFPO0FBQ3BCLGNBQWMsT0FBTztBQUNyQjtBQUNBO0FBQ0E7QUFDQSxpQ0FBaUMsT0FBTztBQUN4QztBQUNBO0FBQ0E7QUFDQTtBQUNBOztBQUVBO0FBQ0E7QUFDQTs7QUFFQTtBQUNBO0FBQ0E7O0FBRUE7QUFDQTtBQUNBO0FBQ0E7QUFDQSxpQkFBaUIsZ0JBQWdCO0FBQ2pDO0FBQ0E7QUFDQTtBQUNBOztBQUVBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0EsWUFBWTtBQUNaOztBQUVBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBLCtCQUErQixPQUFPO0FBQ3RDO0FBQ0E7QUFDQTtBQUNBLDZCQUE2QjtBQUM3QjtBQUNBO0FBQ0E7QUFDQTtBQUNBOztBQUVBO0FBQ0E7QUFDQTs7QUFFQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBOzs7QUFHQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTs7QUFFQTtBQUNBOztBQUVBLGFBQWE7QUFDYjtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBLGFBQWE7QUFDYjtBQUNBO0FBQ0E7O0FBRUE7QUFDQTtBQUNBOztBQUVBO0FBQ0E7OztBQUdBO0FBQ0E7QUFDQTs7QUFFQTtBQUNBO0FBQ0E7QUFDQTtBQUNBLGFBQWEsT0FBTztBQUNwQjtBQUNBO0FBQ0E7QUFDQTs7QUFFQTtBQUNBO0FBQ0E7QUFDQTtBQUNBOztBQUVBO0FBQ0E7QUFDQTs7QUFFQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTs7QUFFQTtBQUNBOztBQUVBO0FBQ0E7QUFDQTtBQUNBO0FBQ0EsT0FBTzs7QUFFUDtBQUNBO0FBQ0E7QUFDQTtBQUNBLHFDQUFxQywrQkFBK0I7QUFDcEU7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBLE9BQU87O0FBRVA7QUFDQSwyQ0FBMkMsU0FBUyxnQ0FBZ0MsRUFBRTtBQUN0RjtBQUNBOztBQUVBO0FBQ0E7OztBQUdBO0FBQ0E7QUFDQTs7QUFFQTtBQUNBLGFBQWEsT0FBTztBQUNwQixhQUFhLE9BQU87QUFDcEIsYUFBYSxPQUFPO0FBQ3BCO0FBQ0EsY0FBYyxTQUFTO0FBQ3ZCO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTs7QUFFQTtBQUNBOztBQUVBO0FBQ0E7QUFDQSx3Q0FBd0MsT0FBTztBQUMvQztBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTs7QUFFQTtBQUNBO0FBQ0E7QUFDQTs7QUFFQTs7QUFFQTtBQUNBO0FBQ0E7QUFDQTs7QUFFQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7QUFDQTtBQUNBO0FBQ0E7O0FBRUE7QUFDQTtBQUNBO0FBQ0E7Ozs7QUFJQTtBQUNBO0FBQ0E7O0FBRUE7QUFDQTtBQUNBO0FBQ0E7QUFDQSxhQUFhLE1BQU07QUFDbkIsYUFBYSxTQUFTO0FBQ3RCLGFBQWEsT0FBTztBQUNwQjtBQUNBO0FBQ0E7QUFDQTtBQUNBOztBQUVBO0FBQ0E7QUFDQTtBQUNBOzs7QUFHQTtBQUNBO0FBQ0E7QUFDQSxDQUFDIiwiZmlsZSI6IjE5LmpzIiwic291cmNlc0NvbnRlbnQiOlsiLyrilZTilZDilZDilZDilZDilZDilZDilZDilZDilZDilZDilZDilZDilZDilZDilZDilZDilZDilZDilZDilZDilZDilZDilZDilZDilZDilZDilZDilZDilZDilZDilZDilZDilZDilZDilZDilZDilZDilZDilZDilZDilZDilZDilZDilZDilZDilZDilZDilZDilZDilZDilZDilZDilZDilZDilZDilZDilZDilZDilZDilZDilZDilZDilZDilZDilZDilZDilZDilZDilZDilZDilZDilZDilZDilZDilZDilZDilZDilZDilZDilZDilZDilZDilZDilZDilZDilZDilZDilZDilZDilZDilZDilZDilZDilZDilZDilZDilZDilZDilZDilZDilZDilZDilZDilZDilZDilZdcbiAq4pWRICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAg4pWRXG4gKuKVkSAgICAgIHZwdHJlZS5qcyB2MC4yLjMgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgIOKVkVxuICrilZEgICAgICBodHRwczovL2dpdGh1Yi5jb20vZnBpcnNjaC92cHRyZWUuanMgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICDilZFcbiAq4pWRICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAg4pWRXG4gKuKVkSAgICAgIEEgamF2YXNjcmlwdCBpbXBsZW1lbnRhdGlvbiBvZiB0aGUgVmFudGFnZS1Qb2ludCBUcmVlIGFsZ29yaXRobSAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgIOKVkVxuICrilZEgICAgICBJU0MgbGljZW5zZSAoaHR0cDovL29wZW5zb3VyY2Uub3JnL2xpY2Vuc2VzL0lTQykuIEZyYW7Dp29pcyBQaXJzY2guIDIwMTMuICAgICAgICAgICAgICAgICAgICAgICAgICAg4pWRXG4gKuKVkSAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgIOKVkVxuICrilZEgICAgICBEYXRlOiAyMDE1LTEyLTI0VDExOjM5WiAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICDilZFcbiAq4pWRICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAg4pWRXG4gKuKVmuKVkOKVkOKVkOKVkOKVkOKVkOKVkOKVkOKVkOKVkOKVkOKVkOKVkOKVkOKVkOKVkOKVkOKVkOKVkOKVkOKVkOKVkOKVkOKVkOKVkOKVkOKVkOKVkOKVkOKVkOKVkOKVkOKVkOKVkOKVkOKVkOKVkOKVkOKVkOKVkOKVkOKVkOKVkOKVkOKVkOKVkOKVkOKVkOKVkOKVkOKVkOKVkOKVkOKVkOKVkOKVkOKVkOKVkOKVkOKVkOKVkOKVkOKVkOKVkOKVkOKVkOKVkOKVkOKVkOKVkOKVkOKVkOKVkOKVkOKVkOKVkOKVkOKVkOKVkOKVkOKVkOKVkOKVkOKVkOKVkOKVkOKVkOKVkOKVkOKVkOKVkOKVkOKVkOKVkOKVkOKVkOKVkOKVkOKVkOKVkOKVkOKVkOKVkOKVkOKVkOKVnVxuICovXG5cbi8qIGpzaGludCBub2RlOiB0cnVlICovXG4vKiBnbG9iYWwgZGVmaW5lICovXG5cbi8vaHR0cHM6Ly9naXRodWIuY29tL3VtZGpzL3VtZC9ibG9iL21hc3Rlci9jb21tb25qc1N0cmljdEdsb2JhbC5qc1xuKGZ1bmN0aW9uIChyb290LCBmYWN0b3J5KSB7XG4gICAgaWYgKHR5cGVvZiBkZWZpbmUgPT09ICdmdW5jdGlvbicgJiYgZGVmaW5lLmFtZCkge1xuICAgICAgICAvLyBBTUQuIFJlZ2lzdGVyIGFzIGFuIGFub255bW91cyBtb2R1bGUuXG4gICAgICAgIGRlZmluZShbJ2V4cG9ydHMnXSwgZnVuY3Rpb24gKGV4cG9ydHMpIHtcbiAgICAgICAgICAgIGZhY3Rvcnkocm9vdC5WUFRyZWVGYWN0b3J5ID0gZXhwb3J0cyk7XG4gICAgICAgIH0pO1xuICAgIH0gZWxzZSBpZiAodHlwZW9mIGV4cG9ydHMgPT09ICdvYmplY3QnKSB7XG4gICAgICAgIC8vIENvbW1vbkpTXG4gICAgICAgIGZhY3RvcnkoZXhwb3J0cyk7XG4gICAgfSBlbHNlIHtcbiAgICAgICAgLy8gQnJvd3NlciBnbG9iYWxzXG4gICAgICAgIGZhY3Rvcnkocm9vdC5WUFRyZWVGYWN0b3J5ID0ge30pO1xuICAgIH1cbn0odGhpcywgZnVuY3Rpb24gKGV4cG9ydHMpIHtcbiAgICBcInVzZSBzdHJpY3RcIjtcbiAgICAvKiBnbG9iYWwgVlBUcmVlLCBleHBvcnRzICovXG5cbiAgLyrilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilJBcbiAgIOKUgiAgIFNlbGVjdGlvbi9wYXJ0aXRpb24gYWxnb3JpdGhtICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgIOKUglxuICAg4pSU4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSAKi9cblxuICBmdW5jdGlvbiBwYXJ0aXRpb24obGlzdCwgbGVmdCwgcmlnaHQsIHBpdm90SW5kZXgsIGNvbXApIHtcbiAgICB2YXIgcGl2b3RWYWx1ZSA9IGxpc3RbcGl2b3RJbmRleF07XG4gICAgdmFyIHN3YXAgPSBsaXN0W3Bpdm90SW5kZXhdOyAgLy8gTW92ZSBwaXZvdCB0byBlbmRcbiAgICBsaXN0W3Bpdm90SW5kZXhdID0gbGlzdFtyaWdodF07XG4gICAgbGlzdFtyaWdodF0gPSBzd2FwO1xuICAgIHZhciBzdG9yZUluZGV4ID0gbGVmdDtcbiAgICBmb3IgKHZhciBpID0gbGVmdDsgaSA8IHJpZ2h0OyBpKyspIHtcbiAgICAgIGlmIChjb21wKGxpc3RbaV0sIHBpdm90VmFsdWUpKSB7XG4gICAgICAgIHN3YXAgPSBsaXN0W3N0b3JlSW5kZXhdO1xuICAgICAgICBsaXN0W3N0b3JlSW5kZXhdID0gbGlzdFtpXTtcbiAgICAgICAgbGlzdFtpXSA9IHN3YXA7XG4gICAgICAgIHN0b3JlSW5kZXgrKztcbiAgICAgIH1cbiAgICB9XG4gICAgc3dhcCA9IGxpc3RbcmlnaHRdOyAgICAgICAvLyBNb3ZlIHBpdm90IHRvIGl0cyBmaW5hbCBwbGFjZVxuICAgIGxpc3RbcmlnaHRdID0gbGlzdFtzdG9yZUluZGV4XTtcbiAgICBsaXN0W3N0b3JlSW5kZXhdID0gc3dhcDtcbiAgICByZXR1cm4gc3RvcmVJbmRleDtcbiAgfVxuXG4gIC8vIFBpdm90IHNlbGVjdGlvbiA6IGNvbXB1dGVzIHRoZSBtZWRpYW4gb2YgZWxlbWVudHMgYSwgYiBhbmQgYyBvZiB0aGUgbGlzdCxcbiAgLy8gYWNjb3JkaW5nIHRvIGNvbXBhcmF0b3IgY29tcC5cbiAgZnVuY3Rpb24gbWVkaWFuT2YzKGxpc3QsIGEsIGIsIGMsIGNvbXApIHtcbiAgICB2YXIgQSA9IGxpc3RbYV0sIEIgPSBsaXN0W2JdLCBDID0gbGlzdFtjXTtcbiAgICByZXR1cm4gY29tcCAoQSwgQikgP1xuICAgICAgICAgICAgY29tcCAoQiwgQykgPyBiIDogY29tcCAoQSwgQykgPyBjIDogYSA6XG4gICAgICBjb21wIChBLCBDKSA/IGEgOiBjb21wIChCLCBDKSA/IGMgOiBiO1xuICB9XG5cbiAgLyoqXG4gICAqIFF1aWNrc2VsZWN0IDogRmluZHMgdGhlIG50aCBzbWFsbGVzdCBudW1iZXIgaW4gYSBsaXN0IGFjY29yZGluZyB0byBjb21wYXJhdG9yIGNvbXAuXG4gICAqIEFsbCBlbGVtZW50cyBzbWFsbGVyIHRoYW4gdGhlIG50aCBlbGVtZW50IGFyZSBtb3ZlZCB0byBpdHMgbGVmdCAoaW4gbm8gcGFydGljdWxhciBvcmRlciksXG4gICAqIGFuZCBhbGwgZWxlbWVudHMgZ3JlYXRlciB0aGFudCB0aGUgbnRoIGFyZSBtb3ZlZCB0byBpdHMgcmlnaHQuXG4gICAqXG4gICAqIFRoZSBmdW5ueSBtaXggb2YgMC1iYXNlZCBhbmQgMS1iYXNlZCBpbmRleGVzIGNvbWVzIGZyb20gdGhlIEMrK1xuICAgKiBTdGFuZGFyZCBMaWJyYXJ5IGZ1bmN0aW9uIG50aF9lbGVtZW50LlxuICAgKlxuICAgKiBAcGFyYW0ge0FycmF5fSBsaXN0IC0gdGhlIGxpc3QgdG8gcGFydGl0aW9uXG4gICAqIEBwYXJhbSB7aW50fSBsZWZ0IC0gaW5kZXggaW4gdGhlIGxpc3Qgb2YgdGhlIGZpcnN0IGVsZW1lbnQgb2YgdGhlIHN1Ymxpc3QuXG4gICAqIEBwYXJhbSB7aW50fSByaWdodCAtIGluZGV4IGluIHRoZSBsaXN0IG9mIHRoZSBsYXN0IGVsZW1lbnQgb2YgdGhlIHN1Ymxpc3QgKGluY2x1c2l2ZSlcbiAgICogQHBhcmFtIHtpbnR9IG50aCAtIGluZGV4LCBpbiB0aGUgcmFuZ2UgWzEsIHN1Ymxpc3QubGVuZ3RoXSBvZiB0aGUgZWxlbWVudCB0byBmaW5kLlxuICAgKiBAcGFyYW0ge2Z1bmN0aW9ufSBjb21wIC0gYSBjb21wYXJhdG9yLCBpLmUuIGEgYm9vbGVhbiBmdW5jdGlvbiBhY2NlcHRpbmcgdHdvIHBhcmFtZXRlcnMgYSBhbmQgYixcbiAgICogICAgICAgIGFuZCByZXR1cm5pbmcgdHJ1ZSBpZiBhIDwgYiBhbmQgZmFsc2UgaWYgYSA+PSBiLlxuICAgKlxuICAgKiBTZWUgaHR0cDovL2VuLndpa2lwZWRpYS5vcmcvd2lraS9RdWlja3NlbGVjdFxuICAgKiBBbmQgL2luY2x1ZGUvYml0cy9zdGxfYWxnby5oIGluIHRoZSBHQ0MgU3RhbmRhcmQgTGlicmFyeSAoIGh0dHA6Ly9nY2MuZ251Lm9yZy9saWJzdGRjKysvIClcbiAgICovXG4gIGZ1bmN0aW9uIG50aF9lbGVtZW50KGxpc3QsIGxlZnQsIG50aCwgcmlnaHQsIGNvbXApIHtcbiAgICBpZiAobnRoIDw9IDAgfHwgbnRoID4gKHJpZ2h0LWxlZnQrMSkpIHRocm93IG5ldyBFcnJvcihcIlZQVHJlZS5udGhfZWxlbWVudDogbnRoIG11c3QgYmUgaW4gcmFuZ2UgWzEsIHJpZ2h0LWxlZnQrMV0gKG50aD1cIitudGgrXCIpXCIpO1xuICAgIHZhciBwaXZvdEluZGV4LCBwaXZvdE5ld0luZGV4LCBwaXZvdERpc3Q7XG4gICAgZm9yICg7Oykge1xuICAgICAgLy8gc2VsZWN0IHBpdm90SW5kZXggYmV0d2VlbiBsZWZ0IGFuZCByaWdodFxuICAgICAgcGl2b3RJbmRleCA9IG1lZGlhbk9mMyhsaXN0LCBsZWZ0LCByaWdodCwgKGxlZnQgKyByaWdodCkgPj4gMSwgY29tcCk7XG4gICAgICBwaXZvdE5ld0luZGV4ID0gcGFydGl0aW9uKGxpc3QsIGxlZnQsIHJpZ2h0LCBwaXZvdEluZGV4LCBjb21wKTtcbiAgICAgIHBpdm90RGlzdCA9IHBpdm90TmV3SW5kZXggLSBsZWZ0ICsgMTtcbiAgICAgIGlmIChwaXZvdERpc3QgPT09IG50aCkge1xuICAgICAgICByZXR1cm4gbGlzdFtwaXZvdE5ld0luZGV4XTtcbiAgICAgIH1cbiAgICAgIGVsc2UgaWYgKG50aCA8IHBpdm90RGlzdCkge1xuICAgICAgICByaWdodCA9IHBpdm90TmV3SW5kZXggLSAxO1xuICAgICAgfVxuICAgICAgZWxzZSB7XG4gICAgICAgIG50aCAtPSBwaXZvdERpc3Q7XG4gICAgICAgIGxlZnQgPSBwaXZvdE5ld0luZGV4ICsgMTtcbiAgICAgIH1cbiAgICB9XG4gIH1cblxuXG4gIC8qKlxuICAgKiBXcmFwcGVyIGFyb3VuZCBudGhfZWxlbWVudCB3aXRoIGEgMC1iYXNlZCBpbmRleC5cbiAgICovXG4gIGZ1bmN0aW9uIHNlbGVjdChsaXN0LCBrLCBjb21wKSB7XG4gICAgaWYgKGsgPCAwIHx8IGsgPj0gbGlzdC5sZW5ndGgpIHtcbiAgICAgICAgICAgIHRocm93IG5ldyBFcnJvcihcIlZQVHJlZS5zZWxlY3Q6IGsgbXVzdCBiZSBpbiByYW5nZSBbMCwgbGlzdC5sZW5ndGgtMV0gKGs9XCIraytcIilcIik7XG4gICAgICAgIH1cbiAgICByZXR1cm4gbnRoX2VsZW1lbnQobGlzdCwgMCwgaysxLCBsaXN0Lmxlbmd0aC0xLCBjb21wKTtcbiAgfVxuXG5cbiAgLyrilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilJBcbiAgIOKUgiAgIHZwLXRyZWUgY3JlYXRpb24gICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgIOKUglxuICAg4pSU4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSAKi9cbiAgLyoqIFNlbGVjdHMgYSB2YW50YWdlIHBvaW50IGluIGEgc2V0LlxuICAgKiAgV2UgdHJpdmlhbGx5IHBpY2sgb25lIGF0IHJhbmRvbS5cbiAgICogIFRPRE8gdGhpcyBjb3VsZCBiZSBpbXByb3ZlZCBieSByYW5kb20gc2FtcGxpbmcgdG8gbWF4aW1pemUgc3ByZWFkLlxuICAgKi9cbiAgZnVuY3Rpb24gc2VsZWN0VlBJbmRleChsaXN0KSB7XG4gICAgcmV0dXJuIE1hdGguZmxvb3IoTWF0aC5yYW5kb20oKSAqIGxpc3QubGVuZ3RoKTtcbiAgfVxuXG4gIHZhciBkaXN0YW5jZUNvbXBhcmF0b3IgPSBmdW5jdGlvbihhLCBiKSB7IHJldHVybiBhLmRpc3QgPCBiLmRpc3Q7IH07XG5cbiAgLyoqXG4gICAqIEJ1aWxkcyBhbmQgcmV0dXJucyBhIHZwLXRyZWUgZnJvbSB0aGUgbGlzdCBTLlxuICAgKiBAcGFyYW0ge0FycmF5fSBTIGFycmF5IG9mIG9iamVjdHMgdG8gc3RydWN0dXJlIGludG8gYSB2cC10cmVlLlxuICAgKiBAcGFyYW0ge2Z1bmN0aW9ufSBkaXN0YW5jZSBhIGZ1bmN0aW9uIHJldHVybmluZyB0aGUgZGlzdGFuY2UgYmV0d2VlbiAyIG9qZWN0cyBmcm9tIHRoZSBsaXN0IFMuXG4gICAqIEBwYXJhbSB7bnVtYmVyfSBuYiAobWF4aW11bSkgYnVja2V0IHNpemUuIDAgb3IgdW5kZWZpbmVkID0gbm8gYnVja2V0cyB1c2VkLlxuICAgKiBAcmV0dXJuIHtvYmplY3R9IHZwLXRyZWUuXG4gICAqL1xuICBmdW5jdGlvbiBidWlsZFZQVHJlZShTLCBkaXN0YW5jZSwgbmIpIHtcbiAgICB2YXIgbGlzdCA9IFtdO1xuICAgIGZvciAodmFyIGkgPSAwLCBuID0gUy5sZW5ndGg7IGkgPCBuOyBpKyspIHtcbiAgICAgIGxpc3RbaV0gPSB7XG4gICAgICAgIGk6IGlcbiAgICAgICAgLy9oaXN0OiBbXSAgICAvLyB1bnVzZWQgKHlldClcbiAgICAgIH07XG4gICAgfVxuXG4gICAgdmFyIHRyZWUgPSByZWN1cnNlVlBUcmVlKFMsIGxpc3QsIGRpc3RhbmNlLCBuYik7XG4gICAgcmV0dXJuIG5ldyBWUFRyZWUoUywgZGlzdGFuY2UsIHRyZWUpO1xuICB9XG5cbiAgZnVuY3Rpb24gcmVjdXJzZVZQVHJlZShTLCBsaXN0LCBkaXN0YW5jZSwgbmIpIHtcbiAgICBpZiAobGlzdC5sZW5ndGggPT09IDApIHJldHVybiBudWxsO1xuICAgIHZhciBpO1xuXG4gICAgLy8gSXMgdGhpcyBhIGxlYWYgbm9kZSA/XG4gICAgdmFyIGxpc3RMZW5ndGggPSBsaXN0Lmxlbmd0aDtcbiAgICBpZiAobmIgPiAwICYmIGxpc3RMZW5ndGggPD0gbmIpIHtcbiAgICAgIHZhciBidWNrZXQgPSBbXTtcbiAgICAgIGZvciAoaSA9IDA7IGkgPCBsaXN0TGVuZ3RoOyBpKyspIHtcbiAgICAgICAgYnVja2V0W2ldID0gbGlzdFtpXS5pO1xuICAgICAgfVxuICAgICAgcmV0dXJuIGJ1Y2tldDtcbiAgICB9XG5cbiAgICAvLyBOb24tbGVhZiBub2RlLlxuICAgIC8vIENvbnN0cnVjdHMgYSBub2RlIHdpdGggdGhlIHNlbGVjdGVkIHZhbnRhZ2UgcG9pbnQgZXh0cmFjdGVkIGZyb20gdGhlIHNldC5cbiAgICB2YXIgdnBJbmRleCA9IHNlbGVjdFZQSW5kZXgobGlzdCksXG4gICAgICBub2RlID0gbGlzdFt2cEluZGV4XTtcbiAgICBsaXN0LnNwbGljZSh2cEluZGV4LCAxKTtcbiAgICBsaXN0TGVuZ3RoLS07XG4gICAgLy8gV2UgY2FuJ3QgdXNlIG5vZGUuZGlzdCB5ZXQsIHNvIGRvbid0IHNob3cgaXQgaW4gdGhlIHZwLXRyZWUgb3V0cHV0LlxuICAgIG5vZGUgPSB7IGk6IG5vZGUuaSB9O1xuICAgIGlmIChsaXN0TGVuZ3RoID09PSAwKSByZXR1cm4gbm9kZTtcblxuICAgIC8vIEFkZHMgdG8gZWFjaCBpdGVtIGl0cyBkaXN0YW5jZSB0byB0aGUgdmFudGFnZSBwb2ludC5cbiAgICAvLyBUaGlzIGVuc3VyZXMgZWFjaCBkaXN0YW5jZSBpcyBjb21wdXRlZCBvbmx5IG9uY2UuXG4gICAgdmFyIHZwID0gU1tub2RlLmldLFxuICAgICAgZG1pbiA9IEluZmluaXR5LFxuICAgICAgZG1heCA9IDAsXG4gICAgICBpdGVtLCBkaXN0LCBuO1xuICAgIGZvciAoaSA9IDAsIG4gPSBsaXN0TGVuZ3RoOyBpIDwgbjsgaSsrKSB7XG4gICAgICBpdGVtID0gbGlzdFtpXTtcbiAgICAgIGRpc3QgPSBkaXN0YW5jZSh2cCwgU1tpdGVtLmldKTtcbiAgICAgIGl0ZW0uZGlzdCA9IGRpc3Q7XG4gICAgICAvL2l0ZW0uaGlzdC5wdXNoKGRpc3QpOyAvLyB1bnVzZWQgKHlldClcbiAgICAgIGlmIChkbWluID4gZGlzdCkgZG1pbiA9IGRpc3Q7XG4gICAgICBpZiAoZG1heCA8IGRpc3QpIGRtYXggPSBkaXN0O1xuICAgIH1cbiAgICBub2RlLm0gPSBkbWluO1xuICAgIG5vZGUuTSA9IGRtYXg7XG5cbiAgICAvLyBQYXJ0aXRpb25zIHRoZSBzZXQgYXJvdW5kIHRoZSBtZWRpYW4gZGlzdGFuY2UuXG4gICAgdmFyIG1lZGlhbkluZGV4ID0gbGlzdExlbmd0aCA+PiAxLFxuICAgICAgbWVkaWFuID0gc2VsZWN0KGxpc3QsIG1lZGlhbkluZGV4LCBkaXN0YW5jZUNvbXBhcmF0b3IpO1xuXG4gICAgLy8gUmVjdXJzaXZlbHkgYnVpbGRzIHZwLXRyZWVzIHdpdGggdGhlIDIgcmVzdWx0aW5nIHN1YnNldHMuXG4gICAgdmFyIGxlZnRJdGVtcyA9IGxpc3Quc3BsaWNlKDAsIG1lZGlhbkluZGV4KSxcbiAgICAgIHJpZ2h0SXRlbXMgPSBsaXN0O1xuICAgIG5vZGUuzrwgPSBtZWRpYW4uZGlzdDtcbiAgICBub2RlLkwgPSByZWN1cnNlVlBUcmVlKFMsIGxlZnRJdGVtcywgZGlzdGFuY2UsIG5iKTtcbiAgICBub2RlLlIgPSByZWN1cnNlVlBUcmVlKFMsIHJpZ2h0SXRlbXMsIGRpc3RhbmNlLCBuYik7XG4gICAgcmV0dXJuIG5vZGU7XG4gIH1cblxuXG4gIC8qKiBTdHJpbmdpZmllcyBhIHZwLXRyZWUgZGF0YSBzdHJ1Y3R1cmUuXG4gICAqICBKU09OIHdpdGhvdXQgdGhlIG51bGwgbm9kZXMgYW5kIHRoZSBxdW90ZXMgYXJvdW5kIG9iamVjdCBrZXlzLCB0byBzYXZlIHNwYWNlLlxuICAgKi9cbiAgZnVuY3Rpb24gc3RyaW5naWZ5KHJvb3QpIHtcbiAgICB2YXIgc3RhY2sgPSBbcm9vdCB8fCB0aGlzLnRyZWVdLCBzID0gJyc7XG4gICAgd2hpbGUgKHN0YWNrLmxlbmd0aCkge1xuICAgICAgdmFyIG5vZGUgPSBzdGFjay5wb3AoKTtcblxuICAgICAgLy8gSGFwcGVucyBpZiB0aGUgYnVja2V0IHNpemUgaXMgZ3JlYXRlciB0aGFudCB0aGUgZGF0YXNldC5cbiAgICAgIGlmIChub2RlLmxlbmd0aCkgcmV0dXJuICdbJytub2RlLmpvaW4oJywnKSsnXSc7XG5cbiAgICAgIHMgKz0gJ3tpOicgKyBub2RlLmk7XG4gICAgICBpZiAobm9kZS5oYXNPd25Qcm9wZXJ0eSgnbScpKSB7XG4gICAgICAgIHMgKz0gJyxtOicgKyBub2RlLm0gKyAnLE06JyArIG5vZGUuTSArICcszrw6JyArIG5vZGUuzrw7XG4gICAgICB9XG4gICAgICBpZiAobm9kZS5oYXNPd25Qcm9wZXJ0eSgnYicpKSB7XG4gICAgICAgIHMgKz0gJyxiOlsnICsgbm9kZS5iICsgJ10nO1xuICAgICAgfVxuICAgICAgaWYgKG5vZGUuaGFzT3duUHJvcGVydHkoJ0wnKSkge1xuICAgICAgICB2YXIgTCA9IG5vZGUuTDtcbiAgICAgICAgaWYgKEwpIHtcbiAgICAgICAgICBzICs9ICcsTDonO1xuICAgICAgICAgIGlmIChMLmxlbmd0aCkgcyArPSAnWycgKyBMICsgJ10nO1xuICAgICAgICAgIGVsc2UgcyArPSBzdHJpbmdpZnkoTCk7XG4gICAgICAgIH1cbiAgICAgIH1cbiAgICAgIGlmIChub2RlLmhhc093blByb3BlcnR5KCdSJykpIHtcbiAgICAgICAgdmFyIFIgPSBub2RlLlI7XG4gICAgICAgIGlmIChSKSB7XG4gICAgICAgICAgcyArPSAnLFI6JztcbiAgICAgICAgICBpZiAoUi5sZW5ndGgpIHMgKz0gJ1snICsgUiArICddJztcbiAgICAgICAgICBlbHNlIHMgKz0gc3RyaW5naWZ5KFIpO1xuICAgICAgICB9XG4gICAgICB9XG4gICAgICBzICs9ICd9JztcbiAgICB9XG4gICAgcmV0dXJuIHM7XG4gIH1cblxuICAvKuKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUkFxuICAg4pSCICAgQnVpbGQgUHVibGljIEFQSSAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAg4pSCXG4gICDilJTilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIAqL1xuXG4gIGV4cG9ydHMuc2VsZWN0ID0gc2VsZWN0O1xuICBleHBvcnRzLmJ1aWxkID0gYnVpbGRWUFRyZWU7XG5cblxuICAvKuKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUkFxuICAg4pSCICAgUHJpb3JpdHkgUXVldWUsIHVzZWQgdG8gc3RvcmUgc2VhcmNoIHJlc3VsdHMuICAgICAgICAgICAgICAgICAgICAgICAgICAg4pSCXG4gICDilJTilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIAqL1xuXG4gIC8qKlxuICAgKiBAY29uc3RydWN0b3JcbiAgICogQGNsYXNzIFByaW9yaXR5UXVldWUgbWFuYWdlcyBhIHF1ZXVlIG9mIGVsZW1lbnRzIHdpdGggcHJpb3JpdGllcy5cbiAgICpcbiAgICogQHBhcmFtIHtudW1iZXJ9IHNpemUgbWF4aW11bSBzaXplIG9mIHRoZSBxdWV1ZSAoZGVmYXVsdCA9IDUpLiBPbmx5IGxvd2VzdCBwcmlvcml0eSBpdGVtcyB3aWxsIGJlIHJldGFpbmVkLlxuICAgKi9cbiAgZnVuY3Rpb24gUHJpb3JpdHlRdWV1ZShzaXplKSB7XG4gICAgc2l6ZSA9IHNpemUgfHwgNTtcbiAgICB2YXIgY29udGVudHMgPSBbXTtcblxuICAgIGZ1bmN0aW9uIGJpbmFyeUluZGV4T2YocHJpb3JpdHkpIHtcbiAgICAgIHZhciBtaW5JbmRleCA9IDAsXG4gICAgICAgIG1heEluZGV4ID0gY29udGVudHMubGVuZ3RoIC0gMSxcbiAgICAgICAgY3VycmVudEluZGV4LFxuICAgICAgICBjdXJyZW50RWxlbWVudDtcblxuICAgICAgd2hpbGUgKG1pbkluZGV4IDw9IG1heEluZGV4KSB7XG4gICAgICAgIGN1cnJlbnRJbmRleCA9IChtaW5JbmRleCArIG1heEluZGV4KSA+PiAxO1xuICAgICAgICBjdXJyZW50RWxlbWVudCA9IGNvbnRlbnRzW2N1cnJlbnRJbmRleF0ucHJpb3JpdHk7XG4gICAgICAgICBcbiAgICAgICAgaWYgKGN1cnJlbnRFbGVtZW50IDwgcHJpb3JpdHkpIHtcbiAgICAgICAgICBtaW5JbmRleCA9IGN1cnJlbnRJbmRleCArIDE7XG4gICAgICAgIH1cbiAgICAgICAgZWxzZSBpZiAoY3VycmVudEVsZW1lbnQgPiBwcmlvcml0eSkge1xuICAgICAgICAgIG1heEluZGV4ID0gY3VycmVudEluZGV4IC0gMTtcbiAgICAgICAgfVxuICAgICAgICBlbHNlIHtcbiAgICAgICAgICByZXR1cm4gY3VycmVudEluZGV4O1xuICAgICAgICB9XG4gICAgICB9XG5cbiAgICAgIHJldHVybiAtMSAtIG1pbkluZGV4O1xuICAgIH1cblxuICAgIHZhciBhcGkgPSB7XG4gICAgICAvLyBUaGlzIGJyZWFrcyBJRTggY29tcGF0aWJpbGl0eS4gV2hvIGNhcmVzID9cbiAgICAgIGdldCBsZW5ndGgoKSB7XG4gICAgICAgIHJldHVybiBjb250ZW50cy5sZW5ndGg7XG4gICAgICB9LFxuXG4gICAgICBpbnNlcnQ6IGZ1bmN0aW9uKGRhdGEsIHByaW9yaXR5KSB7XG4gICAgICAgIHZhciBpbmRleCA9IGJpbmFyeUluZGV4T2YocHJpb3JpdHkpO1xuICAgICAgICBpZiAoaW5kZXggPCAwKSBpbmRleCA9IC0xIC0gaW5kZXg7XG4gICAgICAgIGlmIChpbmRleCA8IHNpemUpIHtcbiAgICAgICAgICBjb250ZW50cy5zcGxpY2UoaW5kZXgsIDAsIHtkYXRhOiBkYXRhLCBwcmlvcml0eTogcHJpb3JpdHl9KTtcbiAgICAgICAgICBpZiAoY29udGVudHMubGVuZ3RoID4gc2l6ZSkge1xuICAgICAgICAgICAgY29udGVudHMubGVuZ3RoLS07XG4gICAgICAgICAgfVxuICAgICAgICB9XG4gICAgICAgIHJldHVybiBjb250ZW50cy5sZW5ndGggPT09IHNpemUgPyBjb250ZW50c1tjb250ZW50cy5sZW5ndGgtMV0ucHJpb3JpdHkgOiB1bmRlZmluZWQ7XG4gICAgICB9LFxuXG4gICAgICBsaXN0OiBmdW5jdGlvbigpIHtcbiAgICAgICAgcmV0dXJuIGNvbnRlbnRzLm1hcChmdW5jdGlvbihpdGVtKXsgcmV0dXJuIHtpOiBpdGVtLmRhdGEsIGQ6IGl0ZW0ucHJpb3JpdHl9OyB9KTtcbiAgICAgIH1cbiAgICB9O1xuXG4gICAgcmV0dXJuIGFwaTtcbiAgfVxuXG5cbiAgLyrilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilJBcbiAgIOKUgiAgIHZwLXRyZWUgc2VhcmNoICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgIOKUglxuICAg4pSU4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSAKi9cblxuICAvKipcbiAgICogQHBhcmFtIHtvYmplY3R9IHEgLSBxdWVyeSA6IGFueSBvYmplY3QgdGhlIGRpc3RhbmNlIGZ1bmN0aW9uIGNhbiBiZSBhcHBsaWVkIHRvLlxuICAgKiBAcGFyYW0ge251bWJlcn0gW249MV0gLSBudW1iZXIgb2YgbmVhcmVzdCBuZWlnaGJvcnMgdG8gZmluZFxuICAgKiBAcGFyYW0ge251bWJlcn0gW8+EPeKInl0gLSBtYXhpbXVtIGRpc3RhbmNlIGZyb20gZWxlbWVudCBxXG4gICAqXG4gICAqIEByZXR1cm4ge29iamVjdFtdfSBsaXN0IG9mIHNlYXJjaCByZXN1bHRzLCBvcmRlcmVkIGJ5IGluY3JlYXNpbmcgZGlzdGFuY2UgdG8gdGhlIHF1ZXJ5IG9iamVjdC5cbiAgICogICAgICAgICAgICAgICAgICAgIEVhY2ggcmVzdWx0IGhhcyBhIHByb3BlcnR5IGkgd2hpY2ggaXMgdGhlIGluZGV4IG9mIHRoZSBlbGVtZW50IGluIFMsIGFuZCBkIHdoaWNoXG4gICAqICAgICAgICAgICAgICAgICAgICBpcyBpdHMgZGlzdGFuY2UgdG8gdGhlIHF1ZXJ5IG9iamVjdC5cbiAgICovXG4gIGZ1bmN0aW9uIHNlYXJjaFZQVHJlZShxLCBuLCDPhCkge1xuICAgIM+EID0gz4QgfHwgSW5maW5pdHk7XG4gICAgdmFyIFcgPSBuZXcgUHJpb3JpdHlRdWV1ZShuIHx8IDEpLFxuICAgICAgUyA9IHRoaXMuUyxcbiAgICAgIGRpc3RhbmNlID0gdGhpcy5kaXN0YW5jZSxcbiAgICAgIGNvbXBhcmlzb25zID0gMDtcblxuICAgIGZ1bmN0aW9uIGRvU2VhcmNoKG5vZGUpIHtcbiAgICAgIGlmIChub2RlID09PSBudWxsKSByZXR1cm47XG5cbiAgICAgIC8vIExlYWYgbm9kZSA6IHRlc3QgZWFjaCBlbGVtZW50IGluIHRoaXMgbm9kZSdzIGJ1Y2tldC5cbiAgICAgIGlmIChub2RlLmxlbmd0aCkge1xuICAgICAgICBmb3IgKHZhciBpID0gMCwgbiA9IG5vZGUubGVuZ3RoOyBpIDwgbjsgaSsrKSB7XG4gICAgICAgICAgY29tcGFyaXNvbnMrKztcbiAgICAgICAgICB2YXIgZWxlbWVudElEID0gbm9kZVtpXSxcbiAgICAgICAgICAgIGVsZW1lbnQgPSBTW2VsZW1lbnRJRF0sXG4gICAgICAgICAgICBlbGVtZW50RGlzdCA9IGRpc3RhbmNlKHEsIGVsZW1lbnQpO1xuICAgICAgICAgIGlmIChlbGVtZW50RGlzdCA8IM+EKSB7XG4gICAgICAgICAgICDPhCA9IFcuaW5zZXJ0KGVsZW1lbnRJRCwgZWxlbWVudERpc3QpIHx8IM+EO1xuICAgICAgICAgIH1cbiAgICAgICAgfVxuICAgICAgICByZXR1cm47XG4gICAgICB9XG5cbiAgICAgIC8vIE5vbi1sZWFmIG5vZGVcbiAgICAgIHZhciBpZCA9IG5vZGUuaSxcbiAgICAgICAgcCA9IFNbaWRdLFxuICAgICAgICBkaXN0ID0gZGlzdGFuY2UocSwgcCk7XG5cbiAgICAgIGNvbXBhcmlzb25zKys7XG5cbiAgICAgIC8vIFRoaXMgdmFudGFnZS1wb2ludCBpcyBjbG9zZSBlbm91Z2ggdG8gcS5cbiAgICAgIGlmIChkaXN0IDwgz4QpIHtcbiAgICAgICAgz4QgPSBXLmluc2VydChpZCwgZGlzdCkgfHwgz4Q7XG4gICAgICB9XG5cbiAgICAgIC8vIFRoZSBvcmRlciBvZiBleHBsb3JhdGlvbiBpcyBkZXRlcm1pbmVkIGJ5IGNvbXBhcmlzb24gd2l0aCDOvC5cbiAgICAgIC8vIFRoZSBzb29uZXIgd2UgZmluZCBlbGVtZW50cyBjbG9zZSB0byBxLCB0aGUgc21hbGxlciDPhCBhbmQgdGhlIG1vcmUgbm9kZXMgd2Ugc2tpcC5cbiAgICAgIC8vIFAuIFlpYW5pbG9zIHVzZXMgdGhlIG1pZGRsZSBvZiBsZWZ0L3JpZ2h0IGJvdW5kcyBpbnN0ZWFkIG9mIM68LlxuICAgICAgLy8gV2Ugc2VhcmNoIEwgaWYgZGlzdCBpcyBpbiAobSAtIM+ELCDOvCArIM+EKSwgYW5kIFIgaWYgZGlzdCBpcyBpbiAozrwgLSDPhCwgTSArIM+EKVxuICAgICAgdmFyIM68ID0gbm9kZS7OvCwgTCA9IG5vZGUuTCwgUiA9IG5vZGUuUjtcbiAgICAgIGlmICjOvCA9PT0gdW5kZWZpbmVkKSByZXR1cm47XG4gICAgICBpZiAoZGlzdCA8IM68KSB7XG4gICAgICAgIGlmIChMICYmIG5vZGUubSAtIM+EIDwgZGlzdCkgZG9TZWFyY2goTCk7XG4gICAgICAgIGlmIChSICYmIM68IC0gz4QgPCBkaXN0KSBkb1NlYXJjaChSKTtcbiAgICAgIH1cbiAgICAgIGVsc2Uge1xuICAgICAgICBpZiAoUiAmJiBkaXN0IDwgbm9kZS5NICsgz4QpIGRvU2VhcmNoKFIpO1xuICAgICAgICBpZiAoTCAmJiBkaXN0IDwgzrwgKyDPhCkgZG9TZWFyY2goTCk7XG4gICAgICB9XG4gICAgfVxuXG4gICAgZG9TZWFyY2godGhpcy50cmVlKTtcbiAgICB0aGlzLmNvbXBhcmlzb25zID0gY29tcGFyaXNvbnM7XG4gICAgcmV0dXJuIFcubGlzdCgpO1xuICB9XG5cblxuXG4gIC8q4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSQXG4gICDilIIgICB2cC10cmVlIGNvbnN0cnVjdG9yICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICDilIJcbiAgIOKUlOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgCovXG5cbiAgLyoqXG4gICAqIEBjb25zdHJ1Y3RvclxuICAgKiBAY2xhc3MgVlBUcmVlIG1hbmFnZXMgYSB2cC10cmVlLlxuICAgKlxuICAgKiBAcGFyYW0ge0FycmF5fSBTIHRoZSBpbml0aWFsIHNldCBvZiBlbGVtZW50c1xuICAgKiBAcGFyYW0ge0Z1bmN0aW9ufSBkaXN0YW5jZSB0aGUgZGlzdGFuY2UgZnVuY3Rpb25cbiAgICogQHBhcmFtIHtPYmplY3R9IHRoZSB2cC10cmVlIHN0cnVjdHVyZVxuICAgKi9cbiAgZnVuY3Rpb24gVlBUcmVlKFMsIGRpc3RhbmNlLCB0cmVlKSB7XG4gICAgdGhpcy5TID0gUztcbiAgICB0aGlzLmRpc3RhbmNlID0gZGlzdGFuY2U7XG4gICAgdGhpcy50cmVlID0gdHJlZTtcblxuICAgIHRoaXMuc2VhcmNoID0gc2VhcmNoVlBUcmVlO1xuICAgIHRoaXMuY29tcGFyaXNvbnMgPSAwO1xuICAgIHRoaXMuc3RyaW5naWZ5ID0gc3RyaW5naWZ5O1xuICB9XG5cblxuICBleHBvcnRzLmxvYWQgPSBmdW5jdGlvbihTLCBkaXN0YW5jZSwgdHJlZSkge1xuICAgIHJldHVybiBuZXcgVlBUcmVlKFMsIGRpc3RhbmNlLCB0cmVlKTtcbiAgfTtcbn0pKTtcblxuXG4vLy8vLy8vLy8vLy8vLy8vLy9cbi8vIFdFQlBBQ0sgRk9PVEVSXG4vLyAuL2luY2x1ZGVzL3ZwdHJlZS5qc1xuLy8gbW9kdWxlIGlkID0gMTlcbi8vIG1vZHVsZSBjaHVua3MgPSAwIl0sInNvdXJjZVJvb3QiOiIifQ==");
+	var __WEBPACK_AMD_DEFINE_ARRAY__, __WEBPACK_AMD_DEFINE_RESULT__;/*╔═════════════════════════════════════════════════════════════════════════════════════════════════════════╗
+	 *║                                                                                                         ║
+	 *║      vptree.js v0.2.3                                                                                   ║
+	 *║      https://github.com/fpirsch/vptree.js                                                               ║
+	 *║                                                                                                         ║
+	 *║      A javascript implementation of the Vantage-Point Tree algorithm                                    ║
+	 *║      ISC license (http://opensource.org/licenses/ISC). François Pirsch. 2013.                           ║
+	 *║                                                                                                         ║
+	 *║      Date: 2015-12-24T11:39Z                                                                            ║
+	 *║                                                                                                         ║
+	 *╚═════════════════════════════════════════════════════════════════════════════════════════════════════════╝
+	 */
+	
+	/* jshint node: true */
+	/* global define */
+	
+	//https://github.com/umdjs/umd/blob/master/commonjsStrictGlobal.js
+	(function (root, factory) {
+	    if (true) {
+	        // AMD. Register as an anonymous module.
+	        !(__WEBPACK_AMD_DEFINE_ARRAY__ = [exports], __WEBPACK_AMD_DEFINE_RESULT__ = function (exports) {
+	            factory(root.VPTreeFactory = exports);
+	        }.apply(exports, __WEBPACK_AMD_DEFINE_ARRAY__), __WEBPACK_AMD_DEFINE_RESULT__ !== undefined && (module.exports = __WEBPACK_AMD_DEFINE_RESULT__));
+	    } else if (typeof exports === 'object') {
+	        // CommonJS
+	        factory(exports);
+	    } else {
+	        // Browser globals
+	        factory(root.VPTreeFactory = {});
+	    }
+	}(this, function (exports) {
+	    "use strict";
+	    /* global VPTree, exports */
+	
+	  /*───────────────────────────────────────────────────────────────────────────┐
+	   │   Selection/partition algorithm                                           │
+	   └───────────────────────────────────────────────────────────────────────────*/
+	
+	  function partition(list, left, right, pivotIndex, comp) {
+	    var pivotValue = list[pivotIndex];
+	    var swap = list[pivotIndex];  // Move pivot to end
+	    list[pivotIndex] = list[right];
+	    list[right] = swap;
+	    var storeIndex = left;
+	    for (var i = left; i < right; i++) {
+	      if (comp(list[i], pivotValue)) {
+	        swap = list[storeIndex];
+	        list[storeIndex] = list[i];
+	        list[i] = swap;
+	        storeIndex++;
+	      }
+	    }
+	    swap = list[right];       // Move pivot to its final place
+	    list[right] = list[storeIndex];
+	    list[storeIndex] = swap;
+	    return storeIndex;
+	  }
+	
+	  // Pivot selection : computes the median of elements a, b and c of the list,
+	  // according to comparator comp.
+	  function medianOf3(list, a, b, c, comp) {
+	    var A = list[a], B = list[b], C = list[c];
+	    return comp (A, B) ?
+	            comp (B, C) ? b : comp (A, C) ? c : a :
+	      comp (A, C) ? a : comp (B, C) ? c : b;
+	  }
+	
+	  /**
+	   * Quickselect : Finds the nth smallest number in a list according to comparator comp.
+	   * All elements smaller than the nth element are moved to its left (in no particular order),
+	   * and all elements greater thant the nth are moved to its right.
+	   *
+	   * The funny mix of 0-based and 1-based indexes comes from the C++
+	   * Standard Library function nth_element.
+	   *
+	   * @param {Array} list - the list to partition
+	   * @param {int} left - index in the list of the first element of the sublist.
+	   * @param {int} right - index in the list of the last element of the sublist (inclusive)
+	   * @param {int} nth - index, in the range [1, sublist.length] of the element to find.
+	   * @param {function} comp - a comparator, i.e. a boolean function accepting two parameters a and b,
+	   *        and returning true if a < b and false if a >= b.
+	   *
+	   * See http://en.wikipedia.org/wiki/Quickselect
+	   * And /include/bits/stl_algo.h in the GCC Standard Library ( http://gcc.gnu.org/libstdc++/ )
+	   */
+	  function nth_element(list, left, nth, right, comp) {
+	    if (nth <= 0 || nth > (right-left+1)) throw new Error("VPTree.nth_element: nth must be in range [1, right-left+1] (nth="+nth+")");
+	    var pivotIndex, pivotNewIndex, pivotDist;
+	    for (;;) {
+	      // select pivotIndex between left and right
+	      pivotIndex = medianOf3(list, left, right, (left + right) >> 1, comp);
+	      pivotNewIndex = partition(list, left, right, pivotIndex, comp);
+	      pivotDist = pivotNewIndex - left + 1;
+	      if (pivotDist === nth) {
+	        return list[pivotNewIndex];
+	      }
+	      else if (nth < pivotDist) {
+	        right = pivotNewIndex - 1;
+	      }
+	      else {
+	        nth -= pivotDist;
+	        left = pivotNewIndex + 1;
+	      }
+	    }
+	  }
+	
+	
+	  /**
+	   * Wrapper around nth_element with a 0-based index.
+	   */
+	  function select(list, k, comp) {
+	    if (k < 0 || k >= list.length) {
+	            throw new Error("VPTree.select: k must be in range [0, list.length-1] (k="+k+")");
+	        }
+	    return nth_element(list, 0, k+1, list.length-1, comp);
+	  }
+	
+	
+	  /*───────────────────────────────────────────────────────────────────────────┐
+	   │   vp-tree creation                                                        │
+	   └───────────────────────────────────────────────────────────────────────────*/
+	  /** Selects a vantage point in a set.
+	   *  We trivially pick one at random.
+	   *  TODO this could be improved by random sampling to maximize spread.
+	   */
+	  function selectVPIndex(list) {
+	    return Math.floor(Math.random() * list.length);
+	  }
+	
+	  var distanceComparator = function(a, b) { return a.dist < b.dist; };
+	
+	  /**
+	   * Builds and returns a vp-tree from the list S.
+	   * @param {Array} S array of objects to structure into a vp-tree.
+	   * @param {function} distance a function returning the distance between 2 ojects from the list S.
+	   * @param {number} nb (maximum) bucket size. 0 or undefined = no buckets used.
+	   * @return {object} vp-tree.
+	   */
+	  function buildVPTree(S, distance, nb) {
+	    var list = [];
+	    for (var i = 0, n = S.length; i < n; i++) {
+	      list[i] = {
+	        i: i
+	        //hist: []    // unused (yet)
+	      };
+	    }
+	
+	    var tree = recurseVPTree(S, list, distance, nb);
+	    return new VPTree(S, distance, tree);
+	  }
+	
+	  function recurseVPTree(S, list, distance, nb) {
+	    if (list.length === 0) return null;
+	    var i;
+	
+	    // Is this a leaf node ?
+	    var listLength = list.length;
+	    if (nb > 0 && listLength <= nb) {
+	      var bucket = [];
+	      for (i = 0; i < listLength; i++) {
+	        bucket[i] = list[i].i;
+	      }
+	      return bucket;
+	    }
+	
+	    // Non-leaf node.
+	    // Constructs a node with the selected vantage point extracted from the set.
+	    var vpIndex = selectVPIndex(list),
+	      node = list[vpIndex];
+	    list.splice(vpIndex, 1);
+	    listLength--;
+	    // We can't use node.dist yet, so don't show it in the vp-tree output.
+	    node = { i: node.i };
+	    if (listLength === 0) return node;
+	
+	    // Adds to each item its distance to the vantage point.
+	    // This ensures each distance is computed only once.
+	    var vp = S[node.i],
+	      dmin = Infinity,
+	      dmax = 0,
+	      item, dist, n;
+	    for (i = 0, n = listLength; i < n; i++) {
+	      item = list[i];
+	      dist = distance(vp, S[item.i]);
+	      item.dist = dist;
+	      //item.hist.push(dist); // unused (yet)
+	      if (dmin > dist) dmin = dist;
+	      if (dmax < dist) dmax = dist;
+	    }
+	    node.m = dmin;
+	    node.M = dmax;
+	
+	    // Partitions the set around the median distance.
+	    var medianIndex = listLength >> 1,
+	      median = select(list, medianIndex, distanceComparator);
+	
+	    // Recursively builds vp-trees with the 2 resulting subsets.
+	    var leftItems = list.splice(0, medianIndex),
+	      rightItems = list;
+	    node.μ = median.dist;
+	    node.L = recurseVPTree(S, leftItems, distance, nb);
+	    node.R = recurseVPTree(S, rightItems, distance, nb);
+	    return node;
+	  }
+	
+	
+	  /** Stringifies a vp-tree data structure.
+	   *  JSON without the null nodes and the quotes around object keys, to save space.
+	   */
+	  function stringify(root) {
+	    var stack = [root || this.tree], s = '';
+	    while (stack.length) {
+	      var node = stack.pop();
+	
+	      // Happens if the bucket size is greater thant the dataset.
+	      if (node.length) return '['+node.join(',')+']';
+	
+	      s += '{i:' + node.i;
+	      if (node.hasOwnProperty('m')) {
+	        s += ',m:' + node.m + ',M:' + node.M + ',μ:' + node.μ;
+	      }
+	      if (node.hasOwnProperty('b')) {
+	        s += ',b:[' + node.b + ']';
+	      }
+	      if (node.hasOwnProperty('L')) {
+	        var L = node.L;
+	        if (L) {
+	          s += ',L:';
+	          if (L.length) s += '[' + L + ']';
+	          else s += stringify(L);
+	        }
+	      }
+	      if (node.hasOwnProperty('R')) {
+	        var R = node.R;
+	        if (R) {
+	          s += ',R:';
+	          if (R.length) s += '[' + R + ']';
+	          else s += stringify(R);
+	        }
+	      }
+	      s += '}';
+	    }
+	    return s;
+	  }
+	
+	  /*───────────────────────────────────────────────────────────────────────────┐
+	   │   Build Public API                                                        │
+	   └───────────────────────────────────────────────────────────────────────────*/
+	
+	  exports.select = select;
+	  exports.build = buildVPTree;
+	
+	
+	  /*───────────────────────────────────────────────────────────────────────────┐
+	   │   Priority Queue, used to store search results.                           │
+	   └───────────────────────────────────────────────────────────────────────────*/
+	
+	  /**
+	   * @constructor
+	   * @class PriorityQueue manages a queue of elements with priorities.
+	   *
+	   * @param {number} size maximum size of the queue (default = 5). Only lowest priority items will be retained.
+	   */
+	  function PriorityQueue(size) {
+	    size = size || 5;
+	    var contents = [];
+	
+	    function binaryIndexOf(priority) {
+	      var minIndex = 0,
+	        maxIndex = contents.length - 1,
+	        currentIndex,
+	        currentElement;
+	
+	      while (minIndex <= maxIndex) {
+	        currentIndex = (minIndex + maxIndex) >> 1;
+	        currentElement = contents[currentIndex].priority;
+	         
+	        if (currentElement < priority) {
+	          minIndex = currentIndex + 1;
+	        }
+	        else if (currentElement > priority) {
+	          maxIndex = currentIndex - 1;
+	        }
+	        else {
+	          return currentIndex;
+	        }
+	      }
+	
+	      return -1 - minIndex;
+	    }
+	
+	    var api = {
+	      // This breaks IE8 compatibility. Who cares ?
+	      get length() {
+	        return contents.length;
+	      },
+	
+	      insert: function(data, priority) {
+	        var index = binaryIndexOf(priority);
+	        if (index < 0) index = -1 - index;
+	        if (index < size) {
+	          contents.splice(index, 0, {data: data, priority: priority});
+	          if (contents.length > size) {
+	            contents.length--;
+	          }
+	        }
+	        return contents.length === size ? contents[contents.length-1].priority : undefined;
+	      },
+	
+	      list: function() {
+	        return contents.map(function(item){ return {i: item.data, d: item.priority}; });
+	      }
+	    };
+	
+	    return api;
+	  }
+	
+	
+	  /*───────────────────────────────────────────────────────────────────────────┐
+	   │   vp-tree search                                                          │
+	   └───────────────────────────────────────────────────────────────────────────*/
+	
+	  /**
+	   * @param {object} q - query : any object the distance function can be applied to.
+	   * @param {number} [n=1] - number of nearest neighbors to find
+	   * @param {number} [τ=∞] - maximum distance from element q
+	   *
+	   * @return {object[]} list of search results, ordered by increasing distance to the query object.
+	   *                    Each result has a property i which is the index of the element in S, and d which
+	   *                    is its distance to the query object.
+	   */
+	  function searchVPTree(q, n, τ) {
+	    τ = τ || Infinity;
+	    var W = new PriorityQueue(n || 1),
+	      S = this.S,
+	      distance = this.distance,
+	      comparisons = 0;
+	
+	    function doSearch(node) {
+	      if (node === null) return;
+	
+	      // Leaf node : test each element in this node's bucket.
+	      if (node.length) {
+	        for (var i = 0, n = node.length; i < n; i++) {
+	          comparisons++;
+	          var elementID = node[i],
+	            element = S[elementID],
+	            elementDist = distance(q, element);
+	          if (elementDist < τ) {
+	            τ = W.insert(elementID, elementDist) || τ;
+	          }
+	        }
+	        return;
+	      }
+	
+	      // Non-leaf node
+	      var id = node.i,
+	        p = S[id],
+	        dist = distance(q, p);
+	
+	      comparisons++;
+	
+	      // This vantage-point is close enough to q.
+	      if (dist < τ) {
+	        τ = W.insert(id, dist) || τ;
+	      }
+	
+	      // The order of exploration is determined by comparison with μ.
+	      // The sooner we find elements close to q, the smaller τ and the more nodes we skip.
+	      // P. Yianilos uses the middle of left/right bounds instead of μ.
+	      // We search L if dist is in (m - τ, μ + τ), and R if dist is in (μ - τ, M + τ)
+	      var μ = node.μ, L = node.L, R = node.R;
+	      if (μ === undefined) return;
+	      if (dist < μ) {
+	        if (L && node.m - τ < dist) doSearch(L);
+	        if (R && μ - τ < dist) doSearch(R);
+	      }
+	      else {
+	        if (R && dist < node.M + τ) doSearch(R);
+	        if (L && dist < μ + τ) doSearch(L);
+	      }
+	    }
+	
+	    doSearch(this.tree);
+	    this.comparisons = comparisons;
+	    return W.list();
+	  }
+	
+	
+	
+	  /*───────────────────────────────────────────────────────────────────────────┐
+	   │   vp-tree constructor                                                     │
+	   └───────────────────────────────────────────────────────────────────────────*/
+	
+	  /**
+	   * @constructor
+	   * @class VPTree manages a vp-tree.
+	   *
+	   * @param {Array} S the initial set of elements
+	   * @param {Function} distance the distance function
+	   * @param {Object} the vp-tree structure
+	   */
+	  function VPTree(S, distance, tree) {
+	    this.S = S;
+	    this.distance = distance;
+	    this.tree = tree;
+	
+	    this.search = searchVPTree;
+	    this.comparisons = 0;
+	    this.stringify = stringify;
+	  }
+	
+	
+	  exports.load = function(S, distance, tree) {
+	    return new VPTree(S, distance, tree);
+	  };
+	}));
 
 /***/ }
 /******/ ]);
+//# sourceMappingURL=streaming-tsne.js.map
