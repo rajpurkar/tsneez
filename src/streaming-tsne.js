@@ -156,7 +156,7 @@ var tsne = tsne || {}
         for (var j = 0; j < neighbors.length; j++) {
           var neighbor = neighbors[j]
           elem[neighbor.i] = neighbor.d * neighbor.d
-        this.NN.set(i, j, neighbor.i)
+          this.NN.set(i, j, neighbor.i)
         }
         this.D.push(elem)
       }
@@ -176,9 +176,9 @@ var tsne = tsne || {}
       }
 
       // For debugging
-      //if (sum === 0) {
+      // if (sum === 0) {
       //  console.count('sum equals zero')
-      //}
+      // }
 
       var H = 0
       for (var k = 0; k < this.numNeighbors; k++) {
@@ -208,7 +208,7 @@ var tsne = tsne || {}
         var pi = this.P[i]
         for (var k = 0; k < this.numNeighbors; k++) {
           var j = this.NN.get(i, k)
-          //if (j === i) { window.alert('not possible') }
+          // if (j === i) { window.alert('not possible') }
           var pji = 0
           if (i in this.P[j]) {
             pji = this.P[j][i]
@@ -216,16 +216,16 @@ var tsne = tsne || {}
           var val = (pi[j] + pji) / (2 * this.n)
 
           // sanity check
-          //if (j in this.symP[i]) {
+          // if (j in this.symP[i]) {
           //  if (val !== this.symP[i][j]) {
           //    window.alert('nooo')
           //  }
-          //}
-          //if (i in this.symP[j]) {
+          // }
+          // if (i in this.symP[j]) {
           //  if (val !== this.symP[j][i]) {
           //    window.alert('nooo')
           //  }
-          //}
+          // }
 
           this.symP[i][j] = val
           this.symP[j][i] = val

@@ -47,6 +47,7 @@ if (process.env.NODE_ENV === 'development') {
       }
     })
     gulp.watch("*.html").on('change', browserSync.reload);
+    gulp.watch("src/example.js").on('change', browserSync.reload);
   })
 
   gulp.task('default', ['webpack', 'browser-sync'])
