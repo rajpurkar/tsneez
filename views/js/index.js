@@ -21,6 +21,10 @@
   }
 
   var svg
+  var zoomListener = d3.behavior.zoom()
+  .scaleExtent([0.1, 10])
+  .center([0, 0])
+  .on('zoom', zoomHandler)
   function drawEmbedding () {
     var div = d3.select('.viewport')
 
@@ -35,10 +39,6 @@
       .attr('fill', '#333')
       .text(function (d) { return d })
 
-    var zoomListener = d3.behavior.zoom()
-      .scaleExtent([0.1, 10])
-      .center([0, 0])
-      .on('zoom', zoomHandler)
     zoomListener(svg)
     d3.select(window).on('resize', resize)
     resize()
@@ -79,7 +79,7 @@
     $.getJSON('/data/wordvecs50dtop1000.json', function (j) {
     //$.getJSON('/data/shortglove.json', function (j) {
       //data = j
-      var N = 100
+      var N = 200
       data = {
         words: j.words.slice(0, N),
         vecs: j.vecs.slice(0, N),
