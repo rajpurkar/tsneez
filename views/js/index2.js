@@ -13,13 +13,19 @@
       vecs = dataAll.vecs.splice(0, spliceIndex)
       words = dataAll.words.splice(0, spliceIndex)
       T.initData(vecs)
-      setInterval(function () {
+      var numAdded = 0
+      var MAX_TO_ADD = 100 
+      var timer = setInterval(function () {
+        numAdded++
+        if (numAdded > MAX_TO_ADD) {
+          clearInterval(timer)
+        }
         var vec = dataAll.vecs.splice(0, 1)[0]
         var word = dataAll.words.splice(0, 1)[0]
         T.add(vec)
         words.push(word)
-        // updateEmbedding()
-      }, 3000) 
+      }, 400)
+
       var div = d3.select('.viewport')
       svg = div.append('svg') // svg is global
       var zoomListener = d3.behavior.zoom()
@@ -67,8 +73,11 @@
       ss = d3.event.scale
     }
 
+    var tic = performance.now()
     function step () {
-      T.step()
+      var cost = T.step()
+      var fps = Math.round((T.iter / (performance.now() - tic)) * 1000)
+      $('#cost').html('iteration ' + T.iter + ', fps: ' + fps + ', cost: ' + cost)
       updateEmbedding()
     }
   })
