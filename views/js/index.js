@@ -41,8 +41,8 @@
       .attr('height', 20)
       .attr('rx', 5)
       .attr('ry', 5)
-      .style('fill', function () {
-        return randomColor({luminosity: 'light'})
+      .style('fill', function (d) {
+        return randomColor({luminosity: 'light', seed: d})
       })
       .style('fill-opacity', 0.8)
 
@@ -94,7 +94,7 @@
     $.getJSON('/data/wordvecs50dtop1000.json', function (j) {
     //$.getJSON('/data/shortglove.json', function (j) {
       //data = j
-      var N = 800
+      var N = 100
       data = {
         words: j.words.slice(0, N),
         vecs: j.vecs.slice(0, N),
