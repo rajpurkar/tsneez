@@ -1,4 +1,8 @@
+.viewport {
+  height: 600px;
+}
 .viewport svg {
+  height: 600px;
   display: block;
 }
 .viewport svg text {
@@ -6,5 +10,12 @@
   font-family: 'Lato', Arial;
   font-weight: 500;
   font-size: 1em;
-  fill: #222;
+  fill: #444;
+}
+.infoCard {
+  position: relative;
+}
+.infoCard .infoBody {
+  position: absolute;
+  top: 0px;
 }

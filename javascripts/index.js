@@ -6,54 +6,70 @@
 
   function updateEmbedding () {
     var Y = T.Y
-    svg.selectAll('.u')
+    var s = svg.selectAll('.u')
     .data(data.words)
     .attr('transform', function (d, i) {
+      if (!d.rotate) {
+        d.rotate = (Math.random() - 0.5) * 10
+      } else {
+        d.rotate = d.rotate
+      }
       return 'translate(' +
         ((Y.get(i, 0) * 200 * ss + tx) + 400) + ',' +
-        ((Y.get(i, 1) * 200 * ss + ty) + 400) + ')' })
+        ((Y.get(i, 1) * 200 * ss + ty) + 400) + ')' +
+        'rotate(' + d.rotate + ')'
+    })
+
+    s.selectAll('rect').style('fill-opacity', function (d) {
+      if (d.init === true && fadeOld > 0) {
+        return Math.min(0.9 - Math.sqrt(fadeOld * 0.009), 0.9)
+      } else {
+        return 0.9
+      }
+    })
+    fadeOld--
   }
 
   function resize () {
     var width = $('.viewport').width()
-    var height = 400
+    var height = 600
     svg.attr('width', width).attr('height', height)
   }
 
   var svg
+  var fadeOld = 0
   var zoomListener = d3.behavior.zoom()
   .scaleExtent([0.05, 10])
   .center([0, 0])
   .on('zoom', zoomHandler)
 
-  function drawEmbedding () {
-    var div = d3.select('.viewport')
-
-    svg = div.append('svg') // svg is global
-
+  function draw () {
     var g = svg.selectAll('.b')
-      .data(data.words)
+      .data(data.words, function (d) { return d.str})
       .enter().append('g')
       .attr('class', 'u')
-
     g.append('rect')
-      .attr('width', function (d) { return (d.length * 8) + 10 })
-      .attr('height', 20)
-      .attr('rx', 5)
-      .attr('ry', 5)
-      .style('fill', function (d) {
-        return randomColor({luminosity: 'light', seed: d})
-      })
-      .style('fill-opacity', 0.8)
+    .attr('width', function (d) { return (d.str.length * 8) + 10 })
+    .attr('height', 20)
+    .attr('rx', 5)
+    .attr('ry', 5)
+    .style('fill', function (d) {
+      return randomColor({luminosity: 'light', seed: d.str})
+    })
 
     g.append('text')
       .attr('text-anchor', 'middle')
-      .attr('x', function (d) { return (d.length * 4) + 5 })
+      .attr('x', function (d) { return (d.str.length * 4) + 5 })
       .attr('y', 10)
       .attr('alignment-baseline', 'central')
       .attr('fill', '#333')
-      .text(function (d) { return d })
+      .text(function (d) { return d.str })
+  }
 
+  function drawEmbedding () {
+    var div = d3.select('.viewport')
+    svg = div.append('svg') // svg is global
+    draw()
     zoomListener(svg)
     d3.select(window).on('resize', resize)
     resize()
@@ -75,7 +91,6 @@
     T.step()
     //console.timeEnd('step')
     var fps = Math.round((T.iter / (performance.now() - tic)) * 1000)
-    $('#cost').html('iteration ' + T.iter + ', fps: ' + fps)
     updateEmbedding()
 
     if (stepnum === 10) {
@@ -92,12 +107,13 @@
 
   $(window).load(function () {
     $.getJSON('/streaming-tsne-js/data/wordvecs50dtop1000.json', function (j) {
-    //$.getJSON('/data/shortglove.json', function (j) {
-      //data = j
+      j.words = j.words.map(function (word) {
+        return {str: word, init: true}
+      })
       var N = 300
       data = {
         words: j.words.slice(0, N),
-        vecs: j.vecs.slice(0, N),
+        vecs: j.vecs.slice(0, N)
       }
 
       if (DO_PROFILE && window.console && window.console.profile) {
@@ -132,14 +148,20 @@
         console.profile('step')
       }
       requestAnimationFrame(step)
-
       $('#addPoints').click(function () {
+        fadeOld = 100
+        data.words = data.words.map(function (word) {
+          word.init = true
+          return word
+        })
         for (var i = 0; i < 10; i++) {
-          console.log('adding word', j.words[N])
+          var word = j.words[N]
+          word.init = false
+          console.log('adding word', word)
           T.add(j.vecs[N])
+          data.words.push(word)
           N++
         }
-        data.words = j.words.slice(0, N)
         d3.selectAll('.viewport > svg').remove()
         drawEmbedding()  // redraw?
       })
