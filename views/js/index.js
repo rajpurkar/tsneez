@@ -91,7 +91,7 @@
   var DO_PROFILE = true
 
   $(window).load(function () {
-    $.getJSON('/data/wordvecs50dtop1000.json', function (j) {
+    $.getJSON('/streaming-tsne-js/data/wordvecs50dtop1000.json', function (j) {
     //$.getJSON('/data/shortglove.json', function (j) {
       //data = j
       var N = 300
