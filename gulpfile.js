@@ -73,12 +73,27 @@ gulp.task('html', function () {
     .pipe(gulp.dest('./' + build_dir))
 })
 
-gulp.task('browser-sync', function () {
+gulp.task('browser-sync', ['preprocess'], function () {
   browserSync.init({
     server: {
       baseDir: build_dir
     }
   })
+  gulp.watch(build_dir + "**/*").on('change', browserSync.reload);
 })
 
-gulp.task('default', ['webpack', 'browser-sync', 'css', 'html', 'js', 'bower', 'copy_data'])
+gulp.task('html-watch', ['html'], function () {
+  gulp.watch('./views/**/*.pug', ['html'])
+})
+
+gulp.task('css-watch', ['css'], function () {
+  gulp.watch('./views/styles/**/*.styl', ['css'])
+})
+
+gulp.task('js-watch', ['js'], function () {
+  gulp.watch('./views/js/**/*.js', ['js'])
+})
+
+gulp.task('preprocess', ['css', 'html', 'js', 'bower', 'copy_data'])
+
+gulp.task('default', ['webpack', 'browser-sync', 'preprocess', 'css-watch', 'js-watch', 'html-watch'])
