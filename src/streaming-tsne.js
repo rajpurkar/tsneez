@@ -77,7 +77,7 @@ var tsne = tsne || {}
     },
     updateY: function () {
       // Perform gradient update in place
-      var alpha = this.iter < 250 ? 0.5 : 0.8
+      var alpha = this.iter < this.exagEndIter ? 0.5 : 0.8
       var n = this.n
       var dims = this.dims
       var Ymean = [0, 0]  // FIXME: only two dimensional
@@ -112,8 +112,8 @@ var tsne = tsne || {}
     },
     updateGradBH: function () {
       // Early exaggeration
-
-      var exag = this.iter < this.exagEndIter ? 12 : 1 // todo: this is important... see how can be tuned
+      var exag = Math.max(8 - 0.4 * Math.sqrt(this.iter), 0.2) // spent lot of time tuning this
+      // var exag = this.iter < this.exagEndIter ? 12 - (0.01 * this.iter) : 1 // todo: this is important... see how can be tuned
 
       // Initialize quadtree
       var bht = bhtree.BarnesHutTree()
