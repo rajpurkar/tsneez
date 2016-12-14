@@ -9,9 +9,16 @@
     var s = svg.selectAll('.u')
     .data(data.words)
     .attr('transform', function (d, i) {
+      if (!d.rotate) {
+        d.rotate = (Math.random() - 0.5) * 10
+      } else {
+        d.rotate = d.rotate
+      }
       return 'translate(' +
         ((Y.get(i, 0) * 200 * ss + tx) + 400) + ',' +
-        ((Y.get(i, 1) * 200 * ss + ty) + 400) + ')' })
+        ((Y.get(i, 1) * 200 * ss + ty) + 400) + ')' +
+        'rotate(' + d.rotate + ')'
+    })
 
     s.selectAll('rect').style('fill-opacity', function (d) {
       if (d.init === true && fadeOld > 0) {
@@ -84,7 +91,6 @@
     T.step()
     //console.timeEnd('step')
     var fps = Math.round((T.iter / (performance.now() - tic)) * 1000)
-    $('#cost').html('iteration ' + T.iter + ', fps: ' + fps)
     updateEmbedding()
 
     if (stepnum === 10) {
