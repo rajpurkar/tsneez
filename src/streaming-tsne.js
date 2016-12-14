@@ -53,6 +53,7 @@ var tsne = tsne || {}
     this.Hdesired = Math.log2(perplexity)
     this.numNeighbors = getopt(opt, 'numNeighbors', 3 * perplexity)  // (van der Maaten 2014)
     this.theta = getopt(opt, 'theta', 0.5)  // [0, 1] tunes the barnes-hut approximation, 0 is exact
+    this.learningRate = getopt(opt, 'learningRate', 10)  // [0, 1] tunes the barnes-hut approximation, 0 is exact
   }
 
   TSNE.prototype = {
@@ -112,7 +113,7 @@ var tsne = tsne || {}
     updateGradBH: function () {
       // Early exaggeration
 
-      var exag = this.iter < 250 ? 12 : 1 // todo: this is important... see how can be tuned
+      var exag = this.iter < this.exagEndIter ? 12 : 1 // todo: this is important... see how can be tuned
 
       // Initialize quadtree
       var bht = bhtree.BarnesHutTree()
@@ -162,14 +163,13 @@ var tsne = tsne || {}
       return null
     },
 
-    XToD: function (data) {
-      var n = data.length
-      var indices = Array.apply(null, Array(n)).map(function (_, i) { return i })
-      this.vpt = vptree.build(indices, euclideanOf(data))
-      this.NN = pool.zeros([n * 2, this.numNeighbors])  // FIXME: either switch to Array of Arrays or make sure this gets expanded
+    XToD: function () {
+      var indices = Array.apply(null, Array(this.n)).map(function (_, i) { return i })
+      this.vpt = vptree.build(indices, euclideanOf(this.X))
+      this.D = []
       this.dmax = []
       this.kmax = []
-      for (var i = 0; i < n; i++) {
+      for (var i = 0; i < this.n; i++) {
         this.pushD(i)
       }
     },
@@ -326,25 +326,32 @@ var tsne = tsne || {}
      ************************/
 
     initData: function (data) {
-      this.P = []
-      this.D = []
       this.X = data
       this.n = data.length
+      this.NN = pool.zeros([this.n * 2, this.numNeighbors])
       this.dims = 2
-      this.XToD(data)
+      this.XToD()
       this.DToP()
       this.Y = initialY(this.n)
       this.ytMinus1 = pool.clone(this.Y)
       this.ytMinus2 = pool.clone(this.Y)
       this.Ygains = pool.ones(this.Y.shape)
-      this.iter = 0
-      this.learningRate = 10
       this.grad = pool.zeros(this.Y.shape)
+      this.iter = 0
+      this.exagEndIter = 250  // van der Maaten 2014
     },
 
-    expandYbuffers: function() {
-        var newlen = this.n * 2
-        //TODO
+    expandBuffers: function() {
+      console.log('expanding buffers')
+      var newlen = this.n * 2
+      var that = this
+      ;['NN', 'Y', 'ytMinus1', 'ytMinus2', 'Ygains', 'grad'].forEach(function (name) {
+        var oldMat = that[name]
+        var newMat = pool.malloc([newlen, oldMat.shape[1]])
+        ops.assign(newMat.hi(oldMat.shape[0], oldMat.shape[1]), oldMat)
+        pool.free(oldMat)
+        that[name] = newMat
+      })
     },
 
     /*
@@ -354,12 +361,18 @@ var tsne = tsne || {}
       if (x.length != this.X[0].length) throw "new point doesn't match input dimensions"
       var newi = this.n++
       this.X.push(x)
-      this.updateNeighborhoods(newi)
-      this.pushD(newi)
-      this.pushP(newi)
-      this.pushY(newi)
       if (this.n > this.Y.shape[0]) {
-        this.expandYbuffers()
+        // Expand buffers and rebuild P
+        this.expandBuffers()
+        this.XToD()
+        this.DToP()
+        this.exagEndIter = this.iter + 100  // exaggerate for another 100 iterations
+      } else {
+        // Do an approximative update
+        this.updateNeighborhoods(newi)
+        this.pushD(newi)
+        this.pushP(newi)
+        this.pushY(newi)
       }
     },
 

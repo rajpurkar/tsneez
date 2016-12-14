@@ -56,9 +56,9 @@
   var stepnum = 0
   var tic = performance.now()
   function step () {
-    console.time('step')
+    //console.time('step')
     var cost = T.step()
-    console.timeEnd('step')
+    //console.timeEnd('step')
     var fps = Math.round((T.iter / (performance.now() - tic)) * 1000)
     $('#cost').html('iteration ' + T.iter + ', fps: ' + fps + ', cost: ' + cost)
     updateEmbedding()
@@ -79,7 +79,7 @@
     $.getJSON('/data/wordvecs50dtop1000.json', function (j) {
     //$.getJSON('/data/shortglove.json', function (j) {
       //data = j
-      var N = 500
+      var N = 100
       data = {
         words: j.words.slice(0, N),
         vecs: j.vecs.slice(0, N),
