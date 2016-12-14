@@ -7,6 +7,7 @@ var browserSync = require('browser-sync').create()
 var stylus = require('gulp-stylus')
 var minify = require('gulp-minify')
 var bower = require('gulp-bower')
+var ghPages = require('gulp-gh-pages')
 
 var build_dir = 'streaming-tsne-js/'
 
@@ -69,14 +70,14 @@ gulp.task('js', function () {
 
 gulp.task('html', function () {
   return gulp.src('views/index.pug')
-    .pipe(pug())
+    .pipe(pug({locals: {bd: '/streaming-tsne-js'}}))
     .pipe(gulp.dest('./' + build_dir))
 })
 
 gulp.task('browser-sync', ['preprocess'], function () {
   browserSync.init({
     server: {
-      baseDir: build_dir
+      baseDir: './'
     }
   })
   gulp.watch(build_dir + "**/*").on('change', browserSync.reload);
@@ -92,6 +93,11 @@ gulp.task('css-watch', ['css'], function () {
 
 gulp.task('js-watch', ['js'], function () {
   gulp.watch('./views/js/**/*.js', ['js'])
+})
+
+gulp.task('deploy', function () {
+  return gulp.src('./' + build_dir + '**/*')
+    .pipe(ghPages())
 })
 
 gulp.task('preprocess', ['css', 'html', 'js', 'bower', 'copy_data'])

@@ -11,14 +11,14 @@ html
         //- link(rel="image_src", type="image/jpeg", href="/logo.jpg")
         link(rel="shortcut icon", href="/favicon.ico", type="image/x-icon")
         link(rel="icon", href="/favicon.ico", type="image/x-icon")
-        link(rel="stylesheet", href="/bower_components/bootstrap/dist/css/bootstrap.min.css")
-        link(rel="stylesheet", href="/stylesheets/layout.css")
+        link(rel="stylesheet", href= bd + "/bower_components/bootstrap/dist/css/bootstrap.min.css")
+        link(rel="stylesheet", href= bd + "/stylesheets/layout.css")
         block extralinks
     body
         include includes/nav
         include includes/topCover
         block content
-        script(src="/bower_components/jquery/dist/jquery.min.js")
-        script(src="/bower_components/bootstrap/dist/js/bootstrap.min.js")
-        script(src="/bower_components/d3/d3.min.js")
+        script(src=bd + "/bower_components/jquery/dist/jquery.min.js")
+        script(src=bd + "/bower_components/bootstrap/dist/js/bootstrap.min.js")
+        script(src=bd + "/bower_components/d3/d3.min.js")
         block extrascripts
