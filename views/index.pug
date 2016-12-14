@@ -11,6 +11,7 @@ block extralinks
   script(async defer src="https://buttons.github.io/buttons.js")
 
 block extrascripts
+  script(src="/bower_components/randomcolor/randomColor.js")
   script(src="/javascripts/karpathy-tsne.js")
   script(src="/dist/streaming-tsne.js")
   script(src="/javascripts/index.js")
@@ -22,9 +23,7 @@ block content
         .col-md-12
           .infoCard
             .infoBody
-              .infoHeadline
-                  b TSNE
               .viewport
               #cost
-              .infoSubheadline
-                include includes/github
+            .infoSubheadline
+              include includes/github
