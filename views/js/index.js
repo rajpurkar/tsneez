@@ -32,7 +32,7 @@
 
   function resize () {
     var width = $('.viewport').width()
-    var height = 400
+    var height = 600
     svg.attr('width', width).attr('height', height)
   }
 

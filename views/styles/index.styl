@@ -1,7 +1,9 @@
 @require 'layout/theme'
 
 .viewport
+  height 600px
   svg
+    height 600px
     display block
     text
       pointer-events none
@@ -9,3 +11,9 @@
       font-weight 500
       font-size 1em
       fill #444
+
+.infoCard
+  position relative
+  .infoBody
+    position absolute
+    top 0px
