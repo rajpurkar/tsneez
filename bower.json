@@ -18,6 +18,7 @@
     "bootstrap": "^3.3.7",
     "lato-webfont": "^1.1.2",
     "d3": "^3.5.17",
-    "jquery": "^2.2.4"
+    "jquery": "^2.2.4",
+    "randomcolor": "^0.4.4"
   }
 }
