@@ -7,6 +7,14 @@ var tsne = tsne || {}
 ;(function (global) {
   'use strict'
 
+  var getopt = function (opt, key, def) {
+    if (opt[key] == null) {
+      return def
+    } else {
+      return opt[key]
+    }
+  }
+
   var initialY = function (numSamples) {
     // FIXME: allow arbitrary dimensions??
     var distribution = gaussian(0, 1e-4)
@@ -38,7 +46,11 @@ var tsne = tsne || {}
 
   function sign (x) { return x > 0 ? 1 : x < 0 ? -1 : 0 }
 
-  var TSNE = function (opt) {}
+  var TSNE = function (opt) {
+    this.perplexity = getopt(opt, 'perplexity', 30)  // (van der Maaten 2014)
+    this.numNeighbors = getopt(opt, 'numNeighbors', 3 * this.perplexity)  // (van der Maaten 2014)
+    this.theta = getopt(opt, 'theta', 0.5)  // [0, 1] tunes the barnes-hut approximation, 0 is exact
+  }
 
   TSNE.prototype = {
     profileRecord: {},
@@ -288,11 +300,8 @@ var tsne = tsne || {}
       this.P = []
       this.D = []
       this.n = data.length
-      var perplexity = 30  // (van der Maaten 2014)
-      this.numNeighbors = 3 * perplexity  // (van der Maaten 2014)
-      this.theta = 0.5  // [0, 1] tunes the barnes-hut approximation, 0 is exact
       this.XToD(data)
-      this.DToP(perplexity)
+      this.DToP(this.perplexity)
       this.Y = initialY(this.n)
       this.ytMinus1 = pool.clone(this.Y)
       this.ytMinus2 = pool.clone(this.Y)

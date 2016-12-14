@@ -13,7 +13,9 @@
       <script type="text/javascript" src="./dist/streaming-tsne.js"></script>
       <script type="text/javascript">
 
-var T = new tsne.TSNE(); // create a tSNE instance
+var T = new tsne.TSNE({
+  theta: 0.8
+}); // create a tSNE instance
 var data;
 
 function updateEmbedding() {
