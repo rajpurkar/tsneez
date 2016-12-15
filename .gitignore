@@ -2,3 +2,4 @@ node_modules/
 bower_components/
 streaming-tsne-js/
 .publish/
+npm-debug.log
