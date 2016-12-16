@@ -110,7 +110,7 @@
       j.words = j.words.map(function (word) {
         return {str: word, init: true}
       })
-      var N = 300
+      var N = 800
       data = {
         words: j.words.slice(0, N),
         vecs: j.vecs.slice(0, N)
