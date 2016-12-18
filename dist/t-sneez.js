@@ -5426,4 +5426,4 @@
 
 /***/ }
 /******/ ]);
-//# sourceMappingURL=streaming-tsne.js.map
+//# sourceMappingURL=t-sneez.js.map
