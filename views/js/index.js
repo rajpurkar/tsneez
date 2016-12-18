@@ -106,7 +106,7 @@
   var DO_PROFILE = true
 
   $(window).load(function () {
-    $.getJSON('/streaming-tsne-js/data/wordvecs50dtop1000.json', function (j) {
+    $.getJSON('/t-sneez/data/wordvecs50dtop1000.json', function (j) {
       j.words = j.words.map(function (word) {
         return {str: word, init: true}
       })
