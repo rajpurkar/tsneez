@@ -321,6 +321,19 @@ var tsne = tsne || {}
       this.Y.set(newi, 1, y1)
     },
 
+    expandBuffers: function() {
+      console.log('expanding buffers')
+      var newlen = this.n * 2
+      var that = this
+      ;['NN', 'Y', 'ytMinus1', 'ytMinus2', 'Ygains', 'grad'].forEach(function (name) {
+        var oldMat = that[name]
+        var newMat = pool.malloc([newlen, oldMat.shape[1]])
+        ops.assign(newMat.hi(oldMat.shape[0], oldMat.shape[1]), oldMat)
+        pool.free(oldMat)
+        that[name] = newMat
+      })
+    },
+
     /************************
      * PUBLIC API STARTS HERE
      ************************/
@@ -339,19 +352,6 @@ var tsne = tsne || {}
       this.grad = pool.zeros(this.Y.shape)
       this.iter = 0
       this.exagEndIter = 250  // van der Maaten 2014
-    },
-
-    expandBuffers: function() {
-      console.log('expanding buffers')
-      var newlen = this.n * 2
-      var that = this
-      ;['NN', 'Y', 'ytMinus1', 'ytMinus2', 'Ygains', 'grad'].forEach(function (name) {
-        var oldMat = that[name]
-        var newMat = pool.malloc([newlen, oldMat.shape[1]])
-        ops.assign(newMat.hi(oldMat.shape[0], oldMat.shape[1]), oldMat)
-        pool.free(oldMat)
-        that[name] = newMat
-      })
     },
 
     /*
