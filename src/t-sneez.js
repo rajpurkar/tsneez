@@ -3,7 +3,7 @@ var pool = require('ndarray-scratch')
 var ops = require('ndarray-ops')
 var bhtree = require('./includes/bhtree.js')
 var vptree = require('./includes/vptree.js')
-var tsne = tsne || {}
+var tsneez = tsneez || {}
 
 ;(function (global) {
   'use strict'
@@ -14,17 +14,6 @@ var tsne = tsne || {}
     } else {
       return opt[key]
     }
-  }
-
-  var initialY = function (numSamples) {
-    // FIXME: allow arbitrary dimensions??
-    var distribution = gaussian(0, 1e-4)
-    var ys = pool.zeros([numSamples * 2, 2])  // initialize with twice as much room as necessary
-    for (var i = 0; i < numSamples; i++) {
-      ys.set(i, 0, distribution.ppf(Math.random()))
-      ys.set(i, 1, distribution.ppf(Math.random()))
-    }
-    return ys
   }
 
   var squaredEuclidean = function (x, y) {
@@ -48,7 +37,7 @@ var tsne = tsne || {}
 
   function sign (x) { return x > 0 ? 1 : x < 0 ? -1 : 0 }
 
-  var TSNE = function (opt) {
+  var TSNEEZ = function (opt) {
     var perplexity = getopt(opt, 'perplexity', 30)  // (van der Maaten 2014)
     this.Hdesired = Math.log2(perplexity)
     this.numNeighbors = getopt(opt, 'numNeighbors', 3 * perplexity)  // (van der Maaten 2014)
@@ -56,7 +45,7 @@ var tsne = tsne || {}
     this.learningRate = getopt(opt, 'learningRate', 10)  // [0, 1] tunes the barnes-hut approximation, 0 is exact
   }
 
-  TSNE.prototype = {
+  TSNEEZ.prototype = {
     profileRecord: {},
     profileStart: function (name) {
       if (!this.profileRecord.hasOwnProperty(name)) {
@@ -74,6 +63,16 @@ var tsne = tsne || {}
       record.count++
       record.time += (elapsed - record.time) / record.count
       console.log(name + ': ' + elapsed + 'ms' + ', avg ' + Math.round(record.time) + 'ms')
+    },
+    initY: function () {
+      // FIXME: allow arbitrary dimensions??
+      var distribution = gaussian(0, 1e-4)
+      var ys = pool.zeros([this.n * 2, 2])  // initialize with twice as much room as necessary
+      for (var i = 0; i < this.n; i++) {
+        ys.set(i, 0, distribution.ppf(Math.random()))
+        ys.set(i, 1, distribution.ppf(Math.random()))
+      }
+      return ys
     },
     updateY: function () {
       // Perform gradient update in place
@@ -348,7 +347,7 @@ var tsne = tsne || {}
       this.dims = 2
       this.XToD()
       this.DToP()
-      this.Y = initialY(this.n)
+      this.Y = this.initY()
       this.ytMinus1 = pool.clone(this.Y)
       this.ytMinus2 = pool.clone(this.Y)
       this.Ygains = pool.ones(this.Y.shape)
@@ -361,7 +360,10 @@ var tsne = tsne || {}
      * x - array containing the new point
      */
     add: function (x) {
-      if (x.length != this.X[0].length) throw "new point doesn't match input dimensions"
+      if (x.length !== this.X[0].length) {
+        console.log("New point doesn't match input dimensions")
+        return
+      }
       var newi = this.n++
       this.X.push(x)
       if (this.n > this.Y.shape[0]) {
@@ -369,7 +371,7 @@ var tsne = tsne || {}
         this.expandBuffers()
         this.XToD()
         this.DToP()
-        this.exagEndIter = this.iter + 100  // exaggerate for another 100 iterations
+        // this.exagEndIter = this.iter + 100  // exaggerate for another 100 iterations
       } else {
         // Do an approximative update
         this.updateNeighborhoods(newi)
@@ -400,8 +402,8 @@ var tsne = tsne || {}
     }
   }
 
-  global.TSNE = TSNE
-})(tsne)
+  global.TSNEEZ = TSNEEZ
+})(tsneez)
 
 // export the library to window, or to module in nodejs
 // Webpack supports both.
@@ -411,7 +413,7 @@ var tsne = tsne || {}
     module.exports = lib // in nodejs
   }
   if (typeof window !== 'undefined') {
-    window.tsne = lib // in ordinary browser attach library to window
+    window.tsneez = lib // in ordinary browser attach library to window
   }
-})(tsne)
+})(tsneez)
 
