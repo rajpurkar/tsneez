@@ -9,13 +9,13 @@ var minify = require('gulp-minify')
 var bower = require('gulp-bower')
 var ghPages = require('gulp-gh-pages')
 
-var build_dir = 'streaming-tsne-js/'
+var build_dir = 't-sneez/'
 
 var webpack_opts = {
   context: path.join(__dirname, 'src/'),
-  entry: './streaming-tsne.js',
+  entry: './t-sneez.js',
   output: {
-    filename: 'streaming-tsne.js'
+    filename: 't-sneez.js'
   },
   plugins: []
 }
@@ -70,7 +70,7 @@ gulp.task('js', function () {
 
 gulp.task('html', function () {
   return gulp.src('views/index.pug')
-    .pipe(pug({locals: {bd: '/streaming-tsne-js'}}))
+    .pipe(pug({locals: {bd: '/' + build_dir}}))
     .pipe(gulp.dest('./' + build_dir))
 })
 
@@ -101,5 +101,5 @@ gulp.task('deploy', function () {
 })
 
 gulp.task('preprocess', ['css', 'html', 'js', 'bower', 'copy_data'])
-
-gulp.task('default', ['webpack', 'browser-sync', 'preprocess', 'css-watch', 'js-watch', 'html-watch'])
+gulp.task('default', ['webpack', 'preprocess'])
+gulp.task('server', ['webpack', 'browser-sync', 'preprocess', 'css-watch', 'js-watch', 'html-watch'])

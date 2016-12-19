@@ -3,7 +3,7 @@
   var DO_PROFILE = false
   var DO_TIME = true
   var METHOD = 'scienceai'
-  var DATA_PATH = '/streaming-tsne-js/data/wordvecs50dtop1000.json'
+  var DATA_PATH = '/t-sneez/data/wordvecs50dtop1000.json'
   var N = 1000
   var stepnum = 0
 
@@ -201,7 +201,6 @@
     requestAnimationFrame(step)
   }
 
-
   $(window).load(function () {
     $.getJSON(DATA_PATH, function (j) {
       // Wrap words in objects with metadata
@@ -209,7 +208,6 @@
         return {str: word, init: true}
       })
 
-      // Slice original dataset
       data = {
         words: j.words.slice(0, N),
         vecs: j.vecs.slice(0, N)
