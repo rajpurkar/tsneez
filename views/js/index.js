@@ -2,7 +2,7 @@
   var data
   var DO_PROFILE = false
   var DO_TIME = true
-  var METHOD = 'scienceai'
+  var METHOD = 't-sneez'
   var DATA_PATH = '/t-sneez/data/wordvecs50dtop1000.json'
   var N = 1000
   var stepnum = 0
@@ -10,7 +10,7 @@
   // Multiplex between methods
   var T, getEmbedding, initData, stepEmbedding
   switch (METHOD) {
-    case 'tsneez':
+    case 't-sneez':
       T = new tsne.TSNE({
         theta: 0.8
       })
@@ -33,7 +33,7 @@
       }
       break
     case 'scienceai':
-      var Tworker = new Worker('/streaming-tsne-js/javascripts/scienceai-worker.js')
+      var Tworker = new Worker('/t-sneez/javascripts/scienceai-worker.js')
       var Ycurrent = null
       var tic = performance.now()
       Tworker.onmessage = function (e) {
