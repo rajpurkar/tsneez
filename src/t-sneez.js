@@ -77,7 +77,9 @@ var tsne = tsne || {}
     },
     updateY: function () {
       // Perform gradient update in place
-      var alpha = this.iter < this.exagEndIter ? 0.5 : 0.8
+      // var alpha = this.iter < this.exagEndIter ? 0.5 : 0.8
+      // var alpha = 0.7
+      var alpha = 0.9 // TODO look at different learning rates / annealing
       var n = this.n
       var dims = this.dims
       var Ymean = [0, 0]  // FIXME: only two dimensional
@@ -112,7 +114,8 @@ var tsne = tsne || {}
     },
     updateGradBH: function () {
       // Early exaggeration
-      var exag = Math.max(8 - 0.4 * Math.sqrt(this.iter), 0.2) // spent lot of time tuning this
+      // var exag = Math.max(8 - 0.4 * Math.sqrt(this.iter), 0.2) // spent lot of time tuning this
+      var exag = Math.max(8 - 0.4 * Math.sqrt(this.iter), 1) // spent lot of time tuning this
       // var exag = this.iter < this.exagEndIter ? 12 - (0.01 * this.iter) : 1 // todo: this is important... see how can be tuned
 
       // Initialize quadtree
