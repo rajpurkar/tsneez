@@ -7,6 +7,7 @@
   var N = 1000
   var stepnum = 0
   var PERPLEXITY = 10
+  var PRINT_TIME = false
 
   // Multiplex between methods
   var T, getEmbedding, initData, stepEmbedding
@@ -41,30 +42,32 @@
       var Ycurrent = null
       var tic = performance.now()
       Tworker.onmessage = function (e) {
-        var msg = e.data;
+        var msg = e.data
         switch (msg.type) {
           case 'PROGRESS_STATUS':
-            break;
+            break
           case 'PROGRESS_ITER':
-            break;
+            break
           case 'PROGRESS_DATA':
             // Do our own custom profiling
-            toc = performance.now()
-            if (Ycurrent === null) {
-              console.log('initialization', (toc - tic) + 'ms')
-            } else {
-              console.log('step', (toc - tic) + 'ms')
+            var toc = performance.now()
+            if (PRINT_TIME === true) {
+              if (Ycurrent === null) {
+                console.log('initialization', (toc - tic) + 'ms')
+              } else {
+                console.log('step', (toc - tic) + 'ms')
+              }
             }
             Ycurrent = msg.data
             tic = performance.now()
             stepnum++
-            break;
+            break
           case 'STATUS':
             console.log('status', msg.data)
-            break;
+            break
           case 'DONE':
             Ycurrent = msg.data
-            break;
+            break
           default:
         }
       }
@@ -72,8 +75,8 @@
       initData = function (vecs) {
         Tworker.postMessage({
           type: 'INPUT_DATA',
-          data: vecs,
-        });
+          data: vecs
+        })
         Tworker.postMessage({
           type: 'RUN',
           data: {
@@ -81,9 +84,9 @@
             earlyExaggeration: 4,
             learningRate: 10,
             nIter: 1000,
-            metric: 'euclidean',
+            metric: 'euclidean'
           }
-        });
+        })
       }
       stepEmbedding = function () { return }
       getEmbedding = function () { 
@@ -156,7 +159,7 @@
   // (re-)Draw the visualization
   function draw () {
     var g = svg.selectAll('.b')
-      .data(data.words, function (d) { return d.str})
+      .data(data.words, function (d) { return d.str })
       .enter().append('g')
       .attr('class', 'u')
     g.append('rect')
