@@ -6,20 +6,24 @@
   var DATA_PATH = '/t-sneez/data/wordvecs50dtop1000.json'
   var N = 1000
   var stepnum = 0
+  var PERPLEXITY = 10
 
   // Multiplex between methods
   var T, getEmbedding, initData, stepEmbedding
   switch (METHOD) {
     case 't-sneez':
       T = new tsne.TSNE({
-        theta: 0.8
+        theta: 0.7,
+        perplexity: PERPLEXITY
       })
       initData = function (vecs) { T.initData(vecs) }
       stepEmbedding = function () { stepnum++; return T.step() }
       getEmbedding = function () { return T.Y }
       break
     case 'karpathy':
-      T = new karpathy_tsne.tSNE()
+      T = new karpathy_tsne.tSNE({
+        perplexity: PERPLEXITY
+      })
       initData = function (vecs) { T.initDataRaw(vecs) }
       stepEmbedding = function () { stepnum++; return T.step() }
       getEmbedding = function () {
