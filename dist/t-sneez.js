@@ -90,6 +90,7 @@
 	    this.numNeighbors = getopt(opt, 'numNeighbors', 3 * perplexity)  // (van der Maaten 2014)
 	    this.theta = getopt(opt, 'theta', 0.5)  // [0, 1] tunes the barnes-hut approximation, 0 is exact
 	    this.learningRate = getopt(opt, 'learningRate', 10)  // [0, 1] tunes the barnes-hut approximation, 0 is exact
+	    this.randomProjectionInitialize = getopt(opt, 'randomProjectionInitialize', true) // whether to initialize ys with a random projection
 	  }
 
 	  TSNEEZ.prototype = {
@@ -112,12 +113,32 @@
 	      console.log(name + ': ' + elapsed + 'ms' + ', avg ' + Math.round(record.time) + 'ms')
 	    },
 	    initY: function () {
-	      // FIXME: allow arbitrary dimensions??
-	      var distribution = gaussian(0, 1e-4)
-	      var ys = pool.zeros([this.n * 2, 2])  // initialize with twice as much room as necessary
-	      for (var i = 0; i < this.n; i++) {
-	        ys.set(i, 0, distribution.ppf(Math.random()))
-	        ys.set(i, 1, distribution.ppf(Math.random()))
+	      var ys = pool.zeros([this.n * 2, 2])  // initialize with twice as much room as neccessary
+	      if (this.randomProjectionInitialize === true) {
+	        var distribution = gaussian(0, 1 / this.dims) // stddev 1/sqrt(dims)
+	        var A = pool.zeros([this.largeDims, this.dims])
+	        for (var i = 0; i < A.shape[0]; i++) {
+	          for (var j = 0; j < A.shape[1]; j++) {
+	            A.set(i, j, distribution.ppf(Math.random()))
+	          } 
+	        }
+	        for (var p = 0; p < this.n; p++) {
+	          var x = this.X[p]
+	          for (var j = 0; j < this.dims; j++) {
+	            var sum = 0
+	            for (var i = 0; i < this.largeDims; i++) {
+	              sum += A.get(i, j) * x[i]
+	            }
+	            ys.set(p, j, sum)
+	          }
+	        }
+	      } else {
+	         // FIXME: allow arbitrary dimensions??
+	        var distribution = gaussian(0, 1e-4)
+	        for (var i = 0; i < this.n; i++) {
+	          ys.set(i, 0, distribution.ppf(Math.random()))
+	          ys.set(i, 1, distribution.ppf(Math.random()))
+	        }
 	      }
 	      return ys
 	    },
@@ -394,6 +415,7 @@
 	      this.dims = 2
 	      this.XToD()
 	      this.DToP()
+	      this.largeDims = data[0].length
 	      this.Y = this.initY()
 	      this.ytMinus1 = pool.clone(this.Y)
 	      this.ytMinus2 = pool.clone(this.Y)

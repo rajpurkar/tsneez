@@ -13,7 +13,7 @@
   switch (METHOD) {
     case 'tsneez':
       T = new tsneez.TSNEEZ({
-        theta: 0.7,
+        theta: 0.5,
         perplexity: PERPLEXITY
       })
       initData = function (vecs) { T.initData(vecs) }
