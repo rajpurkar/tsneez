@@ -1,3 +1,4 @@
+// (c) 2016 Andrej Karpathy, MIT License
 // create main global object
 var tsnejs = tsnejs || { REVISION: 'ALPHA' };
 
