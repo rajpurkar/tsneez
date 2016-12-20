@@ -6,15 +6,16 @@
   var DATA_PATH = '/t-sneez/data/wordvecs50dtop1000.json'
   var N = 800
   var stepnum = 0
-  var PERPLEXITY = Math.max( N / 100.0, 3)
+  var PERPLEXITY = Math.max(N / 100.0, 3)
 
   // Multiplex between methods
   var T, getEmbedding, initData, stepEmbedding
   switch (METHOD) {
     case 'tsneez':
       T = new tsneez.TSNEEZ({
-        theta: 0.4,
-        perplexity: PERPLEXITY
+        theta: 0.5,
+        perplexity: PERPLEXITY,
+        randomProjectionInitialize: true
       })
       initData = function (vecs) { T.initData(vecs) }
       stepEmbedding = function () { stepnum++; return T.step() }
@@ -124,7 +125,7 @@
 
     s.selectAll('rect').style('fill-opacity', function (d) {
       if (d.init === true && fadeOld > 0) {
-        return Math.min(0.9 - Math.sqrt(fadeOld * 0.009), 0.9)
+        return Math.max(Math.min(0.9 - Math.sqrt(fadeOld * 0.09), 0.9), 0)
       } else {
         return 0.9
       }
@@ -241,7 +242,7 @@
 
       // Set up listener for adding points
       $('#addPoints').click(function () {
-        fadeOld = 100
+        fadeOld = 10
         data.words = data.words.map(function (word) {
           word.init = true
           return word
@@ -249,7 +250,6 @@
         for (var i = 0; i < 10; i++) {
           var word = j.words[N]
           word.init = false
-          // console.log('adding word', word)
           T.add(j.vecs[N])
           data.words.push(word)
           N++
