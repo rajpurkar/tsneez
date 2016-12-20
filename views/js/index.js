@@ -4,16 +4,16 @@
   var DO_TIME = false
   var METHOD = 'tsneez'
   var DATA_PATH = '/t-sneez/data/wordvecs50dtop1000.json'
-  var N = 600
+  var N = 800
   var stepnum = 0
-  var PERPLEXITY = N / 100
+  var PERPLEXITY = Math.max( N / 100.0, 3)
 
   // Multiplex between methods
   var T, getEmbedding, initData, stepEmbedding
   switch (METHOD) {
     case 'tsneez':
       T = new tsneez.TSNEEZ({
-        theta: 0.5,
+        theta: 0.4,
         perplexity: PERPLEXITY
       })
       initData = function (vecs) { T.initData(vecs) }
@@ -204,7 +204,7 @@
       }
     }
 
-    requestAnimationFrame(step)
+    window.requestAnimationFrame(step)
   }
 
   $(window).load(function () {
@@ -237,7 +237,7 @@
       if (DO_PROFILE && window.console && window.console.profile) {
         console.profile('step')
       }
-      requestAnimationFrame(step)
+      window.requestAnimationFrame(step)
 
       // Set up listener for adding points
       $('#addPoints').click(function () {
@@ -249,7 +249,7 @@
         for (var i = 0; i < 10; i++) {
           var word = j.words[N]
           word.init = false
-          console.log('adding word', word)
+          // console.log('adding word', word)
           T.add(j.vecs[N])
           data.words.push(word)
           N++
