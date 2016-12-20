@@ -68,7 +68,7 @@ var tsneez = tsneez || {}
     initY: function () {
       var ys = pool.zeros([this.n * 2, 2])  // initialize with twice as much room as neccessary
       if (this.randomProjectionInitialize === true) {
-        var distribution = gaussian(0, 1 / this.dims) // stddev 1/sqrt(dims)
+        var distribution = gaussian(0, 0.1 / this.dims) // stddev 1/sqrt(dims)
         var A = pool.zeros([this.largeDims, this.dims])
         for (var i = 0; i < A.shape[0]; i++) {
           for (var j = 0; j < A.shape[1]; j++) {
@@ -97,12 +97,10 @@ var tsneez = tsneez || {}
     },
     updateY: function () {
       // Perform gradient update in place
-      // var alpha = this.iter < this.exagEndIter ? 0.5 : 0.8
-      // var alpha = 0.7
-      var alpha = 0.9 // TODO look at different learning rates / annealing
+      var alpha = 0.5 // TODO look at different choices
       var n = this.n
       var dims = this.dims
-      var Ymean = [0, 0]  // FIXME: only two dimensional
+      var Ymean = pool.zeros([this.dims])
       for (var i = 0; i < n; i++) {
         for (var d = 0; d < dims; d++) {
           var gradid = this.grad.get(i, d)
@@ -121,22 +119,20 @@ var tsneez = tsneez || {}
           this.Y.set(i, d, Yid)
 
           // Accumulate mean for centering
-          Ymean[d] += Yid
+          Ymean.set(d, Ymean.get(d) + Yid)
         }
       }
 
       // Recenter
       for (var i = 0; i < n; i++) {
         for (var d = 0; d < dims; d++) {
-          this.Y.set(i, d, this.Y.get(i, d) - Ymean[d] / n)
+          this.Y.set(i, d, this.Y.get(i, d) - Ymean.get(d) / n)
         }
       }
     },
     updateGradBH: function () {
       // Early exaggeration
-      // var exag = Math.max(8 - 0.4 * Math.sqrt(this.iter), 0.2) // spent lot of time tuning this
-      var exag = Math.max(8 - 0.4 * Math.sqrt(this.iter), 1) // spent lot of time tuning this
-      // var exag = this.iter < this.exagEndIter ? 12 - (0.01 * this.iter) : 1 // todo: this is important... see how can be tuned
+      var exag = Math.max(30 - Math.sqrt(this.iter), 4) // lots to learn tuning this
 
       // Initialize quadtree
       var bht = bhtree.BarnesHutTree()
