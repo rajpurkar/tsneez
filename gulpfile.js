@@ -33,6 +33,7 @@ gulp.task('webpack', function () {
   return gulp.src('.')
     .pipe(g_webpack(webpack_opts))
     .pipe(gulp.dest(build_dir + 'dist/'))
+    .pipe(gulp.dest('dist/'))
 })
 
 gulp.task('webpack_with_watch', function () {
@@ -41,6 +42,7 @@ gulp.task('webpack_with_watch', function () {
   var return_obj = gulp.src('.')
     .pipe(g_webpack(webpack_opts))
     .pipe(gulp.dest(build_dir + 'dist/'))
+    .pipe(gulp.dest('dist/'))
 
   return return_obj.pipe(browserSync.stream())
 })
