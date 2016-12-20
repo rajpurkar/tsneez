@@ -4,9 +4,9 @@
   var DO_TIME = false
   var METHOD = 'tsneez'
   var DATA_PATH = '/t-sneez/data/wordvecs50dtop1000.json'
-  var N = 500
+  var N = 600
   var stepnum = 0
-  var PERPLEXITY = 5
+  var PERPLEXITY = N / 100
 
   // Multiplex between methods
   var T, getEmbedding, initData, stepEmbedding
