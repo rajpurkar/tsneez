@@ -9,27 +9,40 @@ var minify = require('gulp-minify')
 var bower = require('gulp-bower')
 var ghPages = require('gulp-gh-pages')
 
-var build_dir = 't-sneez/'
+var name = 't-sneez'
+var build_dir = name + '/'
 
 var webpack_opts = {
   context: path.join(__dirname, 'src/'),
-  entry: './t-sneez.js',
+  entry: {},
   output: {
-    filename: 't-sneez.js'
+    filename: "[name].js"
   },
-  plugins: []
+  plugins: [
+    new webpack.optimize.UglifyJsPlugin({
+      include: /\.min\.js$/,
+      minimize: true
+    })
+  ]
 }
+webpack_opts.entry[name] = './' + name + '.js'
+webpack_opts.entry[name + '.min'] = './' + name + '.js'
+
 
 gulp.task('webpack', function () {
+  return gulp.src('.')
+    .pipe(g_webpack(webpack_opts))
+    .pipe(gulp.dest(build_dir + 'dist/'))
+})
+
+gulp.task('webpack_with_watch', function () {
+  webpack_opts.watch = true
+  
   var return_obj = gulp.src('.')
     .pipe(g_webpack(webpack_opts))
     .pipe(gulp.dest(build_dir + 'dist/'))
 
-  if (process.env.NODE_ENV === 'development') {
-    return_obj = return_obj.pipe(browserSync.stream())
-  }
-
-  return return_obj
+  return return_obj.pipe(browserSync.stream())
 })
 
 gulp.task('copy_data', function () {
@@ -48,19 +61,6 @@ gulp.task('css', function () {
     .pipe(stylus())
     .pipe(gulp.dest('./' + build_dir + 'stylesheets'))
 })
-
-
-if (process.env.NODE_ENV === 'development') {
-  webpack_opts.devtool = 'eval-source-map'
-  webpack_opts.watch = true
-} else {
-  webpack_opts.devtool = 'source-map'
-  webpack_opts.plugins.concat([
-    new webpack.optimize.UglifyJsPlugin(),
-    new webpack.optimize.DedupePlugin(),
-    new webpack.optimize.AggressiveMergingPlugin()
-  ])
-}
 
 gulp.task('js', function () {
   return gulp.src('./views/js/*')
@@ -102,4 +102,4 @@ gulp.task('deploy', function () {
 
 gulp.task('preprocess', ['css', 'html', 'js', 'bower', 'copy_data'])
 gulp.task('default', ['webpack', 'preprocess'])
-gulp.task('server', ['webpack', 'browser-sync', 'preprocess', 'css-watch', 'js-watch', 'html-watch'])
+gulp.task('server', ['browser-sync', 'preprocess', 'css-watch', 'js-watch', 'html-watch', 'webpack_with_watch'])
