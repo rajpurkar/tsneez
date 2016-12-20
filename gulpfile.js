@@ -22,7 +22,8 @@ var webpack_opts = {
     new webpack.optimize.UglifyJsPlugin({
       include: /\.min\.js$/,
       minimize: true
-    })
+    }),
+    new webpack.BannerPlugin('(c) 2016 Pranav Rajpurkar and Stephen Koo, MIT License')
   ]
 }
 webpack_opts.entry[name] = './' + name + '.js'

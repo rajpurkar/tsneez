@@ -1,3 +1,4 @@
+/*! (c) 2016 Pranav Rajpurkar and Stephen Koo, MIT License */
 /******/ (function(modules) { // webpackBootstrap
 /******/ 	// The module cache
 /******/ 	var installedModules = {};
