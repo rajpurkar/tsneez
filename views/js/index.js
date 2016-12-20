@@ -1,19 +1,18 @@
-(function (tsne, $, d3, performance, karpathy_tsne, scienceai_tsne, randomColor) {
+(function (tsneez, $, d3, performance, karpathy_tsne, scienceai_tsne, randomColor) {
   var data
   var DO_PROFILE = false
-  var DO_TIME = true
-  var METHOD = 't-sneez'
+  var DO_TIME = false
+  var METHOD = 'tsneez'
   var DATA_PATH = '/t-sneez/data/wordvecs50dtop1000.json'
-  var N = 1000
+  var N = 500
   var stepnum = 0
-  var PERPLEXITY = 10
-  var PRINT_TIME = false
+  var PERPLEXITY = 5
 
   // Multiplex between methods
   var T, getEmbedding, initData, stepEmbedding
   switch (METHOD) {
-    case 't-sneez':
-      T = new tsne.TSNE({
+    case 'tsneez':
+      T = new tsneez.TSNEEZ({
         theta: 0.7,
         perplexity: PERPLEXITY
       })
@@ -51,7 +50,7 @@
           case 'PROGRESS_DATA':
             // Do our own custom profiling
             var toc = performance.now()
-            if (PRINT_TIME === true) {
+            if (DO_TIME === true) {
               if (Ycurrent === null) {
                 console.log('initialization', (toc - tic) + 'ms')
               } else {
@@ -260,4 +259,4 @@
       })
     })
   })
-})(tsne, $, d3, performance, tsnejs, TSNE, randomColor)
+})(tsneez, $, d3, performance, tsnejs, TSNE, randomColor)
