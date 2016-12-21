@@ -66,9 +66,9 @@ var tsneez = tsneez || {}
       console.log(name + ': ' + elapsed + 'ms' + ', avg ' + Math.round(record.time) + 'ms')
     },
     initY: function () {
-      var ys = pool.zeros([this.n * 2, 2])  // initialize with twice as much room as neccessary
+      var ys = pool.zeros([this.n * 2, this.dims])  // initialize with twice as much room as neccessary
       if (this.randomProjectionInitialize === true) {
-        var distribution = gaussian(0, 0.1 / this.dims) // stddev 1/sqrt(dims)
+        var distribution = gaussian(0, 1 / this.dims) // stddev 1/sqrt(dims)
         var A = pool.zeros([this.largeDims, this.dims])
         for (var i = 0; i < A.shape[0]; i++) {
           for (var j = 0; j < A.shape[1]; j++) {
@@ -85,12 +85,31 @@ var tsneez = tsneez || {}
             ys.set(p, j, sum)
           }
         }
+        // TODO improve ordering of array internals (make columnwise)
+        var sums = []
+        for (var j = 0; j < this.dims; j++) {
+          var sum = 0
+          for (var i = 0; i < this.n; i++) {
+            sum += ys.get(i, j)
+          }
+          sums.push(sum)
+        }
+
+        // TODO: this was meant to normalize, not to divide by sum
+        for (var i = 0; i < this.n; i++) {
+          for (var j = 0; j < this.dims; j++) {
+            var val = ys.get(i, j)
+            ys.set(i, j, val / sums[j])
+          }
+        }
       } else {
          // FIXME: allow arbitrary dimensions??
         var distribution = gaussian(0, 1e-4)
         for (var i = 0; i < this.n; i++) {
-          ys.set(i, 0, distribution.ppf(Math.random()))
-          ys.set(i, 1, distribution.ppf(Math.random()))
+          for (var j = 0; j < this.dims; j++) {
+            ys.set(i, j, distribution.ppf(Math.random()))
+            ys.set(i, j, distribution.ppf(Math.random()))  
+          }
         }
       }
       return ys
@@ -362,10 +381,10 @@ var tsneez = tsneez || {}
       this.n = data.length
       this.NN = pool.zeros([this.n * 2, this.numNeighbors])
       this.dims = 2
-      this.XToD()
-      this.DToP()
       this.largeDims = data[0].length
       this.Y = this.initY()
+      this.XToD()
+      this.DToP()
       this.ytMinus1 = pool.clone(this.Y)
       this.ytMinus2 = pool.clone(this.Y)
       this.Ygains = pool.ones(this.Y.shape)
