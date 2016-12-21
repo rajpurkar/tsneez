@@ -3,10 +3,10 @@
   var DO_PROFILE = false
   var DO_TIME = false
   var METHOD = 'tsneez'
-  var DATA_PATH = '/t-sneez/data/wordvecs50dtop1000.json'
+  var DATA_PATH = '/t-sneez/data/shortglove.json'
   var N = 800
   var stepnum = 0
-  var PERPLEXITY = Math.max(N / 100.0, 3)
+  var PERPLEXITY = Math.min(Math.max(N / 100.0, 20), 20)
 
   // Multiplex between methods
   var T, getEmbedding, initData, stepEmbedding
@@ -144,7 +144,7 @@
   var svg
   var fadeOld = 0
   var zoomListener = d3.behavior.zoom()
-  .scaleExtent([0.05, 10])
+  .scaleExtent([0.0005, 10])
   .center([0, 0])
   .on('zoom', zoomHandler)
   var tx = 0
@@ -159,7 +159,7 @@
   // (re-)Draw the visualization
   function draw () {
     var g = svg.selectAll('.b')
-      .data(data.words, function (d) { return d.str })
+      .data(data.words)//, function (d) { return d.str })
       .enter().append('g')
       .attr('class', 'u')
     g.append('rect')
@@ -212,7 +212,7 @@
     $.getJSON(DATA_PATH, function (j) {
       // Wrap words in objects with metadata
       j.words = j.words.map(function (word) {
-        return {str: word, init: true}
+        return {str: String(word), init: true}
       })
 
       data = {
