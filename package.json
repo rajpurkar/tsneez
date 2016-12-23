@@ -1,6 +1,6 @@
 {
-  "name": "streaming-tsne-js",
-  "version": "0.0.1",
+  "name": "tsneez",
+  "version": "0.9.0",
   "description": "streaming t-sne implementation",
   "main": "streaming-tsne.js",
   "dependencies": {

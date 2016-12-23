@@ -9,7 +9,7 @@ var minify = require('gulp-minify')
 var bower = require('gulp-bower')
 var ghPages = require('gulp-gh-pages')
 
-var name = 't-sneez'
+var name = 'tsneez'
 var build_dir = name + '/'
 
 var webpack_opts = {

@@ -1,12 +1,15 @@
 (function (tsneez, $, d3, performance, karpathy_tsne, scienceai_tsne, randomColor) {
   var data
   var DO_PROFILE = false
-  var DO_TIME = true
+  var DO_TIME = false
   var METHOD = 'tsneez'
-  var DATA_PATH = '/t-sneez/data/shortglove.json'
-  var N = 700
+  var buildDir = '/tsneez'
+  var scienceaiWorkerPath = buildDir + '/javascripts/scienceai-worker.js'
+  var DATA_PATH = buildDir + '/data/shortglove.json'
+  var N = 300
   var stepnum = 0
   var PERPLEXITY = 10
+  
 
   // Multiplex between methods
   var T, getEmbedding, initData, stepEmbedding
@@ -38,7 +41,7 @@
       }
       break
     case 'scienceai':
-      var Tworker = new Worker('/t-sneez/javascripts/scienceai-worker.js')
+      var Tworker = new Worker(scienceaiWorkerPath)
       var Ycurrent = null
       var tic = performance.now()
       Tworker.onmessage = function (e) {

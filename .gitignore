@@ -1,5 +1,5 @@
 node_modules/
 bower_components/
-t-sneez/
+tsneez/
 .publish/
 npm-debug.log
