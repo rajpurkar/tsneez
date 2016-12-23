@@ -42,8 +42,10 @@ var tsneez = tsneez || {}
     this.Hdesired = Math.log2(perplexity)
     this.numNeighbors = getopt(opt, 'numNeighbors', 3 * perplexity)  // (van der Maaten 2014)
     this.theta = getopt(opt, 'theta', 0.5)  // [0, 1] tunes the barnes-hut approximation, 0 is exact
-    this.learningRate = getopt(opt, 'learningRate', 10)  // [0, 1] tunes the barnes-hut approximation, 0 is exact
+    this.learningRate = getopt(opt, 'learningRate', 1)
+    this.earlyExaggeration = getopt(opt, 'earlyExaggeration', 10)
     this.randomProjectionInitialize = getopt(opt, 'randomProjectionInitialize', true) // whether to initialize ys with a random projection
+    this.exagEndIter = getopt(opt, 'exagEndIter', 250) // (van der Maaten 2014)
   }
 
   TSNEEZ.prototype = {
@@ -84,24 +86,7 @@ var tsneez = tsneez || {}
             }
             ys.set(p, j, sum)
           }
-        }
-        // TODO improve ordering of array internals (make columnwise)
-        var sums = []
-        for (var j = 0; j < this.dims; j++) {
-          var sum = 0
-          for (var i = 0; i < this.n; i++) {
-            sum += ys.get(i, j)
-          }
-          sums.push(sum)
-        }
-
-        // TODO: this was meant to normalize, not to divide by sum
-        for (var i = 0; i < this.n; i++) {
-          for (var j = 0; j < this.dims; j++) {
-            var val = ys.get(i, j)
-            ys.set(i, j, val / sums[j])
-          }
-        }
+        } 
       } else {
          // FIXME: allow arbitrary dimensions??
         var distribution = gaussian(0, 1e-4)
@@ -116,10 +101,13 @@ var tsneez = tsneez || {}
     },
     updateY: function () {
       // Perform gradient update in place
-      var alpha = 0.5 // TODO look at different choices
+      var momentum = 0.9
       var n = this.n
       var dims = this.dims
       var Ymean = pool.zeros([this.dims])
+      var lr = (this.iter <= this.exagEndIter) ? this.learningRate : Math.max(this.learningRate * Math.pow(0.99, this.iter - this.exagEndIter + 1), 0.001)
+      console.log(this.iter, lr)
+
       for (var i = 0; i < n; i++) {
         for (var d = 0; d < dims; d++) {
           var gradid = this.grad.get(i, d)
@@ -133,8 +121,8 @@ var tsneez = tsneez || {}
 
           // Update Y
           var Yid = (this.ytMinus1.get(i, d)
-                       - this.learningRate * newgain * gradid
-                       + alpha * stepid)
+                       - lr * newgain * gradid
+                       + momentum * stepid)
           this.Y.set(i, d, Yid)
 
           // Accumulate mean for centering
@@ -151,7 +139,8 @@ var tsneez = tsneez || {}
     },
     updateGradBH: function () {
       // Early exaggeration
-      var exag = Math.max(30 - Math.sqrt(this.iter), 4) // lots to learn tuning this
+      var exag = (this.iter <= this.exagEndIter) ? Math.max(this.earlyExaggeration * Math.pow(0.99, this.iter), 1) : 1
+      console.log(this.iter, exag)
 
       // Initialize quadtree
       var bht = bhtree.BarnesHutTree()
@@ -390,7 +379,6 @@ var tsneez = tsneez || {}
       this.Ygains = pool.ones(this.Y.shape)
       this.grad = pool.zeros(this.Y.shape)
       this.iter = 0
-      this.exagEndIter = 250  // van der Maaten 2014
     },
 
     /*
@@ -401,6 +389,7 @@ var tsneez = tsneez || {}
         console.log("New point doesn't match input dimensions")
         return
       }
+      this.exagEndIter = this.iter + 100 
       var newi = this.n++
       this.X.push(x)
       if (this.n > this.Y.shape[0]) {
@@ -408,7 +397,6 @@ var tsneez = tsneez || {}
         this.expandBuffers()
         this.XToD()
         this.DToP()
-        // this.exagEndIter = this.iter + 100  // exaggerate for another 100 iterations
       } else {
         // Do an approximative update
         this.updateNeighborhoods(newi)
@@ -421,10 +409,6 @@ var tsneez = tsneez || {}
     step: function () {
       // Compute gradient
       var cost = this.updateGradBH()
-      // if (this.iter > 100) {
-      //   this.checkGrad()
-      // }
-
       // Rotate buffers
       var temp = this.ytMinus2
       this.ytMinus2 = this.ytMinus1
