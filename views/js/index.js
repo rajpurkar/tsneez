@@ -4,9 +4,9 @@
   var DO_TIME = true
   var METHOD = 'tsneez'
   var DATA_PATH = '/t-sneez/data/shortglove.json'
-  var N = 800
+  var N = 700
   var stepnum = 0
-  var PERPLEXITY = Math.min(Math.max(N / 100.0, 20), 20)
+  var PERPLEXITY = 10
 
   // Multiplex between methods
   var T, getEmbedding, initData, stepEmbedding
@@ -15,7 +15,7 @@
       T = new tsneez.TSNEEZ({
         theta: 0.5,
         perplexity: PERPLEXITY,
-        randomProjectionInitialize: true
+        randomProjectionInitialize: false
       })
       initData = function (vecs) { T.initData(vecs) }
       stepEmbedding = function () { stepnum++; return T.step() }
@@ -255,8 +255,10 @@
           N++
         }
         d3.selectAll('.viewport > svg').remove()
-        drawEmbedding()  // redraw?
+        drawEmbedding()
       })
+    }).fail(function (d, textStatus, error) {
+      console.log('getJSON failed, status: ' + textStatus + ', error: ' + error)
     })
   })
 })(tsneez, $, d3, performance, tsnejs, TSNE, randomColor)
