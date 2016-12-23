@@ -184,8 +184,6 @@ var tsneez = tsneez || {}
           this.grad.set(i, d, this.grad.get(i, d) / Z + gradi[d])
         }
       }
-
-      return null
     },
 
     XToD: function () {
@@ -387,7 +385,7 @@ var tsneez = tsneez || {}
         console.log("New point doesn't match input dimensions")
         return
       }
-      this.exagEndIter = this.iter + 100 
+      this.exagEndIter = this.iter + 10 
       var newi = this.n++
       this.X.push(x)
       if (this.n > this.Y.shape[0]) {
@@ -406,7 +404,8 @@ var tsneez = tsneez || {}
 
     step: function () {
       // Compute gradient
-      var cost = this.updateGradBH()
+      if (this.iter > this.exagEndIter + 100) return 
+      this.updateGradBH()
       // Rotate buffers
       var temp = this.ytMinus2
       this.ytMinus2 = this.ytMinus1
@@ -417,7 +416,6 @@ var tsneez = tsneez || {}
       this.updateY()
 
       this.iter++
-      return cost
     }
   }
 
