@@ -48,7 +48,7 @@ gulp.task('webpack_with_watch', ['browser-sync'], function () {
   return return_obj.pipe(browserSync.stream())
 })
 
-gulp.task('copy_data', function () {
+gulp.task('data', function () {
   gulp
     .src('data/*')
     .pipe(gulp.dest('./' + build_dir + 'data/'))
@@ -98,11 +98,15 @@ gulp.task('js-watch', ['js'], function () {
   gulp.watch('./views/js/**/*.js', ['js'])
 })
 
+gulp.task('data-watch', ['data'], function () {
+  gulp.watch('./data/**/*', ['data'])
+})
+
 gulp.task('deploy', function () {
   return gulp.src('./' + build_dir + '**/*')
     .pipe(ghPages())
 })
 
-gulp.task('preprocess', ['css', 'html', 'js', 'bower', 'copy_data'])
+gulp.task('preprocess', ['css', 'html', 'js', 'bower', 'data'])
 gulp.task('default', ['webpack', 'preprocess'])
-gulp.task('server', ['browser-sync', 'preprocess', 'css-watch', 'js-watch', 'html-watch', 'webpack_with_watch'])
+gulp.task('server', ['browser-sync', 'preprocess', 'css-watch', 'js-watch', 'data-watch', 'html-watch', 'webpack_with_watch'])
