@@ -105,8 +105,7 @@ var tsneez = tsneez || {}
       var n = this.n
       var dims = this.dims
       var Ymean = pool.zeros([this.dims])
-      var lr = (this.iter <= this.exagEndIter) ? this.learningRate : Math.max(this.learningRate * Math.pow(0.99, this.iter - this.exagEndIter + 1), 0.001)
-      console.log(this.iter, lr)
+      var lr = (this.iter <= this.exagEndIter) ? this.learningRate : Math.max(this.learningRate * Math.pow(0.9, this.iter - this.exagEndIter + 1), 0.001)
 
       for (var i = 0; i < n; i++) {
         for (var d = 0; d < dims; d++) {
@@ -140,7 +139,6 @@ var tsneez = tsneez || {}
     updateGradBH: function () {
       // Early exaggeration
       var exag = (this.iter <= this.exagEndIter) ? Math.max(this.earlyExaggeration * Math.pow(0.99, this.iter), 1) : 1
-      console.log(this.iter, exag)
 
       // Initialize quadtree
       var bht = bhtree.BarnesHutTree()
