@@ -6,7 +6,7 @@
   var buildDir = '/tsneez'
   var scienceaiWorkerPath = buildDir + '/javascripts/scienceai-worker.js'
   var DATA_PATH = buildDir + '/data/shortglove.json'
-  var N = 300
+  var N = 700
   var stepnum = 0
   var PERPLEXITY = 10
   
