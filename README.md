@@ -1,4 +1,4 @@
-# T-SNEEZ
+# tsneez
 ## High Dimensional Visualization Simplified
 Fast javascript implementation of T-SNE with tree-based acceleration
 

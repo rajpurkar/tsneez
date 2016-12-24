@@ -1,8 +1,7 @@
 {
   "name": "tsneez",
   "version": "0.9.0",
-  "description": "streaming t-sne implementation",
-  "main": "streaming-tsne.js",
+  "description": "fast tsne js implementation",
   "dependencies": {
     "browser-sync": "^2.18.5",
     "d3": "^4.4.0",
@@ -28,17 +27,15 @@
   },
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/rajpurkar/online-tsne-js.git"
+    "url": "git+https://github.com/rajpurkar/tsneez.git"
   },
   "keywords": [
-    "t-sne",
-    "online",
-    "streaming"
+    "t-sne"
   ],
   "author": "Pranav Rajpurkar, Stephen Koo",
   "license": "MIT",
   "bugs": {
-    "url": "https://github.com/rajpurkar/online-tsne-js/issues"
+    "url": "https://github.com/rajpurkar/tsneez/issues"
   },
-  "homepage": "https://github.com/rajpurkar/online-tsne-js#readme"
+  "homepage": "https://github.com/rajpurkar/tsneez#readme"
 }

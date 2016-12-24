@@ -13,7 +13,7 @@ var name = 'tsneez'
 var build_dir = name + '/'
 
 var webpack_opts = {
-  context: path.join(__dirname, 'src/'),
+  context: path.join(__dirname, 'src'),
   entry: {},
   output: {
     filename: "[name].js"
@@ -26,9 +26,8 @@ var webpack_opts = {
     new webpack.BannerPlugin('(c) 2016 Pranav Rajpurkar and Stephen Koo, MIT License')
   ]
 }
-webpack_opts.entry[name] = './' + name + '.js'
+webpack_opts.entry[name + ''] = './' + name + '.js'
 webpack_opts.entry[name + '.min'] = './' + name + '.js'
-
 
 gulp.task('webpack', function () {
   return gulp.src('.')
