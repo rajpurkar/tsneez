@@ -6,7 +6,7 @@
   var buildDir = '/tsneez'
   var scienceaiWorkerPath = buildDir + '/javascripts/scienceai-worker.js'
   var DATA_PATH = buildDir + '/data/shortglove.json'
-  var N = 700
+  var N = 500
   var stepnum = 0
   var PERPLEXITY = 10
   
@@ -253,7 +253,7 @@
         })
 
         var numAdd = 10
-        T.addPoints(j.vecs.slice(N, N + numAdd + 1))
+        T.addPoints(j.vecs.slice(N, N + numAdd))
 
         for (var i = 0; i < numAdd; i++) {
           var word = j.words[N]

@@ -174,7 +174,7 @@
 	      var n = this.n
 	      var dims = this.dims
 	      var Ymean = pool.zeros([this.dims])
-	      var lr = (this.iter <= this.exagEndIter) ? this.learningRate : Math.max(this.learningRate * Math.pow(0.9, this.iter - this.exagEndIter + 1), 0.001)
+	      var lr = this.learningRate
 
 	      for (var i = 0; i < n; i++) {
 	        for (var d = 0; d < dims; d++) {
@@ -449,6 +449,10 @@
 	        this.iter = 0
 	      }
 
+	      if (reinit) {
+	        pool.free(this.ytMinus1)
+	        pool.free(this.ytMinus2)
+	      }
 	      this.ytMinus1 = pool.clone(this.Y)
 	      this.ytMinus2 = pool.clone(this.Y)
 
@@ -479,14 +483,14 @@
 	          this.updateNeighborhoods(i)
 	          this.pushD(i)
 	          this.pushP(i)
-	          this.pushY(i)  
+	          this.pushY(i)
 	        }
 	      }
 	    },
 
 	    step: function () {
 	      // Compute gradient
-	      if (this.iter > this.exagEndIter + 100) return 
+	      if (this.iter > this.exagEndIter) return 
 
 	      this.updateGradBH()
 
