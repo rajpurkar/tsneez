@@ -116,8 +116,9 @@
 	    },
 	    initY: function () {
 	      var ys = pool.zeros([this.n * 2, this.dims])  // initialize with twice as much room as neccessary
+	      var distribution
 	      if (this.randomProjectionInitialize === true) {
-	        var distribution = gaussian(0, 1 / this.dims) // stddev 1/sqrt(dims)
+	        distribution = gaussian(0, 1 / this.dims)
 	        var A = pool.zeros([this.largeDims, this.dims])
 	        for (var i = 0; i < A.shape[0]; i++) {
 	          for (var j = 0; j < A.shape[1]; j++) {
@@ -133,10 +134,35 @@
 	            }
 	            ys.set(p, j, sum)
 	          }
-	        } 
+	        }
+
+	        var means = []
+	        var standardDeviations = []
+
+	        for (var j = 0; j < this.dims; j++) {
+	          var sum = 0
+	          for (var i = 0; i < this.n; i++) {
+	            sum += ys.get(i, j)
+	          }
+	          means.push(sum / this.n)
+	        }
+
+	        for (var j = 0; j < this.dims; j++) {
+	          var sumOfSquareDifference = 0;
+	          for (var i = 0; i < this.n; i++) {
+	            sumOfSquareDifference += Math.pow(ys.get(i, j) - means[j], 2)
+	          }
+	          standardDeviations.push(Math.sqrt(sumOfSquareDifference / this.n))
+	        }
+
+	        for (var j = 0; j < this.dims; j++) {
+	          for (var i = 0; i < this.n; i++) {
+	            ys.set(i, j, (ys.get(i, j) - means[j]) / standardDeviations[j])
+	          }
+	        }
+
 	      } else {
-	         // FIXME: allow arbitrary dimensions??
-	        var distribution = gaussian(0, 1e-4)
+	        distribution = gaussian(0, 1e-4)
 	        for (var i = 0; i < this.n; i++) {
 	          for (var j = 0; j < this.dims; j++) {
 	            ys.set(i, j, distribution.ppf(Math.random()))
