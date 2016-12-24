@@ -1,6 +1,6 @@
 {
   "name": "tsneez",
-  "description": "Fast javascript implementation of T-SNE with tree-based acceleratio",
+  "description": "Fast javascript implementation of T-SNE with tree-based acceleration",
   "main": "dist/tsneez.js",
   "authors": [
     "Pranav Rajpurkar",

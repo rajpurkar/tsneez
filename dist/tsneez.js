@@ -93,6 +93,7 @@
 	    this.earlyExaggeration = getopt(opt, 'earlyExaggeration', 10)
 	    this.randomProjectionInitialize = getopt(opt, 'randomProjectionInitialize', true) // whether to initialize ys with a random projection
 	    this.exagEndIter = getopt(opt, 'exagEndIter', 250) // (van der Maaten 2014)
+	    this.dims = getopt(opt, 'dims', 2)
 	  }
 
 	  TSNEEZ.prototype = {
@@ -114,63 +115,58 @@
 	      record.time += (elapsed - record.time) / record.count
 	      console.log(name + ': ' + elapsed + 'ms' + ', avg ' + Math.round(record.time) + 'ms')
 	    },
-	    initY: function () {
-	      var ys = pool.zeros([this.n * 2, this.dims])  // initialize with twice as much room as neccessary
-	      var distribution
-	      if (this.randomProjectionInitialize === true) {
-	        distribution = gaussian(0, 1 / this.dims)
-	        var A = pool.zeros([this.largeDims, this.dims])
-	        for (var i = 0; i < A.shape[0]; i++) {
-	          for (var j = 0; j < A.shape[1]; j++) {
-	            A.set(i, j, distribution.ppf(Math.random()))
-	          } 
-	        }
-	        for (var p = 0; p < this.n; p++) {
-	          var x = this.X[p]
-	          for (var j = 0; j < this.dims; j++) {
-	            var sum = 0
-	            for (var i = 0; i < this.largeDims; i++) {
-	              sum += A.get(i, j) * x[i]
-	            }
-	            ys.set(p, j, sum)
-	          }
-	        }
-
-	        var means = []
-	        var standardDeviations = []
-
+	    initYWithRandomProjection: function () {
+	      var distribution = gaussian(0, 1 / this.dims)
+	      var A = pool.zeros([this.largeDims, this.dims])
+	      for (var i = 0; i < A.shape[0]; i++) {
+	        for (var j = 0; j < A.shape[1]; j++) {
+	          A.set(i, j, distribution.ppf(Math.random()))
+	        } 
+	      }
+	      for (var p = 0; p < this.n; p++) {
+	        var x = this.X[p]
 	        for (var j = 0; j < this.dims; j++) {
 	          var sum = 0
-	          for (var i = 0; i < this.n; i++) {
-	            sum += ys.get(i, j)
+	          for (var i = 0; i < this.largeDims; i++) {
+	            sum += A.get(i, j) * x[i]
 	          }
-	          means.push(sum / this.n)
-	        }
-
-	        for (var j = 0; j < this.dims; j++) {
-	          var sumOfSquareDifference = 0;
-	          for (var i = 0; i < this.n; i++) {
-	            sumOfSquareDifference += Math.pow(ys.get(i, j) - means[j], 2)
-	          }
-	          standardDeviations.push(Math.sqrt(sumOfSquareDifference / this.n))
-	        }
-
-	        for (var j = 0; j < this.dims; j++) {
-	          for (var i = 0; i < this.n; i++) {
-	            ys.set(i, j, (ys.get(i, j) - means[j]) / standardDeviations[j])
-	          }
-	        }
-
-	      } else {
-	        distribution = gaussian(0, 1e-4)
-	        for (var i = 0; i < this.n; i++) {
-	          for (var j = 0; j < this.dims; j++) {
-	            ys.set(i, j, distribution.ppf(Math.random()))
-	            ys.set(i, j, distribution.ppf(Math.random()))  
-	          }
+	          this.Y.set(p, j, sum)
 	        }
 	      }
-	      return ys
+
+	      var means = []
+	      var standardDeviations = []
+
+	      for (var j = 0; j < this.dims; j++) {
+	        var sum = 0
+	        for (var i = 0; i < this.n; i++) {
+	          sum += this.Y.get(i, j)
+	        }
+	        means.push(sum / this.n)
+	      }
+
+	      for (var j = 0; j < this.dims; j++) {
+	        var sumOfSquareDifference = 0;
+	        for (var i = 0; i < this.n; i++) {
+	          sumOfSquareDifference += Math.pow(this.Y.get(i, j) - means[j], 2)
+	        }
+	        standardDeviations.push(Math.sqrt(sumOfSquareDifference / this.n))
+	      }
+
+	      for (var j = 0; j < this.dims; j++) {
+	        for (var i = 0; i < this.n; i++) {
+	          this.Y.set(i, j, (this.Y.get(i, j) - means[j]) / standardDeviations[j])
+	        }
+	      }
+	    },
+	    initYGaussian: function (start) {
+	      var distribution = gaussian(0, 1e-4)
+	      for (var i = start; i < this.n; i++) {
+	        for (var j = 0; j < this.dims; j++) {
+	          this.Y.set(i, j, distribution.ppf(Math.random()))
+	          this.Y.set(i, j, distribution.ppf(Math.random()))  
+	        }
+	      }
 	    },
 	    updateY: function () {
 	      // Perform gradient update in place
@@ -270,7 +266,7 @@
 	      }
 	    },
 
-	    pushD: function(i) {
+	    pushD: function (i) {
 	      var neighbors = this.vpt.search(i, this.numNeighbors + 1)
 	      neighbors.shift() // first element is own self
 	      var elem = {}
@@ -401,7 +397,7 @@
 	      }
 	    },
 
-	    pushY: function(newi) {
+	    pushY: function (newi) {
 	      // Initialize embedding as weighted average of its neighbors (Pezzotti)
 	      var Pi = this.P[newi]
 	      var y0 = 0
@@ -417,68 +413,83 @@
 	      this.Y.set(newi, 1, y1)
 	    },
 
-	    expandBuffers: function() {
-	      console.log('expanding buffers')
-	      var newlen = this.n * 2
-	      var that = this
-	      ;['NN', 'Y', 'ytMinus1', 'ytMinus2', 'Ygains', 'grad'].forEach(function (name) {
-	        var oldMat = that[name]
-	        var newMat = pool.malloc([newlen, oldMat.shape[1]])
-	        ops.assign(newMat.hi(oldMat.shape[0], oldMat.shape[1]), oldMat)
-	        pool.free(oldMat)
-	        that[name] = newMat
-	      })
-	    },
-
 	    /************************
 	     * PUBLIC API STARTS HERE
 	     ************************/
 
-	    initData: function (data) {
-	      this.X = data
-	      this.n = data.length
-	      this.NN = pool.zeros([this.n * 2, this.numNeighbors])
-	      this.dims = 2
-	      this.largeDims = data[0].length
-	      this.Y = this.initY()
-	      this.XToD()
-	      this.DToP()
+	    initData: function (X, reinit, oldN) {
+	      this.X = X
+	      this.n = this.X.length
+	      this.largeDims = this.X[0].length
+
+	      if (this.NN) pool.free(this.NN)
+	      this.NN = pool.zeros([this.n + 100, this.numNeighbors]) // init w 100 extra spots  
+	      
+	      var Y = pool.zeros([this.n + 100, this.dims])  // init w 100 extra spots  
+	      var Ygains = pool.ones(Y.shape)
+	      var grad = pool.zeros(Y.shape)
+	      var that = this
+	      if (reinit) {
+	        ['Y', 'Ygains', 'grad'].forEach(function (name) {
+	          var newMat = eval(name)
+	          var oldMat = that[name]
+	          ops.assign(newMat.hi(oldMat.shape[0], oldMat.shape[1]), oldMat)
+	          pool.free(oldMat)
+	        })
+	      }
+	      this.Y = Y
+	      this.Ygains = Ygains
+	      this.grad = grad
+
+	      if (reinit) {
+	        this.initYGaussian(oldN + 1)
+	        this.iter = 0
+	      } else {
+	        this.initYGaussian(0)
+	        this.iter = 0
+	      }
+
 	      this.ytMinus1 = pool.clone(this.Y)
 	      this.ytMinus2 = pool.clone(this.Y)
-	      this.Ygains = pool.ones(this.Y.shape)
-	      this.grad = pool.zeros(this.Y.shape)
-	      this.iter = 0
+
+	      this.XToD()
+	      this.DToP()
 	    },
 
 	    /*
-	     * x - array containing the new point
+	     * XNew - array containing the new points
 	     */
-	    add: function (x) {
-	      if (x.length !== this.X[0].length) {
-	        console.log("New point doesn't match input dimensions")
+	    addPoints: function (XNew) {
+	      if (XNew[0].length !== this.X[0].length) {
+	        console.log("New points don't match input dimensions")
 	        return
 	      }
-	      this.exagEndIter = this.iter + 10 
-	      var newi = this.n++
-	      this.X.push(x)
-	      if (this.n > this.Y.shape[0]) {
-	        // Expand buffers and rebuild P
-	        this.expandBuffers()
-	        this.XToD()
-	        this.DToP()
+
+	      var newLength = this.n + XNew.length
+
+	      if (newLength > this.Y.shape[0]) {
+	        this.X.push.apply(this.X, XNew)
+	        this.initData(this.X, true, XNew.length)
 	      } else {
-	        // Do an approximative update
-	        this.updateNeighborhoods(newi)
-	        this.pushD(newi)
-	        this.pushP(newi)
-	        this.pushY(newi)
+	        this.exagEndIter = Math.max(this.iter, this.exagEndIter) + 200
+	        this.X.push.apply(this.X, XNew)
+	        // Do approximative updates for each point
+	        for (var i = this.n; i < newLength; i++) {
+	          this.n++
+	          this.updateNeighborhoods(i)
+	          this.pushD(i)
+	          this.pushP(i)
+	          this.pushY(i)  
+	        }
 	      }
 	    },
 
 	    step: function () {
 	      // Compute gradient
 	      if (this.iter > this.exagEndIter + 100) return 
+
 	      this.updateGradBH()
+
 	      // Rotate buffers
 	      var temp = this.ytMinus2
 	      this.ytMinus2 = this.ytMinus1
