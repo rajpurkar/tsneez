@@ -1,10 +1,9 @@
 {
   "name": "tsneez",
   "version": "0.9.0",
-  "description": "fast tsne js implementation",
-  "dependencies": {
+  "description": "Fast javascript implementation of T-SNE with tree-based acceleration",
+  "devDependencies": {
     "browser-sync": "^2.18.5",
-    "d3": "^4.4.0",
     "gaussian": "^1.1.0",
     "gulp": "^3.9.1",
     "gulp-bower": "0.0.13",
@@ -16,10 +15,8 @@
     "json-loader": "^0.5.4",
     "ndarray-scratch": "^1.2.0",
     "nodemon": "^1.11.0",
+    "webpack": "^1.14.0",
     "webpack-dev-server": "^1.16.2"
-  },
-  "devDependencies": {
-    "webpack": "^1.14.0"
   },
   "scripts": {
     "test": "echo \"Error: no test specified\" && exit 1",
@@ -37,5 +34,6 @@
   "bugs": {
     "url": "https://github.com/rajpurkar/tsneez/issues"
   },
-  "homepage": "https://github.com/rajpurkar/tsneez#readme"
+  "homepage": "https://github.com/rajpurkar/tsneez#readme",
+  "main": "dist/tsneez.js"
 }

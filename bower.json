@@ -1,12 +1,12 @@
 {
-  "name": "streaming-tsne-js",
-  "description": "",
-  "main": "gulpfile.js",
+  "name": "tsneez",
+  "description": "Fast javascript implementation of T-SNE with tree-based acceleratio",
+  "main": "dist/tsneez.js",
   "authors": [
-    "Pranav Rajpurkar"
+    "Pranav Rajpurkar",
+    "Stephen Koo"
   ],
-  "license": "ISC",
-  "private": true,
+  "license": "MIT",
   "ignore": [
     "**/.*",
     "node_modules",
@@ -14,11 +14,15 @@
     "test",
     "tests"
   ],
-  "dependencies": {
+  "devDependencies": {
     "bootstrap": "^3.3.7",
     "lato-webfont": "^1.1.2",
     "d3": "^3.5.17",
     "jquery": "^2.2.4",
     "randomcolor": "^0.4.4"
-  }
+  },
+  "homepage": "https://github.com/rajpurkar/tsneez",
+  "keywords": [
+    "t-sne"
+  ]
 }
