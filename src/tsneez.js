@@ -9,7 +9,7 @@ var tsneez = tsneez || {}
   'use strict'
 
   var getopt = function (opt, key, def) {
-    if (opt[key] == null) {
+    if (opt === undefined || opt[key] === null) {
       return def
     } else {
       return opt[key]
@@ -38,14 +38,12 @@ var tsneez = tsneez || {}
   function sign (x) { return x > 0 ? 1 : x < 0 ? -1 : 0 }
 
   var TSNEEZ = function (opt) {
-    var perplexity = getopt(opt, 'perplexity', 30)  // (van der Maaten 2014)
+    var perplexity = getopt(opt, 'perplexity', 10)  // (van der Maaten 2014)
     this.Hdesired = Math.log2(perplexity)
     this.numNeighbors = getopt(opt, 'numNeighbors', 3 * perplexity)  // (van der Maaten 2014)
     this.theta = getopt(opt, 'theta', 0.5)  // [0, 1] tunes the barnes-hut approximation, 0 is exact
-    this.learningRate = getopt(opt, 'learningRate', 1)
-    this.earlyExaggeration = getopt(opt, 'earlyExaggeration', 10)
-    this.randomProjectionInitialize = getopt(opt, 'randomProjectionInitialize', true) // whether to initialize ys with a random projection
-    this.exagEndIter = getopt(opt, 'exagEndIter', 250) // (van der Maaten 2014)
+    this.learningRateStart = getopt(opt, 'learningRateStart', 5)
+    this.earlyExaggerationStart = getopt(opt, 'earlyExaggerationStart', 8)
     this.dims = getopt(opt, 'dims', 2)
   }
 
@@ -68,50 +66,6 @@ var tsneez = tsneez || {}
       record.time += (elapsed - record.time) / record.count
       console.log(name + ': ' + elapsed + 'ms' + ', avg ' + Math.round(record.time) + 'ms')
     },
-    initYWithRandomProjection: function () {
-      var distribution = gaussian(0, 1 / this.dims)
-      var A = pool.zeros([this.largeDims, this.dims])
-      for (var i = 0; i < A.shape[0]; i++) {
-        for (var j = 0; j < A.shape[1]; j++) {
-          A.set(i, j, distribution.ppf(Math.random()))
-        } 
-      }
-      for (var p = 0; p < this.n; p++) {
-        var x = this.X[p]
-        for (var j = 0; j < this.dims; j++) {
-          var sum = 0
-          for (var i = 0; i < this.largeDims; i++) {
-            sum += A.get(i, j) * x[i]
-          }
-          this.Y.set(p, j, sum)
-        }
-      }
-
-      var means = []
-      var standardDeviations = []
-
-      for (var j = 0; j < this.dims; j++) {
-        var sum = 0
-        for (var i = 0; i < this.n; i++) {
-          sum += this.Y.get(i, j)
-        }
-        means.push(sum / this.n)
-      }
-
-      for (var j = 0; j < this.dims; j++) {
-        var sumOfSquareDifference = 0;
-        for (var i = 0; i < this.n; i++) {
-          sumOfSquareDifference += Math.pow(this.Y.get(i, j) - means[j], 2)
-        }
-        standardDeviations.push(Math.sqrt(sumOfSquareDifference / this.n))
-      }
-
-      for (var j = 0; j < this.dims; j++) {
-        for (var i = 0; i < this.n; i++) {
-          this.Y.set(i, j, (this.Y.get(i, j) - means[j]) / standardDeviations[j])
-        }
-      }
-    },
     initYGaussian: function (start) {
       var distribution = gaussian(0, 1e-4)
       for (var i = start; i < this.n; i++) {
@@ -127,7 +81,7 @@ var tsneez = tsneez || {}
       var n = this.n
       var dims = this.dims
       var Ymean = pool.zeros([this.dims])
-      var lr = this.learningRate
+      var lr = Math.max(this.learningRateStart * Math.pow(0.99, this.iter), 0.01)
 
       for (var i = 0; i < n; i++) {
         for (var d = 0; d < dims; d++) {
@@ -160,7 +114,7 @@ var tsneez = tsneez || {}
     },
     updateGradBH: function () {
       // Early exaggeration
-      var exag = (this.iter <= this.exagEndIter) ? Math.max(this.earlyExaggeration * Math.pow(0.99, this.iter), 1) : 1
+      var exag = Math.max(this.earlyExaggerationStart * Math.pow(0.99, this.iter), 1)
 
       // Initialize quadtree
       var bht = bhtree.BarnesHutTree()
@@ -221,6 +175,9 @@ var tsneez = tsneez || {}
 
     pushD: function (i) {
       var neighbors = this.vpt.search(i, this.numNeighbors + 1)
+      if (neighbors.length === 0) {
+        console.error('no neighbors found for element ' + i)
+      }
       neighbors.shift() // first element is own self
       var elem = {}
       var dmaxi = 0
@@ -428,7 +385,7 @@ var tsneez = tsneez || {}
         this.X.push.apply(this.X, XNew)
         this.initData(this.X, true, XNew.length)
       } else {
-        this.exagEndIter = Math.max(this.iter, this.exagEndIter) + 200
+        // FIXME: bump up learning rate
         this.X.push.apply(this.X, XNew)
         // Do approximative updates for each point
         for (var i = this.n; i < newLength; i++) {
@@ -443,8 +400,6 @@ var tsneez = tsneez || {}
 
     step: function () {
       // Compute gradient
-      if (this.iter > this.exagEndIter) return 
-
       this.updateGradBH()
 
       // Rotate buffers
