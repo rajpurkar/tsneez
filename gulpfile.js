@@ -36,7 +36,7 @@ gulp.task('webpack', function () {
     .pipe(gulp.dest('dist/'))
 })
 
-gulp.task('webpack_with_watch', ['browser-sync'], function () {
+gulp.task('webpack_with_watch', function () {
   webpack_opts.watch = true
   
   var return_obj = gulp.src('.')
