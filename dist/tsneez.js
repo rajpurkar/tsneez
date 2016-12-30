@@ -56,7 +56,7 @@
 	  'use strict'
 
 	  var getopt = function (opt, key, def) {
-	    if (opt === undefined || opt[key] === null) {
+	    if (opt === undefined || opt[key] === undefined) {
 	      return def
 	    } else {
 	      return opt[key]
@@ -85,9 +85,8 @@
 	  function sign (x) { return x > 0 ? 1 : x < 0 ? -1 : 0 }
 
 	  var TSNEEZ = function (opt) {
-	    var perplexity = getopt(opt, 'perplexity', 10)  // (van der Maaten 2014)
-	    this.Hdesired = Math.log2(perplexity)
-	    this.numNeighbors = getopt(opt, 'numNeighbors', 3 * perplexity)  // (van der Maaten 2014)
+	    this.perplexity = getopt(opt, 'perplexity', 10)  // (van der Maaten 2014)
+	    this.numNeighbors = getopt(opt, 'numNeighbors', 3 * this.perplexity)  // (van der Maaten 2014)
 	    this.theta = getopt(opt, 'theta', 0.5)  // [0, 1] tunes the barnes-hut approximation, 0 is exact
 	    this.learningRateStart = getopt(opt, 'learningRateStart', 5)
 	    this.earlyExaggerationStart = getopt(opt, 'earlyExaggerationStart', 8)
@@ -118,7 +117,7 @@
 	      for (var i = start; i < this.n; i++) {
 	        for (var j = 0; j < this.dims; j++) {
 	          this.Y.set(i, j, distribution.ppf(Math.random()))
-	          this.Y.set(i, j, distribution.ppf(Math.random()))  
+	          this.Y.set(i, j, distribution.ppf(Math.random()))
 	        }
 	      }
 	    },
@@ -129,18 +128,17 @@
 	      var dims = this.dims
 	      var Ymean = pool.zeros([this.dims])
 	      var lr = Math.max(this.learningRateStart * Math.pow(0.99, this.iter), 0.01)
-
 	      for (var i = 0; i < n; i++) {
 	        for (var d = 0; d < dims; d++) {
-	          var gradid = this.grad.get(i, d)
+	          var gradid = Math.max(Math.min(this.grad.get(i, d), 5), -5) // clip the gradients and 5 and -5. TODO: experimentally tune these clips
 	          var stepid = this.ytMinus1.get(i, d) - this.ytMinus2.get(i, d)
 	          var gainid = this.Ygains.get(i, d)
 
 	          // Update gain
+
 	          var newgain = Math.max(
 	              sign(gradid) === sign(stepid) ? gainid * 0.8 : gainid + 0.2, 0.01)
 	          this.Ygains.set(i, d, newgain)
-
 	          // Update Y
 	          var Yid = (this.ytMinus1.get(i, d)
 	                       - lr * newgain * gradid
@@ -247,7 +245,6 @@
 
 	    setPiAndGetH: function (i, beta) {
 	      // Compute a single row Pi of the kernel and the Shannon entropy H
-
 	      var pi = {}
 	      var sum = 0
 	      var Di = this.D[i]
@@ -257,11 +254,6 @@
 	        pi[key] = elem
 	        sum += elem
 	      }
-
-	      // For debugging
-	      // if (sum === 0) {
-	      //  console.count('sum equals zero')
-	      // }
 
 	      var H = 0
 	      for (var k = 0; k < this.numNeighbors; k++) {
@@ -304,7 +296,7 @@
 	      do {
 	        numTries++
 	        var H = this.setPiAndGetH(i, beta)
-	        Hdiff = H - this.Hdesired
+	        Hdiff = H - Math.log2(this.perplexity)
 
 	        if (Hdiff > 0) {
 	          // Entropy too high, beta is too small
@@ -378,11 +370,15 @@
 	      this.X = X
 	      this.n = this.X.length
 	      this.largeDims = this.X[0].length
+	      if (this.n - 1 < this.numNeighbors) {
+	        this.numNeighbors = this.n - 1
+	        this.perplexity = Math.max(this.n - 2, 1)
+	      }
 
 	      if (this.NN) pool.free(this.NN)
-	      this.NN = pool.zeros([this.n + 100, this.numNeighbors]) // init w 100 extra spots  
-	      
-	      var Y = pool.zeros([this.n + 100, this.dims])  // init w 100 extra spots  
+	      this.NN = pool.zeros([this.n + 100, this.numNeighbors]) // init w 100 extra spots
+
+	      var Y = pool.zeros([this.n + 100, this.dims])  // init w 100 extra spots
 	      var Ygains = pool.ones(Y.shape)
 	      var grad = pool.zeros(Y.shape)
 	      var that = this
