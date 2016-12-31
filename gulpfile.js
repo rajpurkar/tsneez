@@ -16,7 +16,10 @@ var webpack_opts = {
   context: path.join(__dirname, 'src'),
   entry: {},
   output: {
-    filename: "[name].js"
+    filename: "[name].js",
+    library: name,
+    libraryTarget: 'umd',
+    umdNamedDefine: true
   },
   plugins: [
     new webpack.optimize.UglifyJsPlugin({
