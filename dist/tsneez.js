@@ -57,7 +57,6 @@ return /******/ (function(modules) { // webpackBootstrap
 
 	var gaussian = __webpack_require__(1)
 	var pool = __webpack_require__(2)
-	var ops = __webpack_require__(6)
 	var bhtree = __webpack_require__(18)
 	var vptree = __webpack_require__(19)
 
@@ -374,7 +373,11 @@ return /******/ (function(modules) { // webpackBootstrap
 	      ['Y', 'Ygains', 'grad'].forEach(function (name) {
 	        var newMat = eval(name)
 	        var oldMat = that[name]
-	        ops.assign(newMat.hi(oldMat.shape[0], oldMat.shape[1]), oldMat)
+	        for (var i = 0; i < oldMat.shape[0]; i++) {
+	          for (var j = 0; j < oldMat.shape[1]; j++) {
+	            newMat.set(i, j, oldMat.get(i, j))
+	          }
+	        }
 	        pool.free(oldMat)
 	      })
 	    }

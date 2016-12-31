@@ -1,6 +1,5 @@
 var gaussian = require('gaussian')
 var pool = require('ndarray-scratch')
-var ops = require('ndarray-ops')
 var bhtree = require('./includes/bhtree.js')
 var vptree = require('./includes/vptree.js')
 
@@ -317,7 +316,11 @@ TSNEEZ.prototype = {
       ['Y', 'Ygains', 'grad'].forEach(function (name) {
         var newMat = eval(name)
         var oldMat = that[name]
-        ops.assign(newMat.hi(oldMat.shape[0], oldMat.shape[1]), oldMat)
+        for (var i = 0; i < oldMat.shape[0]; i++) {
+          for (var j = 0; j < oldMat.shape[1]; j++) {
+            newMat.set(i, j, oldMat.get(i, j))
+          }
+        }
         pool.free(oldMat)
       })
     }
