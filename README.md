@@ -1,13 +1,10 @@
 # tsneez
 ## High Dimensional Visualization Simplified
 
+### Example 1: Data passed as high dimensional pairwise dissimilar vectors
+Import tsneez.js into your document: <script src='/tsneez/dist/tsneez.js'></script> and then is some of the usage code.
 
-Example codes:
----------------------------------------------------------------------------------------------
-Example 1: Data passed as high dimensional pairwise dissimilar vectors
----------------------------------------------------------------------------------------------
-import tsneez.js into your document: <script src='/tsneez/dist/tsneez.js'></script> and then is some of the usage code.
-
+```javascript
 // Hyper parameters
 var opt = {}
 opt.theta = 0.5 // theta is ...
@@ -43,14 +40,12 @@ function dimensionReduce(vecs) {
 
 // Execute dimensionality reduction
 dimensionReduce(vecs)
+```
 
-
----------------------------------------------------------------------------------------------
-Example 2: Data passed to tsneez as a set of high-dimensional Glove vectors
------------------------------------------------------------------------------------------------
-
+# Example 2: Data passed to tsneez as a set of high-dimensional Glove vectors
 Append the following code within the scripts (<script></script>)tags of your document.
 
+```javascript
 // Fetch data from a json file of Glove vectors and execute dimenisonal reductionality
 var shortgloveFile = '/tsneez/data/shortglove.json' // A json file of Glove vectors.
 document.addEventListener('DOMContentLoaded', function() {
@@ -61,6 +56,7 @@ document.addEventListener('DOMContentLoaded', function() {
             dimensionReduce(vecs)
     })
 })
+```
 
 ===============================================================================================
 
