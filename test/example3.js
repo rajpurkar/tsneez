@@ -16,31 +16,39 @@ initData = function (vecs) { tsneez.initData(vecs) }
 stepEmbedding = function () { stepnum++; return tsneez.step() }
 getEmbedding = function () { return tsneez.Y }
 visEmbedding = function(vecs) {
-    vecs = Object.assign({}, vecs)
-    vecs.words = vecs.words.map(function (word) {
-        return {
-            str: String(word),
-            init: true,
-        }
-    })
+    function convertToD3Format(v) {
+        let converted = Object.assign({}, v)
+        converted.words = v.words.map(function (word) {
+            return {
+                str: String(word), 
+                init: true,
+            }
+        })
+        return converted
+    }
+
     function loopfn() {
         stepEmbedding()
-        updateEmbedding(vecs.words)
+        updateEmbedding(converted.words)
         window.requestAnimationFrame(loopfn)
     }
-    drawEmbedding(vecs)
+
+    let converted = convertToD3Format(vecs)
+    drawEmbedding(converted)
     window.requestAnimationFrame(loopfn) 
 }
 
 
+
 function dimensionReduce(vecs) {
     
-    // testing hack to be deleted.
-    vecs = {
-        words: vecs.words.slice(0,N),
-        vecs: vecs.vecs.slice(0,N),
-    }
-    //
+    // // testing hack to be deleted.
+    // vecs = {
+    //     words: vecs.words.slice(0,N),
+    //     vecs: vecs.vecs.slice(0,N),
+    // }
+    // console.log('vecs', vecs)
+    // //
 
     tsneez.initData(vecs.vecs)
 
