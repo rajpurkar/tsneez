@@ -1,22 +1,73 @@
-var N = 100
-var GRADIENT_STEPS = 50
-var stepnum = 0
+// testing variables.
+var N = 1000
+var GRADIENT_STEPS = 500
+
 
 
 // Hyper parameters
 var opt = {}
-opt.theta = 0.5 // theta is ...
-opt.perplexity = 10 // perplexity is ...
+opt.theta = 0.9 // theta is ...
+opt.perplexity = 20 // perplexity is ...
 
+
+// define and create a tsneez instance
+var stepnum = 0
 var stepEmbedding, getEmbedding
 var tsneez = new tsneez.TSNEEZ(opt) // create a tsneez instance
+initData = function (vecs) { tsneez.initData(vecs) }
 stepEmbedding = function () { stepnum++; return tsneez.step() }
 getEmbedding = function () { return tsneez.Y }
+visEmbedding = function(vecs) {
+    function loopfn() {
+        stepEmbedding()
+        updateEmbedding(vecs.words)
+        window.requestAnimationFrame(loopfn)
+    }
+    drawEmbedding(vecs)
+    window.requestAnimationFrame(loopfn) 
+}
+
+
+function dimensionReduce(vecs) {
+    
+    // function loopfn() {
+    //     stepEmbedding()
+    //     updateEmbedding(vecs.words)
+    //     window.requestAnimationFrame(loopfn)
+    // }
+
+    vecs = Object.assign({}, vecs)
+    
+    vecs.words = vecs.words.map(function (word) {
+        return {
+            str: String(word),
+            init: true,
+        }
+    })
+    
+    // testing hack to be deleted.
+    vecs = {
+        words: vecs.words.slice(0,N),
+        vecs: vecs.vecs.slice(0,N),
+    }
+
+    tsneez.initData(vecs.vecs)
+
+    // drawEmbedding(vecs)
+    // window.requestAnimationFrame(loopfn)
+    
+    visEmbedding(vecs)
+
+}
+
+
 
 /* 
     applies tsneez algorithm to the vectors
-    returns corresponding two-dimensional vectors
-*/
+    returns corresponding two-dimensional vectors.
+    The interface of requestAnimationFrame 
+    needs to be fixed.
+
 function dimensionReduce(vecs) {
     // Data mapped to d3 format for visualization
     vecs.words = vecs.words.map(function (word) {
@@ -49,6 +100,7 @@ function dimensionReduce(vecs) {
     // }
     // visEmbedding(vecs)
 }
+*/
 
 
   // Set up visualization
@@ -109,9 +161,11 @@ function drawEmbedding (data) {
     resize()
 }
 
+var Y
 // Update d3 embedding on a step
-function updateEmbedding (words, Y) {
+function updateEmbedding (words)  {
     if (Y === null) return  // scienceai might not be ready
+    Y = getEmbedding()
     var s = svg.selectAll('.u')
     .data(words)
     .attr('transform', function (d, i) {
@@ -136,11 +190,11 @@ function updateEmbedding (words, Y) {
     fadeOld--
   }
 
-function visEmbedding(data) {
-    console.log(data)
-    updateEmbedding(data)
-    window.requestAnimationFrame(visEmbedding(data))
-}
+// function visEmbedding(data) {
+//     console.log(data)
+//     updateEmbedding(data)
+//     window.requestAnimationFrame(visEmbedding(data))
+// }
 
 
 // Fetch data from a json file.
