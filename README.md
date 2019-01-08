@@ -59,7 +59,7 @@ document.addEventListener('DOMContentLoaded', function() {
 ```
 
 # Example 3: tsneez visualization
-(a) Create a HTML document to view the visualization.
+(a) Create a HTML document to view the visualization. The HTML script elements of this document embeds jquery, d3, randomColor and tsneez javascript files. The style element of this doucment contains style information which is applied to the tsneez visualization.
 
 ```javascript
 <!DOCTYPE html>
