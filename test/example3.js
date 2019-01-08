@@ -1,6 +1,6 @@
 // Hyper parameters
 var opt = {}
-opt.theta = 0.9 // theta.
+opt.theta = 0.9 // theta
 opt.perplexity = 20 // perplexity
 
 
@@ -115,7 +115,6 @@ function drawEmbedding (data) {
 
 // Update d3 embedding on a step
 function updateEmbedding (words)  {
-    // if (Y === null) return  // scienceai might not be ready
     var Y = getEmbedding()
     var s = svg.selectAll('.u')
     .data(words)
