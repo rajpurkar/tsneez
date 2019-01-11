@@ -75,6 +75,12 @@ document.addEventListener('DOMContentLoaded', function() {
         <title>tsneez Visualization</title>
         
         <style>
+            .container {
+                max-width: 800px;
+                margin: 0 auto;
+                padding: 10px;
+                background-color:whitesmoke;
+            }
             .viewport {
                 width: 800px;
                 height: 600px;
@@ -91,22 +97,12 @@ document.addEventListener('DOMContentLoaded', function() {
                 font-size: 1em;
                 fill: #444;
             }
-            .infoCard {
-                position: relative;
-            }
-            .infoCard .infoBody {
-                position: absolute;
-                top: 0px;
-            }
         </style>
-        
     </head>
     <body>
         <div class="container">
             <div class="row">
-                <div class="infoCard">
-                    <div class="viewport">
-                    </div>
+                <div class="viewport">
                 </div>
             </div>
         </div>
@@ -120,6 +116,22 @@ document.addEventListener('DOMContentLoaded', function() {
 var opt = {}
 opt.theta = 0.9 // theta
 opt.perplexity = 20 // perplexity
+
+function dimensionReduce(vecs) {
+    var NUMBER_OF_EMBEDDINGS = 1000
+    tsneez.initData(vecs.vecs)
+    visEmbedding(vecs, NUMBER_OF_EMBEDDINGS)
+}
+
+// Fetch data from a json file.
+var shortgloveFile = '/tsneez/data/shortglove.json'
+document.addEventListener('DOMContentLoaded', function() {
+    fetch(shortgloveFile)
+        .then(data => data.json())
+        .then((vecs) => {
+            dimensionReduce(vecs)
+    })
+})
 
 
 // define and create a tsneez instance
@@ -153,27 +165,8 @@ var visEmbedding = function(vecs, number_of_embeddings) {
     window.requestAnimationFrame(animate) 
 }
 
-
-
-function dimensionReduce(vecs) {
-    var NUMBER_OF_EMBEDDINGS = 1000
-    tsneez.initData(vecs.vecs)
-    visEmbedding(vecs, NUMBER_OF_EMBEDDINGS)
-}
-
-// Fetch data from a json file.
-var shortgloveFile = '/tsneez/data/shortglove.json'
-document.addEventListener('DOMContentLoaded', function() {
-    fetch(shortgloveFile)
-        .then(data => data.json())
-        .then((vecs) => {
-            dimensionReduce(vecs)
-    });
-});
-
 // Set up visualization
-var svg
-var fadeOld = 0
+var svg 
 var zoomListener = d3.behavior.zoom()
     .scaleExtent([0.0005, 10])
     .center([0, 0])
@@ -247,15 +240,5 @@ function updateEmbedding (words)  {
             ((Y.get(i, 1) * 200 * ss + ty) + 400) + ')' +
             'rotate(' + d.rotate + ')'
     })
-
-    s.selectAll('rect').style('fill-opacity', function (d) {
-        if (d.init === true && fadeOld > 0) {
-            return Math.max(Math.min(0.9 - Math.sqrt(fadeOld * 0.09), 0.9), 0)
-        } else {
-        return 0.9
-        }
-    })
-    fadeOld--
 }
 ```
-
